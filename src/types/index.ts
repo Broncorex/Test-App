@@ -184,3 +184,51 @@ export interface ProveedorProducto {
   createdBy: string; // User UID
   isActive: boolean; // For soft-deleting specific supplier-product links
 }
+
+// --- Quotation Management Types ---
+export const QUOTATION_STATUSES = ["Sent", "Received", "Rejected", "Awarded", "Lost", "Partially Awarded"] as const;
+export type QuotationStatus = typeof QUOTATION_STATUSES[number];
+
+export const QUOTATION_ADDITIONAL_COST_TYPES = ["logistics", "tax", "insurance", "other"] as const;
+export type QuotationAdditionalCostType = typeof QUOTATION_ADDITIONAL_COST_TYPES[number];
+
+export interface QuotationAdditionalCost {
+  description: string;
+  amount: number;
+  type: QuotationAdditionalCostType;
+}
+
+export interface QuotationDetail {
+  id: string; // Firestore document ID for the subcollection item
+  productId: string;
+  productName: string; // Denormalized name from product or requisition
+  requiredQuantity: number; // From the original requisition item
+  quotedQuantity: number; // Quantity the supplier quoted for
+  unitPriceQuoted: number; // Price per unit quoted by supplier
+  conditions: string; // Specific conditions from supplier for this item
+  estimatedDeliveryDate: Timestamp; // Supplier's estimated delivery for this item
+  notes: string; // Notes specific to this quoted item from supplier or internal
+}
+
+export interface Quotation {
+  id: string; // Firestore document ID
+  requisitionId: string;
+  supplierId: string;
+  supplierName?: string; // Denormalized for display
+  requestDate: Timestamp; // When the quotation request was initiated
+  responseDeadline: Timestamp; // Deadline for supplier to respond
+  status: QuotationStatus;
+  productsSubtotal?: number; // Calculated from details after reception: sum(quotedQuantity * unitPriceQuoted)
+  additionalCosts?: QuotationAdditionalCost[];
+  totalQuotation?: number; // Calculated after reception: productsSubtotal + sum(additionalCosts amounts)
+  shippingConditions?: string; // From supplier
+  generatedByUserId: string; // User who initiated the quotation request
+  generatedByUserName?: string; // Denormalized for display
+  receivedDate?: Timestamp | null; // When the supplier's response was entered
+  notes: string; // General notes for the quotation (can be from request or reception)
+  purchaseOrdersGenerated?: string[]; // Document IDs of POs generated from this quotation
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+  createdBy: string; // User UID (same as generatedByUserId initially)
+  quotationDetails?: QuotationDetail[]; // Populated after fetching subcollection
+}
