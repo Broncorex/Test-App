@@ -50,6 +50,7 @@ import { Icons } from "@/components/icons";
 import { cn } from "@/lib/utils";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Badge } from "@/components/ui/badge"; // Added import
 
 
 interface QuotationOffer extends QuotationDetail {
