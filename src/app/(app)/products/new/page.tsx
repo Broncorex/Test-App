@@ -429,74 +429,70 @@ export default function CreateProductPage() {
       </Card>
 
       <Dialog open={isSupplierProductDialogOpen} onOpenChange={setIsSupplierProductDialogOpen}>
-        <DialogContent className="sm:max-w-2xl">
+        <DialogContent className="sm:max-w-2xl flex flex-col max-h-[90vh]">
           <Form {...supplierProductDialogForm}>
-            <form onSubmit={supplierProductDialogForm.handleSubmit(handleSaveSupplierProduct)}>
+            <form onSubmit={supplierProductDialogForm.handleSubmit(handleSaveSupplierProduct)} className="flex flex-col flex-grow min-h-0">
               <DialogHeader>
                 <DialogTitle>{editingSupplierProductIndex !== null ? "Edit" : "Add"} Supplier Product Details</DialogTitle>
                 <DialogDescription>Manage supplier-specific SKU, pricing, and availability for this product.</DialogDescription>
               </DialogHeader>
-              <div className="py-4"> 
-                <ScrollArea className="max-h-[60vh]">
-                  <div className="space-y-4 pr-6"> 
-                    <FormField control={supplierProductDialogForm.control} name="supplierId"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>Supplier *</FormLabel>
-                          <Select onValueChange={field.onChange} value={field.value} disabled={isLoadingDeps}>
-                            <FormControl><SelectTrigger><SelectValue placeholder={isLoadingDeps ? "Loading suppliers..." : "Select supplier"} /></SelectTrigger></FormControl>
-                            <SelectContent>{suppliers.map(s => <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>)}</SelectContent>
-                          </Select>
-                          <FormMessage />
-                        </FormItem>
-                      )} />
-                    <FormField control={supplierProductDialogForm.control} name="supplierSku"
-                      render={({ field }) => (<FormItem><FormLabel>Supplier SKU (Auto-generated) *</FormLabel><FormControl><Input {...field} readOnly /></FormControl><FormMessage /></FormItem>)} />
-                    <FormField control={supplierProductDialogForm.control} name="isAvailable"
-                      render={({ field }) => (<FormItem className="flex flex-row items-center space-x-3 space-y-0"><FormControl><Checkbox checked={field.value} onCheckedChange={field.onChange} /></FormControl><FormLabel className="font-normal">Is Available from this Supplier</FormLabel></FormItem>)} />
-                    
-                    <Card>
-                      <CardHeader className="p-2"><CardTitle className="text-md">Price Ranges</CardTitle></CardHeader>
-                      <CardContent className="p-2 space-y-3">
-                        {priceRangeFields.map((item, index) => (
-                          <div key={item.id} className="p-3 border rounded-md space-y-2 relative">
-                            {priceRangeFields.length > 1 && (
-                              <Button type="button" variant="ghost" size="icon" className="absolute top-1 right-1 h-6 w-6" onClick={() => removePriceRange(index)}>
-                                  <Icons.Delete className="h-4 w-4 text-destructive"/>
-                              </Button>
-                            )}
-                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                              <FormField control={supplierProductDialogForm.control} name={`priceRanges.${index}.minQuantity`}
-                                render={({ field }) => (<FormItem><FormLabel>Min Qty*</FormLabel><FormControl><Input type="number" {...field} /></FormControl><FormMessage /></FormItem>)} />
-                              <FormField control={supplierProductDialogForm.control} name={`priceRanges.${index}.maxQuantity`}
-                                render={({ field }) => (<FormItem><FormLabel>Max Qty</FormLabel><FormControl><Input type="number" placeholder="None for 'or more'" {...field} value={field.value === null ? '' : field.value} onChange={e => field.onChange(e.target.value === '' ? null : Number(e.target.value))} /></FormControl><FormMessage /></FormItem>)} />
-                            </div>
-                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                              <FormField control={supplierProductDialogForm.control} name={`priceRanges.${index}.priceType`}
-                                  render={({ field }) => (<FormItem><FormLabel>Price Type*</FormLabel>
-                                      <Select onValueChange={field.onChange} value={field.value}>
-                                      <FormControl><SelectTrigger><SelectValue placeholder="Select type" /></SelectTrigger></FormControl>
-                                      <SelectContent><SelectItem value="fixed">Fixed</SelectItem><SelectItem value="negotiable">Negotiable</SelectItem></SelectContent>
-                                      </Select><FormMessage /></FormItem> )}/>
-                              <FormField control={supplierProductDialogForm.control} name={`priceRanges.${index}.price`}
-                                render={({ field }) => (<FormItem><FormLabel>Price</FormLabel><FormControl><Input type="number" step="0.01" placeholder="If fixed" {...field} value={field.value === null ? '' : field.value} onChange={e => field.onChange(e.target.value === '' ? null : Number(e.target.value))} /></FormControl><FormMessage /></FormItem>)} />
-                            </div>
-                            <FormField control={supplierProductDialogForm.control} name={`priceRanges.${index}.additionalConditions`}
-                                render={({ field }) => (<FormItem><FormLabel>Conditions</FormLabel><FormControl><Textarea placeholder="e.g., Valid until DD/MM/YYYY" {...field} /></FormControl><FormMessage /></FormItem>)} />
-                          </div>
-                        ))}
-                        <Button type="button" variant="outline" size="sm" onClick={() => appendPriceRange({ minQuantity: 0, maxQuantity: null, price: null, priceType: "fixed", additionalConditions: "" })}>
-                          <Icons.Add className="mr-2 h-4 w-4"/> Add Price Range
-                        </Button>
-                      </CardContent>
-                    </Card>
+              <div className="flex-grow overflow-y-auto min-h-0 py-4 pr-2 space-y-4"> {/* Scrollable middle section */}
+                <FormField control={supplierProductDialogForm.control} name="supplierId"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Supplier *</FormLabel>
+                      <Select onValueChange={field.onChange} value={field.value} disabled={isLoadingDeps}>
+                        <FormControl><SelectTrigger><SelectValue placeholder={isLoadingDeps ? "Loading suppliers..." : "Select supplier"} /></SelectTrigger></FormControl>
+                        <SelectContent>{suppliers.map(s => <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>)}</SelectContent>
+                      </Select>
+                      <FormMessage />
+                    </FormItem>
+                  )} />
+                <FormField control={supplierProductDialogForm.control} name="supplierSku"
+                  render={({ field }) => (<FormItem><FormLabel>Supplier SKU (Auto-generated) *</FormLabel><FormControl><Input {...field} readOnly /></FormControl><FormMessage /></FormItem>)} />
+                <FormField control={supplierProductDialogForm.control} name="isAvailable"
+                  render={({ field }) => (<FormItem className="flex flex-row items-center space-x-3 space-y-0"><FormControl><Checkbox checked={field.value} onCheckedChange={field.onChange} /></FormControl><FormLabel className="font-normal">Is Available from this Supplier</FormLabel></FormItem>)} />
+                
+                <Card>
+                  <CardHeader className="p-2"><CardTitle className="text-md">Price Ranges</CardTitle></CardHeader>
+                  <CardContent className="p-2 space-y-3">
+                    {priceRangeFields.map((item, index) => (
+                      <div key={item.id} className="p-3 border rounded-md space-y-2 relative">
+                        {priceRangeFields.length > 1 && (
+                          <Button type="button" variant="ghost" size="icon" className="absolute top-1 right-1 h-6 w-6" onClick={() => removePriceRange(index)}>
+                              <Icons.Delete className="h-4 w-4 text-destructive"/>
+                          </Button>
+                        )}
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                          <FormField control={supplierProductDialogForm.control} name={`priceRanges.${index}.minQuantity`}
+                            render={({ field }) => (<FormItem><FormLabel>Min Qty*</FormLabel><FormControl><Input type="number" {...field} /></FormControl><FormMessage /></FormItem>)} />
+                          <FormField control={supplierProductDialogForm.control} name={`priceRanges.${index}.maxQuantity`}
+                            render={({ field }) => (<FormItem><FormLabel>Max Qty</FormLabel><FormControl><Input type="number" placeholder="None for 'or more'" {...field} value={field.value === null ? '' : field.value} onChange={e => field.onChange(e.target.value === '' ? null : Number(e.target.value))} /></FormControl><FormMessage /></FormItem>)} />
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                          <FormField control={supplierProductDialogForm.control} name={`priceRanges.${index}.priceType`}
+                              render={({ field }) => (<FormItem><FormLabel>Price Type*</FormLabel>
+                                  <Select onValueChange={field.onChange} value={field.value}>
+                                  <FormControl><SelectTrigger><SelectValue placeholder="Select type" /></SelectTrigger></FormControl>
+                                  <SelectContent><SelectItem value="fixed">Fixed</SelectItem><SelectItem value="negotiable">Negotiable</SelectItem></SelectContent>
+                                  </Select><FormMessage /></FormItem> )}/>
+                          <FormField control={supplierProductDialogForm.control} name={`priceRanges.${index}.price`}
+                            render={({ field }) => (<FormItem><FormLabel>Price</FormLabel><FormControl><Input type="number" step="0.01" placeholder="If fixed" {...field} value={field.value === null ? '' : field.value} onChange={e => field.onChange(e.target.value === '' ? null : Number(e.target.value))} /></FormControl><FormMessage /></FormItem>)} />
+                        </div>
+                        <FormField control={supplierProductDialogForm.control} name={`priceRanges.${index}.additionalConditions`}
+                            render={({ field }) => (<FormItem><FormLabel>Conditions</FormLabel><FormControl><Textarea placeholder="e.g., Valid until DD/MM/YYYY" {...field} /></FormControl><FormMessage /></FormItem>)} />
+                      </div>
+                    ))}
+                    <Button type="button" variant="outline" size="sm" onClick={() => appendPriceRange({ minQuantity: 0, maxQuantity: null, price: null, priceType: "fixed", additionalConditions: "" })}>
+                      <Icons.Add className="mr-2 h-4 w-4"/> Add Price Range
+                    </Button>
+                  </CardContent>
+                </Card>
 
-                    <FormField control={supplierProductDialogForm.control} name="notes"
-                      render={({ field }) => (<FormItem><FormLabel>Notes</FormLabel><FormControl><Textarea {...field} /></FormControl><FormMessage /></FormItem>)} />
-                  </div>
-                </ScrollArea>
+                <FormField control={supplierProductDialogForm.control} name="notes"
+                  render={({ field }) => (<FormItem><FormLabel>Notes</FormLabel><FormControl><Textarea {...field} /></FormControl><FormMessage /></FormItem>)} />
               </div>
-              <DialogFooter className="pt-4">
+              <DialogFooter className="pt-4 flex-shrink-0">
                 <DialogClose asChild><Button type="button" variant="outline">Cancel</Button></DialogClose>
                 <Button type="submit" disabled={supplierProductDialogForm.formState.isSubmitting}>
                   {supplierProductDialogForm.formState.isSubmitting ? <Icons.Logo className="animate-spin"/> : "Save Supplier Details"}
@@ -509,3 +505,4 @@ export default function CreateProductPage() {
     </>
   );
 }
+
