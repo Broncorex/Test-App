@@ -1,3 +1,4 @@
+
 import {
   collection,
   addDoc,
@@ -16,7 +17,7 @@ import {
   runTransaction,
   QueryDocumentSnapshot,
   DocumentData,
-  QuerySnapshot // Added for clarity
+  QuerySnapshot
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import type {
@@ -24,10 +25,14 @@ import type {
   RequiredProduct as RequisitionRequiredProduct,
   RequisitionStatus,
   QuotationStatus,
-  UserRole // Import UserRole
+  UserRole,
+  PurchaseOrder as FullPurchaseOrder, // Use full type for clarity
+  PurchaseOrderDetail as FullPurchaseOrderDetail, // Use full type
 } from "@/types";
 import { getUserById } from "./userService";
 import type { SelectedOfferInfo } from "@/app/(app)/requisitions/[id]/compare-quotations/page";
+import { createPurchaseOrder as createPO, getPurchaseOrderById } from "./purchaseOrderService"; // Import PO service
+import type { CreatePurchaseOrderData, CreatePurchaseOrderDetailData } from "./purchaseOrderService"; // Import PO data types
 
 const requisitionsCollection = collection(db, "requisitions");
 
@@ -159,12 +164,11 @@ export const getRequiredProductsForRequisition = async (requisitionId: string): 
     return snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() } as RequisitionRequiredProduct));
 };
 
-
 export const processAndFinalizeAwards = async (
   requisitionId: string,
   selectedAwards: SelectedOfferInfo[],
-  userId: string
-): Promise<{ success: boolean; message?: string }> => {
+  userId: string // User performing the finalization
+): Promise<{ success: boolean; message?: string; createdPurchaseOrderIds?: string[] }> => {
   console.log(`[RequisitionService] Starting processAndFinalizeAwards for requisitionId: "${requisitionId}" with ${selectedAwards.length} selected awards. User: ${userId}`);
 
   if (!requisitionId || typeof requisitionId !== 'string' || requisitionId.trim() === '') {
@@ -173,37 +177,14 @@ export const processAndFinalizeAwards = async (
     return { success: false, message: "Invalid Requisition ID provided." };
   }
 
-  // --- Phase 1: Pre-fetch initial data OUTSIDE the transaction ---
-  let initialRequiredProductsList: RequisitionRequiredProduct[];
-  let allQuotationsForRequisition: QueryDocumentSnapshot<DocumentData>[];
-  
-  try {
-    console.log(`[RequisitionService] Pre-fetching required products for requisitionId: ${requisitionId}`);
-    initialRequiredProductsList = await getRequiredProductsForRequisition(requisitionId);
-    console.log(`[RequisitionService] Successfully pre-fetched ${initialRequiredProductsList.length} required products.`);
-
-    // Pre-fetch quotations outside of transaction
-    console.log(`[RequisitionService] Pre-fetching quotations for requisitionId: ${requisitionId}`);
-    const allQuotationsForRequisitionQuery = query(
-      collection(db, "cotizaciones"), // Corrected collection name
-      where("requisitionId", "==", requisitionId),
-      orderBy("createdAt") 
-    );
-    const allQuotationsSnap = await getDocs(allQuotationsForRequisitionQuery);
-    allQuotationsForRequisition = allQuotationsSnap.docs;
-    console.log(`[RequisitionService] Successfully pre-fetched ${allQuotationsForRequisition.length} quotations.`);
-    
-  } catch (error: any) {
-    console.error(`[RequisitionService] Error pre-fetching data for ${requisitionId}:`, error);
-    return { success: false, message: `Failed to pre-fetch data: ${error.message}` };
-  }
+  const createdPurchaseOrderIds: string[] = [];
 
   try {
     await runTransaction(db, async (transaction) => {
       console.log(`[RequisitionService] Transaction started for requisitionId: ${requisitionId}`);
       const now = Timestamp.now();
 
-      // --- Phase 2: Perform minimal transactional READS ---
+      // --- Phase 1: Transactional Reads ---
       const requisitionRef = doc(db, "requisitions", requisitionId);
       console.log(`[RequisitionService] Attempting to read requisition document: ${requisitionRef.path}`);
       const requisitionSnap = await transaction.get(requisitionRef);
@@ -212,102 +193,198 @@ export const processAndFinalizeAwards = async (
         console.error(`[RequisitionService] Requisition ${requisitionId} not found within transaction.`);
         throw new Error("Requisition not found.");
       }
-      const requisitionDataFromTransaction = requisitionSnap.data();
-      console.log(`[RequisitionService] Successfully fetched requisition ${requisitionId} within transaction. Status: ${requisitionDataFromTransaction.status}`);
+      const requisitionData = requisitionSnap.data() as Requisition; // Cast to Requisition type
+      console.log(`[RequisitionService] Successfully fetched requisition ${requisitionId} within transaction. Current Status: ${requisitionData.status}`);
 
-      // --- Phase 3: Perform ALL calculations and logic (NO MORE TRANSACTIONAL READS) ---
-      const awardedQuotationIds = new Set<string>();
-      selectedAwards.forEach(award => awardedQuotationIds.add(award.quotationId));
+      const allQuotationsForRequisitionQuery = query(
+        collection(db, "cotizaciones"),
+        where("requisitionId", "==", requisitionId),
+        orderBy("createdAt")
+      );
+      console.log(`[RequisitionService] Reading all quotations for requisition ${requisitionId}`);
+      const allQuotationsSnap: QuerySnapshot<DocumentData> = await transaction.get(allQuotationsForRequisitionQuery);
+      console.log(`[RequisitionService] Successfully read ${allQuotationsSnap.size} quotations for requisition ${requisitionId}`);
 
-      const projectedPurchases = new Map<string, number>();
-      let allRequirementsMet = true;
+      // --- Phase 2: Calculations and Logic (NO MORE TRANSACTIONAL READS) ---
+      const awardsBySupplier = new Map<string, SelectedOfferInfo[]>();
+      selectedAwards.forEach(award => {
+        if (!awardsBySupplier.has(award.supplierId)) {
+          awardsBySupplier.set(award.supplierId, []);
+        }
+        awardsBySupplier.get(award.supplierId)!.push(award);
+      });
 
-      if (initialRequiredProductsList.length === 0 && selectedAwards.length > 0) {
-          console.warn(`[RequisitionService] Requisition ${requisitionId} has no initial required products, but awards are being processed.`);
-          allRequirementsMet = false; 
-      } else if (initialRequiredProductsList.length === 0 && selectedAwards.length === 0) {
-           console.log(`[RequisitionService] Requisition ${requisitionId} has no initial required products and no awards. Considering requirements met.`);
-           allRequirementsMet = true;
-      } else {
-          for (const initialReqProduct of initialRequiredProductsList) {
-              if (!initialReqProduct.productId) {
-                  console.warn(`[RequisitionService] Skipping required product item with missing productId: ${initialReqProduct.id}`);
-                  continue;
-              }
-              let currentProjectedQty = initialReqProduct.purchasedQuantity || 0; // Access directly
-              const awardForThisProduct = selectedAwards.find(sa => sa.productId === initialReqProduct.productId);
-              if (awardForThisProduct) {
-                currentProjectedQty += awardForThisProduct.awardedQuantity;
-              }
-              projectedPurchases.set(initialReqProduct.productId, currentProjectedQty);
+      console.log(`[RequisitionService] Grouped ${selectedAwards.length} awards into ${awardsBySupplier.size} suppliers.`);
 
-              if (currentProjectedQty < initialReqProduct.requiredQuantity) { // Access directly
-                allRequirementsMet = false;
-                console.log(`[RequisitionService] Product ${initialReqProduct.productId} not fully met. Required: ${initialReqProduct.requiredQuantity}, Projected: ${currentProjectedQty}`);
-              }
-          }
+      // --- Phase 3: Stage Writes for Purchase Orders (outside transaction, happens before this whole block commits) ---
+      // This part is tricky because createPO involves its own batch.
+      // For now, we'll assume createPO is NOT transactional with this parent transaction.
+      // A more complex setup might involve passing the transaction object to createPO.
+      // However, creating POs and then updating related docs is a common pattern.
+
+      for (const [supplierId, awardsForSupplier] of awardsBySupplier.entries()) {
+        const supplierName = awardsForSupplier[0]?.supplierName || "Unknown Supplier"; // Get supplier name from first award
+        console.log(`[RequisitionService] Preparing to create PO for supplier: ${supplierName} (ID: ${supplierId})`);
+
+        const poDetails: CreatePurchaseOrderDetailData[] = awardsForSupplier.map(award => ({
+          productId: award.productId,
+          productName: award.productName,
+          orderedQuantity: award.awardedQuantity,
+          unitPrice: award.unitPrice,
+          notes: `From Quotation: ${award.quotationId.substring(0,6)}... for Requisition Product: ${award.productName}`, // Example note
+        }));
+
+        const poAdditionalCosts: QuotationAdditionalCost[] = [];
+        const firstQuotationIdForSupplier = awardsForSupplier[0]?.quotationId;
+        if (firstQuotationIdForSupplier) {
+            const originalQuotationDoc = allQuotationsSnap.docs.find(qDoc => qDoc.id === firstQuotationIdForSupplier);
+            if (originalQuotationDoc) {
+                const originalQuotationData = originalQuotationDoc.data();
+                if (originalQuotationData.additionalCosts && Array.isArray(originalQuotationData.additionalCosts)) {
+                    poAdditionalCosts.push(...originalQuotationData.additionalCosts);
+                }
+            }
+        }
+
+
+        const purchaseOrderData: CreatePurchaseOrderData = {
+          supplierId: supplierId,
+          originRequisitionId: requisitionId,
+          quotationReferenceId: firstQuotationIdForSupplier || null, // Assuming one quote per supplier award for simplicity here
+          expectedDeliveryDate: Timestamp.fromDate(new Date(now.toDate().getTime() + 14 * 24 * 60 * 60 * 1000)), // Placeholder: 2 weeks from now
+          notes: `Purchase Order for Requisition ${requisitionId.substring(0,6)}... awarded to ${supplierName}`,
+          additionalCosts: poAdditionalCosts,
+          details: poDetails,
+        };
+
+        // Create PO (this is an async call within the transaction loop, but it's not using the transaction object directly)
+        // The PO creation itself will handle its own atomicity for header/details.
+        const newPoId = await createPO(purchaseOrderData, userId);
+        createdPurchaseOrderIds.push(newPoId);
+        console.log(`[RequisitionService] Successfully created PO ${newPoId} for supplier ${supplierId}`);
       }
 
-      let newRequisitionStatus: RequisitionStatus = requisitionDataFromTransaction.status as RequisitionStatus;
-       if (selectedAwards.length > 0 || newRequisitionStatus === "Quoted" || newRequisitionStatus === "Pending Quotation") {
-          if (allRequirementsMet) {
-              newRequisitionStatus = "Completed";
-              console.log(`[RequisitionService] All requirements met for ${requisitionId}. Setting status to "Completed".`);
-          } else {
-              newRequisitionStatus = "PO in Progress";
-              console.log(`[RequisitionService] Some requirements pending for ${requisitionId}. Setting status to "PO in Progress".`);
-          }
-      } else {
-          console.log(`[RequisitionService] No awards made, or requisition status (${newRequisitionStatus}) doesn't warrant change based on awards alone.`);
-      }
 
-
-      // --- Phase 4: Perform ALL transactional WRITES ---
+      // --- Phase 4: Stage Transactional Writes for Requisition and Quotations ---
+      const newRequisitionStatus: RequisitionStatus = selectedAwards.length > 0 ? "PO in Progress" : requisitionData.status;
       console.log(`[RequisitionService] Staging update for requisition ${requisitionId} status to: ${newRequisitionStatus}`);
       transaction.update(requisitionRef, { status: newRequisitionStatus, updatedAt: now });
 
-      for (const award of selectedAwards) {
-        if (!award.productId) {
-            console.warn(`[RequisitionService] Award item is missing productId. Skipping write for this award:`, award);
-            continue;
-        }
-        const reqProductEntryInList = initialRequiredProductsList.find(rp => rp.productId === award.productId);
-        
-        if (!reqProductEntryInList || !reqProductEntryInList.id) {
-          console.warn(`[RequisitionService] During write phase: Required product with ProductID ${award.productId} not found in pre-fetched list or missing its own ID. Skipping update. Entry:`, reqProductEntryInList);
-          continue;
-        }
-
-        const reqProductDocRef = doc(db, `requisitions/${requisitionId}/requiredProducts/${reqProductEntryInList.id}`);
-        const finalPurchasedQuantity = (reqProductEntryInList.purchasedQuantity || 0) + award.awardedQuantity; // Access directly
-
-        console.log(`[RequisitionService] Staging update for requiredProduct ${reqProductEntryInList.id} (ProductID: ${award.productId}): purchasedQuantity to ${finalPurchasedQuantity}`);
-        transaction.update(reqProductDocRef, { purchasedQuantity: finalPurchasedQuantity });
-
-        const quotationRef = doc(db, "cotizaciones", award.quotationId);
-        console.log(`[RequisitionService] Staging update for quotation ${award.quotationId} status to "Awarded".`);
-        transaction.update(quotationRef, { status: "Awarded" as QuotationStatus, updatedAt: now });
-      }
-
-      allQuotationsForRequisition.forEach((quoteDoc: QueryDocumentSnapshot<DocumentData>) => {
+      const awardedQuotationIds = new Set<string>(selectedAwards.map(award => award.quotationId));
+      allQuotationsSnap.docs.forEach((quoteDoc: QueryDocumentSnapshot<DocumentData>) => {
         const quoteData = quoteDoc.data();
-        if ((quoteData.status === "Received" || quoteData.status === "Partially Awarded") && !awardedQuotationIds.has(quoteDoc.id)) {
+        if (awardedQuotationIds.has(quoteDoc.id)) {
+          if (quoteData.status !== "Awarded") {
+            console.log(`[RequisitionService] Staging update for quotation ${quoteDoc.id} status to "Awarded".`);
+            transaction.update(quoteDoc.ref, { status: "Awarded" as QuotationStatus, updatedAt: now });
+          }
+        } else if (quoteData.status === "Received" || quoteData.status === "Partially Awarded") {
           console.log(`[RequisitionService] Staging update for quotation ${quoteDoc.id} (Status: ${quoteData.status}) to "Lost".`);
           transaction.update(quoteDoc.ref, { status: "Lost" as QuotationStatus, updatedAt: now });
         }
       });
 
-      console.log(`[RequisitionService] All writes for requisition ${requisitionId} staged successfully.`);
-    }); 
+      console.log(`[RequisitionService] All transactional writes for requisition ${requisitionId} and its quotations staged successfully.`);
+    });
 
-    console.log(`[RequisitionService] Transaction for requisitionId ${requisitionId} committed successfully.`);
-    return { success: true, message: "Awards processed successfully and statuses updated." };
+    console.log(`[RequisitionService] Transaction for requisitionId ${requisitionId} committed successfully. Created POs: ${createdPurchaseOrderIds.join(', ')}`);
+    return { success: true, message: "Awards processed and Purchase Orders created.", createdPurchaseOrderIds };
 
   } catch (error: any) {
     console.error(`[RequisitionService] Error in processAndFinalizeAwards for requisitionId ${requisitionId}:`, error);
     if (error.code) {
-        console.error(`[RequisitionService] Firestore error code: ${error.code}`);
+      console.error(`[RequisitionService] Firestore error code: ${error.code}`);
     }
     return { success: false, message: error.message || "Failed to process awards due to an unexpected error." };
   }
 };
+
+
+export const updateRequisitionStateAfterPOSent = async (
+  purchaseOrderId: string,
+  userId: string // User who marked PO as sent
+): Promise<{ success: boolean; message?: string }> => {
+  console.log(`[RequisitionService] Starting updateRequisitionStateAfterPOSent for PO ID: ${purchaseOrderId}. User: ${userId}`);
+
+  try {
+    await runTransaction(db, async (transaction) => {
+      const po = await getPurchaseOrderById(purchaseOrderId); // Fetch outside transaction for now
+      if (!po || !po.details) {
+        throw new Error(`Purchase Order ${purchaseOrderId} or its details not found.`);
+      }
+      if (po.status !== "Sent") { // Check against actual PO status from DB if needed, but frontend should gate this
+         console.warn(`[RequisitionService] PO ${purchaseOrderId} is not in "Sent" status. Current status: ${po.status}. Skipping requisition quantity update.`);
+         return; // Or throw error if strict
+      }
+
+      const requisitionRef = doc(db, "requisitions", po.originRequisitionId);
+      const requisitionSnap = await transaction.get(requisitionRef);
+      if (!requisitionSnap.exists()) {
+        throw new Error(`Origin Requisition ${po.originRequisitionId} not found for PO ${po.id}.`);
+      }
+      const requisitionData = requisitionSnap.data() as Requisition;
+
+      // Fetch all required products for the requisition WITHIN the transaction
+      const requiredProductsColRef = collection(db, `requisitions/${po.originRequisitionId}/requiredProducts`);
+      const requiredProductsSnap = await transaction.get(query(requiredProductsColRef)); // Read all once
+
+      let allReqItemsFullyPurchased = true;
+      const updatedRequiredProductQuantities: Record<string, number> = {}; // productId -> newPurchasedQuantity
+
+      // Initialize map with current purchased quantities
+      requiredProductsSnap.docs.forEach(docSnap => {
+        const reqProd = docSnap.data() as RequisitionRequiredProduct;
+        updatedRequiredProductQuantities[reqProd.productId] = reqProd.purchasedQuantity || 0;
+      });
+
+      // Add quantities from the current PO being sent
+      for (const poDetail of po.details) {
+        if (updatedRequiredProductQuantities.hasOwnProperty(poDetail.productId)) {
+          updatedRequiredProductQuantities[poDetail.productId] += poDetail.orderedQuantity;
+        } else {
+          // This case should ideally not happen if POs are correctly created from requisitions
+          console.warn(`[RequisitionService] Product ${poDetail.productId} from PO ${po.id} not found in original requisition ${po.originRequisitionId}.`);
+        }
+      }
+      
+      // Update required product documents
+      for (const reqDocSnap of requiredProductsSnap.docs) {
+          const reqProduct = reqDocSnap.data() as RequisitionRequiredProduct;
+          const reqProductRef = doc(db, `requisitions/${po.originRequisitionId}/requiredProducts/${reqDocSnap.id}`);
+          const newPurchasedQty = updatedRequiredProductQuantities[reqProduct.productId];
+
+          if (newPurchasedQty !== undefined && newPurchasedQty !== reqProduct.purchasedQuantity) {
+            transaction.update(reqProductRef, { purchasedQuantity: newPurchasedQty });
+            console.log(`[RequisitionService] Updating ReqProduct ${reqDocSnap.id} (ProdID: ${reqProduct.productId}) purchasedQuantity to ${newPurchasedQty}`);
+          }
+
+          if (newPurchasedQty < reqProduct.requiredQuantity) {
+            allReqItemsFullyPurchased = false;
+          }
+      }
+
+      // Update requisition status if necessary
+      let newRequisitionStatus = requisitionData.status;
+      if (allReqItemsFullyPurchased && requisitionData.status === "PO in Progress") {
+        newRequisitionStatus = "Completed";
+      }
+      // If not all items fully purchased, it remains "PO in Progress" (or its current state if it was already "Completed" for some reason)
+
+      if (newRequisitionStatus !== requisitionData.status) {
+        transaction.update(requisitionRef, { status: newRequisitionStatus, updatedAt: Timestamp.now() });
+        console.log(`[RequisitionService] Requisition ${po.originRequisitionId} status updated to ${newRequisitionStatus}.`);
+      } else {
+        // Still update 'updatedAt' if quantities changed, even if status didn't
+        transaction.update(requisitionRef, { updatedAt: Timestamp.now() });
+      }
+    });
+
+    console.log(`[RequisitionService] Successfully updated requisition state for PO ${purchaseOrderId}.`);
+    return { success: true, message: "Requisition updated successfully after PO sent." };
+  } catch (error: any) {
+    console.error(`[RequisitionService] Error updating requisition state after PO sent for PO ${purchaseOrderId}:`, error);
+    return { success: false, message: error.message || "Failed to update requisition state." };
+  }
+};
+
+    

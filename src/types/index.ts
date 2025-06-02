@@ -16,43 +16,40 @@ export interface ProductDimension {
   length: number;
   width: number;
   height: number;
-  dimensionUnit?: string; // Added dimension unit
+  dimensionUnit?: string;
 }
 
 export interface Product {
   id: string;
-  name: string; // required
-  description: string; // required
-  sku: string; // required, unique
-  costPrice: number; // required
-  basePrice: number; // required
-  discountPercentage: number; // default: 0, range: 0-100
-  discountAmount: number; // default: 0
-  sellingPrice: number; // required, calculated
-  unitOfMeasure?: string; // optional
-  categoryIds: string[]; // required, array of active category IDs
-  isAvailableForSale: boolean; // default: true
-  promotionStartDate: Timestamp | null; // can be null
-  promotionEndDate: Timestamp | null; // can be null
-  imageUrl: string; // required, URL (Firebase Storage later)
-  tags: string[]; // required
-  lowStockThreshold: number; // required
-  supplierId: string; // required, reference to an active supplier (primary)
-  barcode: string; // required
-  weight: number; // required
-  dimensions: ProductDimension; // required
+  name: string;
+  description: string;
+  sku: string;
+  costPrice: number;
+  basePrice: number;
+  discountPercentage: number;
+  discountAmount: number;
+  sellingPrice: number;
+  unitOfMeasure?: string;
+  categoryIds: string[];
+  isAvailableForSale: boolean;
+  promotionStartDate: Timestamp | null;
+  promotionEndDate: Timestamp | null;
+  imageUrl: string;
+  tags: string[];
+  lowStockThreshold: number;
+  supplierId: string;
+  barcode: string;
+  weight: number;
+  dimensions: ProductDimension;
   createdAt: Timestamp;
   updatedAt: Timestamp;
-  createdBy: string; // User UID
-  isActive: boolean; // default: true (for soft-delete)
-  // Fields like quantity and warehouseId are part of stockItems, not the core product definition
-  // The following fields are temporary from mock data in inventory page and should be removed
-  // once stockItems collection is implemented and product data is fetched correctly.
-  category?: string; // Temporary for mock
-  quantity?: number; // Temporary for mock
-  price?: number; // Temporary for mock
-  warehouseId?: string; // Temporary for mock
-  lastUpdated?: string | Timestamp; // Temporary for mock
+  createdBy: string;
+  isActive: boolean;
+  category?: string;
+  quantity?: number;
+  price?: number;
+  warehouseId?: string;
+  lastUpdated?: string | Timestamp;
 }
 
 
@@ -74,25 +71,25 @@ export interface StockMovement {
   id: string;
   productId: string;
   warehouseId: string;
-  type: 'inbound' | 'outbound' | 'adjustment' | 'TRANSFER_OUT' | 'TRANSFER_IN'; // Added transfer types
+  type: 'inbound' | 'outbound' | 'adjustment' | 'TRANSFER_OUT' | 'TRANSFER_IN';
   quantityChanged: number;
   quantityBefore: number;
   quantityAfter: number;
   movementDate: Timestamp;
-  userId?: string; // User performing the action
-  reason?: string; // Required for adjustments, transfers
+  userId?: string;
+  reason?: string;
   notes?: string;
-  relatedDocumentId?: string; // e.g., orderId, transferId, receiptId
-  supplierId?: string; // Required for INBOUND type movements
+  relatedDocumentId?: string;
+  supplierId?: string;
 }
 
 export interface StockItem {
-  id?: string; // Composite ID: productId_warehouseId
+  id?: string;
   productId: string;
   warehouseId: string;
   quantity: number;
   lastStockUpdate: Timestamp;
-  updatedBy: string; // User UID
+  updatedBy: string;
 }
 
 export interface User {
@@ -101,91 +98,87 @@ export interface User {
   email: string | null;
   displayName: string | null;
   role: UserRole;
-  createdAt: Timestamp | Date; // Allow Date for client-side convenience before conversion
+  createdAt: Timestamp | Date;
   isActive: boolean;
-  createdBy?: string; // UID of admin/superadmin who created the user
-  name?: string; // Potentially legacy or alternative display name
-  assignedWarehouseIds?: string[]; // Array of warehouse IDs employee is assigned to
+  createdBy?: string;
+  name?: string;
+  assignedWarehouseIds?: string[];
 }
 
 export interface Supplier {
   id: string;
-  name: string; // required, unique
-  contactPerson: string; // required
-  contactEmail: string; // required
-  contactPhone: string; // required
-  address: string; // required
-  notes: string; // Can be empty string
+  name: string;
+  contactPerson: string;
+  contactEmail: string;
+  contactPhone: string;
+  address: string;
+  notes: string;
   createdAt: Timestamp;
   updatedAt: Timestamp;
-  createdBy: string; // UID of the creating user
-  isActive: boolean; // default: true
+  createdBy: string;
+  isActive: boolean;
 }
 
 export interface Category {
   id: string;
-  name: string; // required, unique within its parent
-  description: string; // required
-  parentCategoryId: string | null; // Can be null for top-level categories
-  sortOrder: number; // required
+  name: string;
+  description: string;
+  parentCategoryId: string | null;
+  sortOrder: number;
   createdAt: Timestamp;
   updatedAt: Timestamp;
-  createdBy: string; // User UID
-  isActive: boolean; // default: true
+  createdBy: string;
+  isActive: boolean;
 }
 
-// --- Requisition Management Types ---
 export const REQUISITION_STATUSES = ["Pending Quotation", "Quoted", "PO in Progress", "Completed", "Canceled"] as const;
 export type RequisitionStatus = typeof REQUISITION_STATUSES[number];
 
 export interface RequiredProduct {
-  id: string; // Firestore document ID for the subcollection item
+  id: string;
   productId: string;
-  productName: string; // Denormalized
+  productName: string;
   requiredQuantity: number;
-  purchasedQuantity: number; // Default 0, updated as POs are fulfilled
+  purchasedQuantity: number;
   notes: string;
 }
 
 export interface Requisition {
-  id: string; // Firestore document ID
-  // requisitionId: string; // Custom/User-facing ID if needed, else use Firestore ID
+  id: string;
   creationDate: Timestamp;
   requestingUserId: string;
-  requestingUserName?: string; // Denormalized for display
+  requestingUserName?: string;
   status: RequisitionStatus;
   notes: string;
   createdAt: Timestamp;
   updatedAt: Timestamp;
   createdBy: string;
-  requiredProducts?: RequiredProduct[]; // Populated after fetching subcollection
+  requiredProducts?: RequiredProduct[];
 }
 
-// --- Supplier Product (proveedorProductos) Types ---
 export interface PriceRange {
   minQuantity: number;
-  maxQuantity: number | null; // null for "or more"
-  price: number | null; // null if negotiable
+  maxQuantity: number | null;
+  price: number | null;
   priceType: "fixed" | "negotiable";
   additionalConditions?: string;
 }
 
 export interface ProveedorProducto {
-  id: string; // Firestore document ID (e.g., supplierId_productId or auto-generated)
+  id: string;
   supplierId: string;
   productId: string;
   lastPriceUpdate: Timestamp;
   priceRanges: PriceRange[];
-  supplierSku: string; // Supplier's SKU for this product
-  isAvailable: boolean; // Is this product currently available from this supplier
+  supplierSku: string;
+  isAvailable: boolean;
   notes: string;
   createdAt: Timestamp;
   updatedAt: Timestamp;
-  createdBy: string; // User UID
-  isActive: boolean; // For soft-deleting specific supplier-product links
+  createdBy: string;
+  isActive: boolean;
 }
 
-// --- Quotation Management Types ---
 export const QUOTATION_STATUSES = ["Sent", "Received", "Rejected", "Awarded", "Lost", "Partially Awarded"] as const;
 export type QuotationStatus = typeof QUOTATION_STATUSES[number];
 
@@ -199,36 +192,76 @@ export interface QuotationAdditionalCost {
 }
 
 export interface QuotationDetail {
-  id: string; // Firestore document ID for the subcollection item
+  id: string;
   productId: string;
-  productName: string; // Denormalized name from product or requisition
-  requiredQuantity: number; // From the original requisition item
-  quotedQuantity: number; // Quantity the supplier quoted for
-  unitPriceQuoted: number; // Price per unit quoted by supplier
-  conditions: string; // Specific conditions from supplier for this item
-  estimatedDeliveryDate: Timestamp; // Supplier's estimated delivery for this item
-  notes: string; // Notes specific to this quoted item from supplier or internal
+  productName: string;
+  requiredQuantity: number;
+  quotedQuantity: number;
+  unitPriceQuoted: number;
+  conditions: string;
+  estimatedDeliveryDate: Timestamp;
+  notes: string;
 }
 
 export interface Quotation {
-  id: string; // Firestore document ID
+  id: string;
   requisitionId: string;
   supplierId: string;
-  supplierName?: string; // Denormalized for display
-  requestDate: Timestamp; // When the quotation request was initiated
-  responseDeadline: Timestamp; // Deadline for supplier to respond
+  supplierName?: string;
+  requestDate: Timestamp;
+  responseDeadline: Timestamp;
   status: QuotationStatus;
-  productsSubtotal?: number; // Calculated from details after reception: sum(quotedQuantity * unitPriceQuoted)
+  productsSubtotal?: number;
   additionalCosts?: QuotationAdditionalCost[];
-  totalQuotation?: number; // Calculated after reception: productsSubtotal + sum(additionalCosts amounts)
-  shippingConditions?: string; // From supplier
-  generatedByUserId: string; // User who initiated the quotation request
-  generatedByUserName?: string; // Denormalized for display
-  receivedDate?: Timestamp | null; // When the supplier's response was entered
-  notes: string; // General notes for the quotation (can be from request or reception)
-  purchaseOrdersGenerated?: string[]; // Document IDs of POs generated from this quotation
+  totalQuotation?: number;
+  shippingConditions?: string;
+  generatedByUserId: string;
+  generatedByUserName?: string;
+  receivedDate?: Timestamp | null;
+  notes: string;
+  purchaseOrdersGenerated?: string[];
   createdAt: Timestamp;
   updatedAt: Timestamp;
-  createdBy: string; // User UID (same as generatedByUserId initially)
-  quotationDetails?: QuotationDetail[]; // Populated after fetching subcollection
+  createdBy: string;
+  quotationDetails?: QuotationDetail[];
 }
+
+// --- Purchase Order Types ---
+export const PURCHASE_ORDER_STATUSES = ["Pending", "Sent", "Partially Received", "Completed", "Canceled"] as const;
+export type PurchaseOrderStatus = typeof PURCHASE_ORDER_STATUSES[number];
+
+export interface PurchaseOrderDetail {
+  id: string; // Firestore document ID for the subcollection item
+  productId: string;
+  productName: string; // Denormalized
+  orderedQuantity: number;
+  receivedQuantity: number; // Default 0, updated during receipt
+  unitPrice: number; // Price agreed upon in the PO
+  subtotal: number; // orderedQuantity * unitPrice
+  notes: string; // Item-specific notes for the PO
+}
+
+export interface PurchaseOrder {
+  id: string; // Firestore document ID (purchaseOrderId)
+  supplierId: string;
+  supplierName?: string; // Denormalized
+  originRequisitionId: string; // Link back to the requisition
+  quotationReferenceId?: string | null; // Optional link to specific quotation
+  orderDate: Timestamp;
+  expectedDeliveryDate: Timestamp;
+  status: PurchaseOrderStatus;
+  productsSubtotal: number; // Sum of all detail subtotals
+  additionalCosts: QuotationAdditionalCost[]; // Re-using type for consistency
+  totalAmount: number; // productsSubtotal + sum of additionalCosts
+  creationUserId: string; // User who created/finalized the PO from requisition
+  creationUserName?: string; // Denormalized
+  completionDate?: Timestamp | null; // When PO status becomes "Completed" or "Canceled"
+  notes: string; // General notes for the PO
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+  createdBy: string; // User UID (often same as creationUserId)
+  // Subcollection 'details' will hold PurchaseOrderDetail items
+  details?: PurchaseOrderDetail[]; // Populated after fetching subcollection
+}
+
+    

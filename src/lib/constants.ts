@@ -1,10 +1,14 @@
 
-import type { NavItemStructure, UserRole } from '@/types';
+import type { NavItemStructure, UserRole, RequisitionStatus } from '@/types'; // Added RequisitionStatus
 import { Icons } from '@/components/icons';
 
 export const APP_NAME = "StockPilot";
 
 export const userRoles: UserRole[] = ['employee', 'admin', 'superadmin'];
+
+// Updated REQUISITION_STATUSES to include "PO in Progress"
+export const REQUISITION_STATUSES_ARRAY: RequisitionStatus[] = ["Pending Quotation", "Quoted", "PO in Progress", "Completed", "Canceled"];
+
 
 export const navItems: NavItemStructure[] = [
   {
@@ -51,7 +55,7 @@ export const navItems: NavItemStructure[] = [
   {
     href: '/requisitions',
     label: 'Requisitions',
-    icon: Icons.ClipboardList, 
+    icon: Icons.ClipboardList,
     allowedRoles: ['employee', 'admin', 'superadmin'],
     subItems: [
         { href: '/requisitions', label: 'View Requisitions', icon: Icons.List, allowedRoles: ['employee', 'admin', 'superadmin'] },
@@ -61,8 +65,14 @@ export const navItems: NavItemStructure[] = [
   {
     href: '/quotations',
     label: 'Quotations',
-    icon: Icons.DollarSign, 
-    allowedRoles: ['admin', 'superadmin'], 
+    icon: Icons.DollarSign,
+    allowedRoles: ['admin', 'superadmin'],
+  },
+  {
+    href: '/purchase-orders', // Added Purchase Orders
+    label: 'Purchase Orders',
+    icon: Icons.ShoppingCart, // Using ShoppingCart icon
+    allowedRoles: ['admin', 'superadmin'], // Initially admin/superadmin, employees might view later
   },
   {
     href: '/admin',
@@ -75,3 +85,5 @@ export const navItems: NavItemStructure[] = [
     ]
   },
 ];
+
+    
