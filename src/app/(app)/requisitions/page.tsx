@@ -103,17 +103,12 @@ export default function RequisitionsPage() {
         req.requestingUserName?.toLowerCase().includes(lowerCaseFilterName)
       );
     }
-    // Status filter is applied at backend for initial fetch, 
-    // but if we want to apply it again on client side after name filter, we can:
-    // if (filterStatus !== "all") {
-    //   filtered = filtered.filter(req => req.status === filterStatus);
-    // }
-    // However, it's generally better to let the backend do as much filtering as possible.
-    // The backend already filters by status based on filterStatus state.
-
     return filtered;
   }, [requisitions, filterRequestingUserName, canManageAll]);
 
+  const relevantStatusesForComparison: RequisitionStatus[] = ["Quoted", "PO in Progress", "Completed", "Canceled"];
+  // Note: "Canceled" is included because one might want to review why it was canceled by looking at quotes.
+  // "Pending Quotation" is excluded as no quotes would exist yet.
 
   return (
     <>
@@ -165,7 +160,7 @@ export default function RequisitionsPage() {
                     <TableCell><Skeleton className="h-5 w-32" /></TableCell>
                     <TableCell><Skeleton className="h-5 w-24" /></TableCell>
                     <TableCell><Skeleton className="h-6 w-28" /></TableCell>
-                    <TableCell className="text-right"><Skeleton className="h-8 w-32 ml-auto" /></TableCell>
+                    <TableCell className="text-right"><Skeleton className="h-8 w-48 ml-auto" /></TableCell>
                   </TableRow>
                 ))
               ) : displayedRequisitions.length > 0 ? (
@@ -183,6 +178,13 @@ export default function RequisitionsPage() {
                       <Button variant="outline" size="sm" onClick={() => router.push(`/requisitions/${req.id}`)}>
                         <Icons.View className="h-4 w-4 mr-1" /> View Details
                       </Button>
+                      {canManageAll && relevantStatusesForComparison.includes(req.status) && (
+                        <Button variant="outline" size="sm" asChild>
+                          <Link href={`/requisitions/${req.id}/compare-quotations`}>
+                            <Icons.LayoutList className="h-4 w-4 mr-1" /> Compare Quotes
+                          </Link>
+                        </Button>
+                      )}
                     </TableCell>
                   </TableRow>
                 ))
