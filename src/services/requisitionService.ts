@@ -14,10 +14,19 @@ import {
   writeBatch,
   QueryConstraint,
   collectionGroup,
-  runTransaction
+  runTransaction,
+  QueryDocumentSnapshot,
+  DocumentData,
+  QuerySnapshot // Added for clarity
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
-import type { Requisition, RequiredProduct as RequisitionRequiredProduct, RequisitionStatus, QuotationStatus } from "@/types";
+import type {
+  Requisition,
+  RequiredProduct as RequisitionRequiredProduct,
+  RequisitionStatus,
+  QuotationStatus,
+  UserRole // Import UserRole
+} from "@/types";
 import { getUserById } from "./userService";
 import type { SelectedOfferInfo } from "@/app/(app)/requisitions/[id]/compare-quotations/page";
 
@@ -165,7 +174,7 @@ export const processAndFinalizeAwards = async (
     return { success: false, message: "Invalid Requisition ID provided." };
   }
 
-  // --- Phase 1: Pre-fetch data OUTSIDE the transaction ---
+  // --- Phase 1: Pre-fetch initial data OUTSIDE the transaction ---
   let initialRequiredProductsList: RequisitionRequiredProduct[];
   try {
     console.log(`[RequisitionService] Pre-fetching required products for requisitionId: ${requisitionId}`);
@@ -175,16 +184,6 @@ export const processAndFinalizeAwards = async (
     console.error(`[RequisitionService] Error pre-fetching required products for ${requisitionId}:`, error);
     return { success: false, message: `Failed to pre-fetch required products: ${error.message}` };
   }
-
-  const requiredProductsMap = new Map<string, { id: string; data: RequisitionRequiredProduct }>();
-  initialRequiredProductsList.forEach(rp => {
-    if (rp.productId) {
-      requiredProductsMap.set(rp.productId, { id: rp.id, data: rp });
-    } else {
-      console.warn(`[RequisitionService] Pre-fetch: RequiredProduct document ${rp.id} in requisition ${requisitionId} is missing 'productId'.`);
-    }
-  });
-  console.log(`[RequisitionService] Built requiredProductsMap with ${requiredProductsMap.size} entries from pre-fetched data.`);
 
   try {
     await runTransaction(db, async (transaction) => {
@@ -203,14 +202,13 @@ export const processAndFinalizeAwards = async (
       const requisitionDataFromTransaction = requisitionSnap.data();
       console.log(`[RequisitionService] Successfully fetched requisition ${requisitionId} within transaction. Status: ${requisitionDataFromTransaction.status}`);
       
-      // Corrected collection name to "cotizaciones" and added orderBy
       const allQuotationsForRequisitionQuery = query(
-        collection(db, "cotizaciones"), 
+        collection(db, "cotizaciones"), // Corrected collection name
         where("requisitionId", "==", requisitionId),
         orderBy("createdAt") 
       );
       console.log(`[RequisitionService] Reading all quotations for requisition ${requisitionId}`);
-      const allQuotationsSnap = await transaction.get(allQuotationsForRequisitionQuery);
+      const allQuotationsSnap: QuerySnapshot<DocumentData> = await transaction.get(allQuotationsForRequisitionQuery);
       console.log(`[RequisitionService] Successfully read ${allQuotationsSnap.size} quotations for requisition ${requisitionId}`);
 
       // --- Phase 3: Perform ALL calculations and logic (NO MORE TRANSACTIONAL READS) ---
@@ -221,31 +219,30 @@ export const processAndFinalizeAwards = async (
       let allRequirementsMet = true;
 
       if (initialRequiredProductsList.length === 0 && selectedAwards.length > 0) {
-          console.warn(`[RequisitionService] Requisition ${requisitionId} has no initial required products, but awards are being processed. This might be an error in requisition data.`);
+          console.warn(`[RequisitionService] Requisition ${requisitionId} has no initial required products, but awards are being processed.`);
           allRequirementsMet = false; 
       } else if (initialRequiredProductsList.length === 0 && selectedAwards.length === 0) {
-           console.log(`[RequisitionService] Requisition ${requisitionId} has no initial required products and no awards. Considering requirements met (vacuously).`);
+           console.log(`[RequisitionService] Requisition ${requisitionId} has no initial required products and no awards. Considering requirements met.`);
            allRequirementsMet = true;
       } else {
-          for (const initialRP of initialRequiredProductsList) {
-              if (!initialRP.productId) {
-                  console.warn(`[RequisitionService] Skipping required product item with missing productId: ${initialRP.id}`);
+          for (const initialReqProduct of initialRequiredProductsList) {
+              if (!initialReqProduct.productId) {
+                  console.warn(`[RequisitionService] Skipping required product item with missing productId: ${initialReqProduct.id}`);
                   continue;
               }
-              let currentProjectedQty = initialRP.data.purchasedQuantity || 0;
-              const awardForThisProduct = selectedAwards.find(sa => sa.productId === initialRP.productId);
+              let currentProjectedQty = initialReqProduct.purchasedQuantity || 0; // Access directly
+              const awardForThisProduct = selectedAwards.find(sa => sa.productId === initialReqProduct.productId);
               if (awardForThisProduct) {
                 currentProjectedQty += awardForThisProduct.awardedQuantity;
               }
-              projectedPurchases.set(initialRP.productId, currentProjectedQty);
+              projectedPurchases.set(initialReqProduct.productId, currentProjectedQty);
 
-              if (currentProjectedQty < initialRP.data.requiredQuantity) {
+              if (currentProjectedQty < initialReqProduct.requiredQuantity) { // Access directly
                 allRequirementsMet = false;
-                console.log(`[RequisitionService] Product ${initialRP.productId} not fully met. Required: ${initialRP.data.requiredQuantity}, Projected: ${currentProjectedQty}`);
+                console.log(`[RequisitionService] Product ${initialReqProduct.productId} not fully met. Required: ${initialReqProduct.requiredQuantity}, Projected: ${currentProjectedQty}`);
               }
           }
       }
-
 
       let newRequisitionStatus: RequisitionStatus = requisitionDataFromTransaction.status as RequisitionStatus;
        if (selectedAwards.length > 0 || newRequisitionStatus === "Quoted" || newRequisitionStatus === "Pending Quotation") {
@@ -270,16 +267,17 @@ export const processAndFinalizeAwards = async (
             console.warn(`[RequisitionService] Award item is missing productId. Skipping write for this award:`, award);
             continue;
         }
-        const reqProductEntry = requiredProductsMap.get(award.productId);
-        if (!reqProductEntry || !reqProductEntry.id) {
-          console.warn(`[RequisitionService] During write phase: Required product with ProductID ${award.productId} not found in pre-fetched map or missing its own ID. Skipping update for this item. ReqProductEntry:`, reqProductEntry);
+        const reqProductEntryInList = initialRequiredProductsList.find(rp => rp.productId === award.productId);
+        
+        if (!reqProductEntryInList || !reqProductEntryInList.id) {
+          console.warn(`[RequisitionService] During write phase: Required product with ProductID ${award.productId} not found in pre-fetched list or missing its own ID. Skipping update. Entry:`, reqProductEntryInList);
           continue;
         }
 
-        const reqProductDocRef = doc(db, `requisitions/${requisitionId}/requiredProducts/${reqProductEntry.id}`);
-        const finalPurchasedQuantity = (reqProductEntry.data.purchasedQuantity || 0) + award.awardedQuantity;
+        const reqProductDocRef = doc(db, `requisitions/${requisitionId}/requiredProducts/${reqProductEntryInList.id}`);
+        const finalPurchasedQuantity = (reqProductEntryInList.purchasedQuantity || 0) + award.awardedQuantity; // Access directly
 
-        console.log(`[RequisitionService] Staging update for requiredProduct ${reqProductEntry.id} (ProductID: ${award.productId}): purchasedQuantity to ${finalPurchasedQuantity}`);
+        console.log(`[RequisitionService] Staging update for requiredProduct ${reqProductEntryInList.id} (ProductID: ${award.productId}): purchasedQuantity to ${finalPurchasedQuantity}`);
         transaction.update(reqProductDocRef, { purchasedQuantity: finalPurchasedQuantity });
 
         const quotationRef = doc(db, "cotizaciones", award.quotationId);
@@ -287,7 +285,7 @@ export const processAndFinalizeAwards = async (
         transaction.update(quotationRef, { status: "Awarded" as QuotationStatus, updatedAt: now });
       }
 
-      allQuotationsSnap.forEach(quoteDoc => {
+      allQuotationsSnap.docs.forEach((quoteDoc: QueryDocumentSnapshot<DocumentData>) => { // Added type
         const quoteData = quoteDoc.data();
         if ((quoteData.status === "Received" || quoteData.status === "Partially Awarded") && !awardedQuotationIds.has(quoteDoc.id)) {
           console.log(`[RequisitionService] Staging update for quotation ${quoteDoc.id} (Status: ${quoteData.status}) to "Lost".`);
