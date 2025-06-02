@@ -187,14 +187,14 @@ export const processAndFinalizeAwards = async (
       const requisitionData = requisitionSnap.data();
       console.log(`[RequisitionService] Successfully fetched requisition ${requisitionId} within transaction. Status: ${requisitionData.status}`);
       
-      // Use direct string path for subcollection query
       const requiredProductsSubCollectionPath = `requisitions/${requisitionId}/requiredProducts`;
       console.log(`[RequisitionService] Path to requiredProducts for query: ${requiredProductsSubCollectionPath}`);
-      const requiredProductsQuery = query(collection(db, requiredProductsSubCollectionPath));
-      console.log(`[RequisitionService] Constructed requiredProductsQuery object:`, requiredProductsQuery);
+      
+      const requiredProductsCollectionRef = collection(db, requiredProductsSubCollectionPath);
+      console.log(`[RequisitionService] Constructed requiredProductsCollectionRef object:`, requiredProductsCollectionRef); // Log the object
 
       console.log(`[RequisitionService] Attempting to get requiredProducts for ${requisitionId}. Query Collection Path: ${requiredProductsSubCollectionPath}`);
-      const requiredProductsSnapForInitialRead = await transaction.get(requiredProductsQuery);
+      const requiredProductsSnapForInitialRead = await transaction.get(requiredProductsCollectionRef); // Pass CollectionReference directly
       console.log(`[RequisitionService] Successfully read ${requiredProductsSnapForInitialRead.size} requiredProduct documents for ${requisitionId}.`);
       requiredProductsSnapForInitialRead.forEach(docSnap => {
          console.log(`[RequisitionService] RequiredProduct Doc ID: ${docSnap.id}, Data:`, docSnap.data());
@@ -204,7 +204,7 @@ export const processAndFinalizeAwards = async (
       const requiredProductsMap = new Map<string, { id: string; data: RequisitionRequiredProduct }>();
       requiredProductsSnapForInitialRead.forEach(docSnap => {
         const productData = docSnap.data() as RequisitionRequiredProduct;
-        if (productData && productData.productId) {
+        if (productData && productData.productId) { // Safety check
             requiredProductsMap.set(productData.productId, { id: docSnap.id, data: productData });
         } else {
             console.warn(`[RequisitionService] RequiredProduct document ${docSnap.id} in requisition ${requisitionId} is missing 'productId' field or data.`);
@@ -223,7 +223,6 @@ export const processAndFinalizeAwards = async (
           continue;
         }
 
-        // Construct DocumentReference to the specific requiredProduct document for update
         const reqProductDocRef = doc(db, `requisitions/${requisitionId}/requiredProducts/${reqProductEntry.id}`);
         const currentPurchasedQty = reqProductEntry.data.purchasedQuantity || 0;
         const newPurchasedQuantity = currentPurchasedQty + award.awardedQuantity;
@@ -252,21 +251,26 @@ export const processAndFinalizeAwards = async (
         }
       });
       
-      console.log(`[RequisitionService] Re-evaluating requisition status for ${requisitionId}. Using query path: ${requiredProductsSubCollectionPath}`);
-      // Re-fetch using the same direct path query
-      const updatedRequiredProductsSnapAfterAwards = await transaction.get(query(collection(db, requiredProductsSubCollectionPath)));
+      console.log(`[RequisitionService] Re-evaluating requisition status for ${requisitionId}. Path for required products subcollection: ${requiredProductsSubCollectionPath}`);
+      const updatedRequiredProductsCollectionRef = collection(db, requiredProductsSubCollectionPath);
+      const updatedRequiredProductsSnapAfterAwards = await transaction.get(updatedRequiredProductsCollectionRef);
       console.log(`[RequisitionService] Fetched ${updatedRequiredProductsSnapAfterAwards.size} requiredProducts again for status check.`);
 
       let allRequirementsMet = true;
       if (updatedRequiredProductsSnapAfterAwards.empty && requiredProductsMap.size > 0) {
           allRequirementsMet = false; 
-          console.log(`[RequisitionService] Requisition ${requisitionId}: Not all requirements met (subcollection empty, but expected products).`);
+          console.log(`[RequisitionService] Requisition ${requisitionId}: Not all requirements met (subcollection empty after updates, but expected products).`);
       } else if (updatedRequiredProductsSnapAfterAwards.empty && requiredProductsMap.size === 0) {
           allRequirementsMet = true; 
-          console.log(`[RequisitionService] Requisition ${requisitionId}: No products were required initially.`);
+          console.log(`[RequisitionService] Requisition ${requisitionId}: No products were required initially, or all map entries were processed and updated.`);
       } else {
           updatedRequiredProductsSnapAfterAwards.docs.forEach(docSnap => {
              const rp = docSnap.data() as RequisitionRequiredProduct;
+             if (!rp || rp.requiredQuantity === undefined) {
+                 console.warn(`[RequisitionService] Requisition ${requisitionId}: Product ${docSnap.id} data is incomplete or missing 'requiredQuantity'. Assuming not met for safety.`);
+                 allRequirementsMet = false;
+                 return; 
+             }
              if ((rp.purchasedQuantity || 0) < rp.requiredQuantity) {
                  allRequirementsMet = false;
                  console.log(`[RequisitionService] Requisition ${requisitionId}: Product ${rp.productId} (Doc ID: ${docSnap.id}) not fully met. Required: ${rp.requiredQuantity}, Purchased: ${rp.purchasedQuantity || 0}`);
@@ -275,7 +279,7 @@ export const processAndFinalizeAwards = async (
       }
 
       let newRequisitionStatus: RequisitionStatus = requisitionData.status as RequisitionStatus; 
-      if (selectedAwards.length > 0 || newRequisitionStatus === "Quoted") { // Ensure status update if moving from "Quoted"
+      if (selectedAwards.length > 0 || newRequisitionStatus === "Quoted") { 
         if (allRequirementsMet) {
           newRequisitionStatus = "Completed"; 
           console.log(`[RequisitionService] All requirements met for ${requisitionId}. Setting status to "Completed".`);
@@ -298,3 +302,6 @@ export const processAndFinalizeAwards = async (
     return { success: false, message: error.message || "Failed to process awards." };
   }
 };
+
+
+    
