@@ -43,7 +43,7 @@ import {
   getAllSupplierProductsByProduct, 
   createSupplierProduct, 
   updateSupplierProduct,
-  toggleSupplierProductActiveStatus, // Assuming soft delete (deactivate)
+  toggleSupplierProductActiveStatus,
   type CreateSupplierProductData,
   type UpdateSupplierProductData
 } from "@/services/supplierProductService";
@@ -57,7 +57,7 @@ import { Separator } from "@/components/ui/separator";
 const dimensionUnits = ["cm", "m", "in", "mm", "ft"];
 
 const priceRangeSchema = z.object({
-  id: z.string().optional(), // For identifying existing price ranges if needed, not directly part of ProveedorProducto.PriceRange
+  id: z.string().optional(),
   minQuantity: z.coerce.number().min(0, "Min quantity must be non-negative."),
   maxQuantity: z.coerce.number().nullable().optional(),
   price: z.coerce.number().min(0, "Price must be non-negative.").nullable().optional(),
@@ -66,14 +66,14 @@ const priceRangeSchema = z.object({
 });
 
 const supplierProductFormSchema = z.object({
-  id: z.string().optional(), // ID of the ProveedorProducto document if editing
+  id: z.string().optional(), 
   supplierId: z.string().min(1, "Supplier is required."),
-  supplierName: z.string().optional(), // For display purposes
+  supplierName: z.string().optional(), 
   supplierSku: z.string().min(1, "Supplier SKU is required."),
   isAvailable: z.boolean().default(true),
   notes: z.string().optional(),
   priceRanges: z.array(priceRangeSchema).min(1, "At least one price range is required."),
-  isActive: z.boolean().default(true), // To handle soft deletes
+  isActive: z.boolean().default(true), 
 });
 
 const productFormSchema = z.object({
@@ -90,7 +90,7 @@ const productFormSchema = z.object({
   imageUrl: z.string().url("A valid image URL is required.").min(1, "Image URL is required."),
   tags: z.string().min(1, "At least one tag is required (comma-separated)."),
   lowStockThreshold: z.coerce.number().int().min(0, "Low stock threshold must be a non-negative integer."),
-  supplierId: z.string().min(1, "Primary supplier is required."), // Primary supplier
+  supplierId: z.string().min(1, "Primary supplier is required."), 
   barcode: z.string().min(1, "Barcode is required."),
   weight: z.coerce.number().min(0.001, "Weight must be positive."),
   dimensions_length: z.coerce.number().min(0.01, "Length must be positive."),
@@ -140,11 +140,9 @@ export default function EditProductPage() {
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [isUploading, setIsUploading] = useState(false);
 
-  // Supplier Product Dialog State
   const [isSupplierProductDialogOpen, setIsSupplierProductDialogOpen] = useState(false);
   const [editingSupplierProductIndex, setEditingSupplierProductIndex] = useState<number | null>(null);
   
-  // Temp form for dialog to avoid RHF conflicts if nested directly
   const supplierProductDialogForm = useForm<SupplierProductFormData>({
     resolver: zodResolver(supplierProductFormSchema),
     defaultValues: {
@@ -197,7 +195,7 @@ export default function EditProductPage() {
         getProductById(productId),
         getAllCategories({ filterActive: true, orderBySortOrder: true }),
         getAllSuppliers({ filterActive: true }),
-        getAllSupplierProductsByProduct(productId, false), // Fetch active and inactive
+        getAllSupplierProductsByProduct(productId, false), 
       ]);
 
       setCategories(fetchedCats);
@@ -310,9 +308,9 @@ export default function EditProductPage() {
   
   const handleRemoveSupplierSpecificInfo = (index: number) => {
     const item = getValues(`supplierSpecificInfo.${index}`);
-    if (item.id) { // If it's an existing item, mark for deactivation
+    if (item.id) { 
       updateSupplierSpecificInfo(index, { ...item, isActive: false });
-    } else { // If it's a new item not yet saved, remove directly
+    } else { 
       removeSupplierSpecificInfo(index);
     }
   };
@@ -375,36 +373,35 @@ export default function EditProductPage() {
       };
       await updateProduct(productId, productData);
 
-      // Handle supplierSpecificInfo
       if (values.supplierSpecificInfo) {
         for (const item of values.supplierSpecificInfo) {
           const serviceData = {
             supplierId: item.supplierId,
-            productId: productId, // Current product's ID
+            productId: productId, 
             supplierSku: item.supplierSku,
             priceRanges: item.priceRanges.map(pr => ({...pr, price: pr.price === null ? null : Number(pr.price), maxQuantity: pr.maxQuantity === null ? null : Number(pr.maxQuantity) })),
             isAvailable: item.isAvailable,
             notes: item.notes || "",
           };
 
-          if (item.id) { // Existing item
-            if (item.isActive === false) { // Marked for deactivation
+          if (item.id) { 
+            if (item.isActive === false) { 
                const existing = fetchedSupplierProducts.find(fsp => fsp.id === item.id);
-               if(existing && existing.isActive) { // Only deactivate if it was active
-                await toggleSupplierProductActiveStatus(item.id, true); // true means currentIsActive is true, so it will be set to false
+               if(existing && existing.isActive) { 
+                await toggleSupplierProductActiveStatus(item.id, true); 
                }
-            } else { // Update active item
+            } else { 
               await updateSupplierProduct(item.id, serviceData as UpdateSupplierProductData);
             }
-          } else if (item.isActive !== false) { // New item, not marked for deactivation
+          } else if (item.isActive !== false) { 
             await createSupplierProduct(serviceData as CreateSupplierProductData, currentUser.uid);
           }
         }
       }
-      // Handle deletions of items that were in fetchedSupplierProducts but not in values.supplierSpecificInfo
+      
       for (const fetchedItem of fetchedSupplierProducts) {
         const stillExistsInForm = values.supplierSpecificInfo?.find(formItem => formItem.id === fetchedItem.id);
-        if (!stillExistsInForm && fetchedItem.isActive) { // If it was active and now it's gone from form or marked inactive
+        if (!stillExistsInForm && fetchedItem.isActive) { 
           await toggleSupplierProductActiveStatus(fetchedItem.id, true); 
         }
       }
@@ -435,7 +432,10 @@ export default function EditProductPage() {
 
   return (
     <>
-      <PageHeader title={`Edit Product: ${product.name}`} description="Update product details. Cost price is updated via receipts." />
+      <PageHeader
+        title={`Edit Product: ${product.name}`}
+        description="Update product details. Cost price is updated via receipts."
+      />
       <Card className="w-full max-w-3xl mx-auto shadow-lg">
         <Form {...form}>
           <form onSubmit={form.handleSubmit(onSubmit)}>
@@ -444,7 +444,6 @@ export default function EditProductPage() {
               <CardDescription>Fields marked with * are required. Selling price is calculated. Cost price is read-only.</CardDescription>
             </CardHeader>
             <CardContent className="space-y-6">
-              {/* Main Product Fields ... (existing fields) */}
               <FormField control={form.control} name="name" render={({ field }) => (<FormItem><FormLabel>Product Name *</FormLabel><FormControl><Input {...field} /></FormControl><FormMessage /></FormItem>)} />
               <FormItem><FormLabel>SKU (Read-only)</FormLabel><FormControl><Input value={product.sku} readOnly disabled /></FormControl></FormItem>
               <FormField control={form.control} name="description" render={({ field }) => (<FormItem><FormLabel>Description *</FormLabel><FormControl><Textarea {...field} /></FormControl><FormMessage /></FormItem>)} />
@@ -506,7 +505,6 @@ export default function EditProductPage() {
               </div>
               <FormField control={form.control} name="isAvailableForSale" render={({ field }) => (<FormItem className="flex flex-row items-center space-x-3 space-y-0"><FormControl><Checkbox checked={field.value} onCheckedChange={field.onChange} /></FormControl><FormLabel className="font-normal">Available for Sale</FormLabel></FormItem>)} />
             
-              {/* Supplier Specific Info Section */}
               <Accordion type="single" collapsible className="w-full">
                 <AccordionItem value="supplier-info">
                   <AccordionTrigger className="text-lg font-semibold">Supplier Pricing & Availability</AccordionTrigger>
@@ -556,7 +554,6 @@ export default function EditProductPage() {
         </Form>
       </Card>
 
-      {/* Dialog for Adding/Editing Supplier Specific Product Info */}
       <Dialog open={isSupplierProductDialogOpen} onOpenChange={setIsSupplierProductDialogOpen}>
         <DialogContent className="sm:max-w-2xl">
           <Form {...supplierProductDialogForm}>
@@ -589,7 +586,7 @@ export default function EditProductPage() {
                       {priceRangeFields.map((item, index) => (
                         <div key={item.id} className="p-3 border rounded-md space-y-2 relative">
                            {priceRangeFields.length > 1 && (
-                            <Button type="button" variant="ghost" size="icon" className="absolute top-1 right-1 h-6 w-6" onClick={()={() => removePriceRange(index)}}>
+                            <Button type="button" variant="ghost" size="icon" className="absolute top-1 right-1 h-6 w-6" onClick={() => removePriceRange(index)}>
                                 <Icons.Delete className="h-4 w-4 text-destructive"/>
                             </Button>
                            )}
