@@ -1,4 +1,3 @@
-
 import {
   collection,
   addDoc,
@@ -176,13 +175,27 @@ export const processAndFinalizeAwards = async (
 
   // --- Phase 1: Pre-fetch initial data OUTSIDE the transaction ---
   let initialRequiredProductsList: RequisitionRequiredProduct[];
+  let allQuotationsForRequisition: QueryDocumentSnapshot<DocumentData>[];
+  
   try {
     console.log(`[RequisitionService] Pre-fetching required products for requisitionId: ${requisitionId}`);
     initialRequiredProductsList = await getRequiredProductsForRequisition(requisitionId);
     console.log(`[RequisitionService] Successfully pre-fetched ${initialRequiredProductsList.length} required products.`);
+
+    // Pre-fetch quotations outside of transaction
+    console.log(`[RequisitionService] Pre-fetching quotations for requisitionId: ${requisitionId}`);
+    const allQuotationsForRequisitionQuery = query(
+      collection(db, "cotizaciones"), // Corrected collection name
+      where("requisitionId", "==", requisitionId),
+      orderBy("createdAt") 
+    );
+    const allQuotationsSnap = await getDocs(allQuotationsForRequisitionQuery);
+    allQuotationsForRequisition = allQuotationsSnap.docs;
+    console.log(`[RequisitionService] Successfully pre-fetched ${allQuotationsForRequisition.length} quotations.`);
+    
   } catch (error: any) {
-    console.error(`[RequisitionService] Error pre-fetching required products for ${requisitionId}:`, error);
-    return { success: false, message: `Failed to pre-fetch required products: ${error.message}` };
+    console.error(`[RequisitionService] Error pre-fetching data for ${requisitionId}:`, error);
+    return { success: false, message: `Failed to pre-fetch data: ${error.message}` };
   }
 
   try {
@@ -190,7 +203,7 @@ export const processAndFinalizeAwards = async (
       console.log(`[RequisitionService] Transaction started for requisitionId: ${requisitionId}`);
       const now = Timestamp.now();
 
-      // --- Phase 2: Perform ALL transactional READS upfront ---
+      // --- Phase 2: Perform minimal transactional READS ---
       const requisitionRef = doc(db, "requisitions", requisitionId);
       console.log(`[RequisitionService] Attempting to read requisition document: ${requisitionRef.path}`);
       const requisitionSnap = await transaction.get(requisitionRef);
@@ -201,15 +214,6 @@ export const processAndFinalizeAwards = async (
       }
       const requisitionDataFromTransaction = requisitionSnap.data();
       console.log(`[RequisitionService] Successfully fetched requisition ${requisitionId} within transaction. Status: ${requisitionDataFromTransaction.status}`);
-      
-      const allQuotationsForRequisitionQuery = query(
-        collection(db, "cotizaciones"), // Corrected collection name
-        where("requisitionId", "==", requisitionId),
-        orderBy("createdAt") 
-      );
-      console.log(`[RequisitionService] Reading all quotations for requisition ${requisitionId}`);
-      const allQuotationsSnap: QuerySnapshot<DocumentData> = await transaction.get(allQuotationsForRequisitionQuery);
-      console.log(`[RequisitionService] Successfully read ${allQuotationsSnap.size} quotations for requisition ${requisitionId}`);
 
       // --- Phase 3: Perform ALL calculations and logic (NO MORE TRANSACTIONAL READS) ---
       const awardedQuotationIds = new Set<string>();
@@ -285,7 +289,7 @@ export const processAndFinalizeAwards = async (
         transaction.update(quotationRef, { status: "Awarded" as QuotationStatus, updatedAt: now });
       }
 
-      allQuotationsSnap.docs.forEach((quoteDoc: QueryDocumentSnapshot<DocumentData>) => { // Added type
+      allQuotationsForRequisition.forEach((quoteDoc: QueryDocumentSnapshot<DocumentData>) => {
         const quoteData = quoteDoc.data();
         if ((quoteData.status === "Received" || quoteData.status === "Partially Awarded") && !awardedQuotationIds.has(quoteDoc.id)) {
           console.log(`[RequisitionService] Staging update for quotation ${quoteDoc.id} (Status: ${quoteData.status}) to "Lost".`);
