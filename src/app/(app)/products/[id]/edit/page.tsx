@@ -119,6 +119,13 @@ const getDimensionValue = (nestedVal: number | undefined, flatValStr: string | u
     return 0; 
 };
 
+const generateSupplierSku = (supplierName: string, productNameOrSku: string): string => {
+  const supPrefix = supplierName.substring(0, 4).toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const prodPrefix = productNameOrSku.substring(0, 4).toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const randomSuffix = Math.random().toString(36).substring(2, 6).toUpperCase(); // 4 chars
+  return `${supPrefix || 'SUP'}-${prodPrefix || 'PROD'}-${randomSuffix}`;
+};
+
 export default function EditProductPage() {
   const router = useRouter();
   const params = useParams();
@@ -195,12 +202,12 @@ export default function EditProductPage() {
         getProductById(productId),
         getAllCategories({ filterActive: true, orderBySortOrder: true }),
         getAllSuppliers({ filterActive: true }),
-        getAllSupplierProductsByProduct(productId, false), 
+        getAllSupplierProductsByProduct(productId, true), // Fetch all, including inactive for accurate editing
       ]);
 
       setCategories(fetchedCats);
       setSuppliers(fetchedSupps);
-      setFetchedSupplierProducts(fetchedSupProds);
+      setFetchedSupplierProducts(fetchedSupProds); // Store all, including potentially inactive
       setIsLoadingDeps(false);
 
       if (fetchedProd) {
@@ -279,6 +286,7 @@ export default function EditProductPage() {
       const currentData = getValues(`supplierSpecificInfo.${index}`);
       supplierProductDialogForm.reset({
         ...currentData,
+        supplierSku: currentData.supplierSku || "", // Ensure SKU is reset properly if it was empty
         priceRanges: currentData.priceRanges && currentData.priceRanges.length > 0 
           ? currentData.priceRanges.map(pr => ({...pr})) 
           : [{ minQuantity: 0, maxQuantity: null, price: null, priceType: "fixed", additionalConditions: "" }]
@@ -400,7 +408,7 @@ export default function EditProductPage() {
       }
       
       for (const fetchedItem of fetchedSupplierProducts) {
-        const stillExistsInForm = values.supplierSpecificInfo?.find(formItem => formItem.id === fetchedItem.id);
+        const stillExistsInForm = values.supplierSpecificInfo?.find(formItem => formItem.id === fetchedItem.id && formItem.isActive !== false);
         if (!stillExistsInForm && fetchedItem.isActive) { 
           await toggleSupplierProductActiveStatus(fetchedItem.id, true); 
         }
@@ -416,6 +424,21 @@ export default function EditProductPage() {
       setIsSubmitting(false); setIsUploading(false);
     }
   }
+
+  const mainProductName = product?.name || "";
+  const mainProductSku = product?.sku || "";
+  const watchedSupplierIdInDialog = supplierProductDialogForm.watch('supplierId');
+
+  useEffect(() => {
+    if (editingSupplierProductIndex === null && watchedSupplierIdInDialog) { // Only for new entries
+      const selectedSupplier = suppliers.find(s => s.id === watchedSupplierIdInDialog);
+      if (selectedSupplier) {
+        const newSku = generateSupplierSku(selectedSupplier.name, mainProductName || mainProductSku);
+        supplierProductDialogForm.setValue('supplierSku', newSku, { shouldValidate: true });
+      }
+    }
+  }, [watchedSupplierIdInDialog, editingSupplierProductIndex, suppliers, mainProductName, mainProductSku, supplierProductDialogForm]);
+
 
   if (isLoadingData || !product) {
     return (
@@ -562,8 +585,8 @@ export default function EditProductPage() {
                 <DialogTitle>{editingSupplierProductIndex !== null ? "Edit" : "Add"} Supplier Product Details</DialogTitle>
                 <DialogDescription>Manage supplier-specific SKU, pricing, and availability for this product.</DialogDescription>
               </DialogHeader>
-              <ScrollArea className="max-h-[60vh] p-1 pr-4">
-                <div className="space-y-4 py-4">
+              <ScrollArea className="max-h-[70vh] p-4">
+                <div className="space-y-4">
                   <FormField control={supplierProductDialogForm.control} name="supplierId"
                     render={({ field }) => (
                       <FormItem>
@@ -576,7 +599,7 @@ export default function EditProductPage() {
                       </FormItem>
                     )} />
                   <FormField control={supplierProductDialogForm.control} name="supplierSku"
-                    render={({ field }) => (<FormItem><FormLabel>Supplier SKU *</FormLabel><FormControl><Input {...field} /></FormControl><FormMessage /></FormItem>)} />
+                    render={({ field }) => (<FormItem><FormLabel>Supplier SKU (Auto-generated) *</FormLabel><FormControl><Input {...field} readOnly /></FormControl><FormMessage /></FormItem>)} />
                   <FormField control={supplierProductDialogForm.control} name="isAvailable"
                     render={({ field }) => (<FormItem className="flex flex-row items-center space-x-3 space-y-0"><FormControl><Checkbox checked={field.value} onCheckedChange={field.onChange} /></FormControl><FormLabel className="font-normal">Is Available from this Supplier</FormLabel></FormItem>)} />
                   
@@ -633,3 +656,4 @@ export default function EditProductPage() {
     </>
   );
 }
+

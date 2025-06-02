@@ -95,6 +95,13 @@ const productFormSchema = z.object({
 type ProductFormData = z.infer<typeof productFormSchema>;
 type SupplierProductFormData = z.infer<typeof supplierProductFormSchema>;
 
+const generateSupplierSku = (supplierName: string, productNameOrSku: string): string => {
+  const supPrefix = supplierName.substring(0, 4).toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const prodPrefix = productNameOrSku.substring(0, 4).toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const randomSuffix = Math.random().toString(36).substring(2, 6).toUpperCase(); // 4 chars
+  return `${supPrefix || 'SUP'}-${prodPrefix || 'PROD'}-${randomSuffix}`;
+};
+
 export default function CreateProductPage() {
   const router = useRouter();
   const { toast } = useToast();
@@ -135,7 +142,7 @@ export default function CreateProductPage() {
     },
   });
   
-  const { fields: supplierSpecificInfoFields, append: appendSupplierSpecificInfo, remove: removeSupplierSpecificInfo, update: updateSupplierSpecificInfo } = useFieldArray({
+  const { fields: supplierSpecificInfoFields, append: appendSupplierSpecificInfo, remove: removeSupplierSpecificInfoFromForm, update: updateSupplierSpecificInfo } = useFieldArray({ // Renamed remove to avoid conflict
     control: form.control, name: "supplierSpecificInfo"
   });
 
@@ -143,6 +150,7 @@ export default function CreateProductPage() {
   const watchedBasePrice = watch("basePrice");
   const watchedDiscountPercentage = watch("discountPercentage");
   const watchedDiscountAmount = watch("discountAmount");
+  const mainProductNameForSku = form.watch("name"); // For SKU generation
 
   const calculatedSellingPrice = useMemo(() => {
     return calculateSellingPrice(
@@ -186,7 +194,11 @@ export default function CreateProductPage() {
   const handleOpenSupplierProductDialog = (index: number | null = null) => {
     if (index !== null && supplierSpecificInfoFields[index]) {
       setEditingSupplierProductIndex(index);
-      supplierProductDialogForm.reset({ ...getValues(`supplierSpecificInfo.${index}`) });
+      const currentData = getValues(`supplierSpecificInfo.${index}`);
+      supplierProductDialogForm.reset({ 
+        ...currentData,
+        supplierSku: currentData.supplierSku || "" // Ensure SKU is reset properly
+      });
     } else {
       setEditingSupplierProductIndex(null);
       supplierProductDialogForm.reset({
@@ -208,6 +220,20 @@ export default function CreateProductPage() {
     setIsSupplierProductDialogOpen(false);
     setEditingSupplierProductIndex(null);
   };
+  
+  const watchedSupplierIdInDialog = supplierProductDialogForm.watch('supplierId');
+  useEffect(() => {
+    if (editingSupplierProductIndex === null && watchedSupplierIdInDialog) { 
+      const selectedSupplier = suppliers.find(s => s.id === watchedSupplierIdInDialog);
+      if (selectedSupplier && mainProductNameForSku) {
+        const newSku = generateSupplierSku(selectedSupplier.name, mainProductNameForSku);
+        supplierProductDialogForm.setValue('supplierSku', newSku, { shouldValidate: true });
+      } else if (selectedSupplier && !mainProductNameForSku) {
+         supplierProductDialogForm.setValue('supplierSku', generateSupplierSku(selectedSupplier.name, "PRODUCT"), { shouldValidate: true });
+      }
+    }
+  }, [watchedSupplierIdInDialog, editingSupplierProductIndex, suppliers, mainProductNameForSku, supplierProductDialogForm]);
+
 
   async function onSubmit(values: ProductFormData) {
     if (!currentUser?.uid) {
@@ -359,7 +385,7 @@ export default function CreateProductPage() {
                 <AccordionItem value="supplier-info">
                   <AccordionTrigger className="text-lg font-semibold">Supplier Pricing & Availability (Optional)</AccordionTrigger>
                   <AccordionContent className="pt-4 space-y-4">
-                    {supplierSpecificInfoFields.filter(field => field.isActive !== false).map((field, index) => ( // Filter out "removed" items
+                    {supplierSpecificInfoFields.filter(field => field.isActive !== false).map((field, index) => ( 
                       <Card key={field.id} className="p-4">
                         <CardHeader className="p-0 pb-2 flex flex-row justify-between items-center">
                            <CardTitle className="text-md">
@@ -369,7 +395,7 @@ export default function CreateProductPage() {
                             <Button type="button" variant="outline" size="sm" onClick={() => handleOpenSupplierProductDialog(index)}>
                               <Icons.Edit className="mr-1 h-3 w-3" /> Edit
                             </Button>
-                            <Button type="button" variant="destructive" size="sm" onClick={() => removeSupplierSpecificInfo(index)}>
+                            <Button type="button" variant="destructive" size="sm" onClick={() => removeSupplierSpecificInfoFromForm(index)}>
                               <Icons.Delete className="mr-1 h-3 w-3" /> Remove
                             </Button>
                            </div>
@@ -413,8 +439,8 @@ export default function CreateProductPage() {
                 <DialogTitle>{editingSupplierProductIndex !== null ? "Edit" : "Add"} Supplier Product Details</DialogTitle>
                 <DialogDescription>Manage supplier-specific SKU, pricing, and availability for this product.</DialogDescription>
               </DialogHeader>
-              <ScrollArea className="max-h-[60vh] p-1 pr-4">
-                <div className="space-y-4 py-4">
+              <ScrollArea className="max-h-[70vh] p-4">
+                <div className="space-y-4">
                   <FormField control={supplierProductDialogForm.control} name="supplierId"
                     render={({ field }) => (
                       <FormItem>
@@ -427,7 +453,7 @@ export default function CreateProductPage() {
                       </FormItem>
                     )} />
                   <FormField control={supplierProductDialogForm.control} name="supplierSku"
-                    render={({ field }) => (<FormItem><FormLabel>Supplier SKU *</FormLabel><FormControl><Input {...field} /></FormControl><FormMessage /></FormItem>)} />
+                    render={({ field }) => (<FormItem><FormLabel>Supplier SKU (Auto-generated) *</FormLabel><FormControl><Input {...field} readOnly /></FormControl><FormMessage /></FormItem>)} />
                   <FormField control={supplierProductDialogForm.control} name="isAvailable"
                     render={({ field }) => (<FormItem className="flex flex-row items-center space-x-3 space-y-0"><FormControl><Checkbox checked={field.value} onCheckedChange={field.onChange} /></FormControl><FormLabel className="font-normal">Is Available from this Supplier</FormLabel></FormItem>)} />
                   
