@@ -124,24 +124,14 @@ export default function QuotationsPage() {
   };
 
   const handleEditQuotation = (quotationId: string) => {
-    console.log("Navigate to edit page or open edit modal for:", quotationId);
-    // router.push(`/quotations/${quotationId}/edit`); // Or open modal
+    // Navigate to detail page where edit functionality (entering supplier response) exists.
+    router.push(`/quotations/${quotationId}`); 
   };
 
   const handleMarkAsReceived = (quotationId: string) => {
-    console.log("Open mark as received modal for:", quotationId);
-     // This would typically open a modal similar to the one on the detail page
-     // For now, we can navigate to the detail page where the modal exists
+    // Navigate to detail page where "Enter Supplier Response" modal can be triggered.
     router.push(`/quotations/${quotationId}`);
   };
-
-  const handleAwardQuotation = (quotationId: string) => {
-     console.log("Trigger award process for:", quotationId);
-    // This would involve status update and potentially PO generation flow
-    // For now, direct to detail page to use existing Award button
-    router.push(`/quotations/${quotationId}`);
-  };
-
 
   return (
     <>
@@ -264,20 +254,12 @@ export default function QuotationsPage() {
                         <Icons.View className="h-4 w-4" />
                       </Button>
                       {canManage && quotation.status === "Sent" && (
-                        <Button variant="outline" size="sm" onClick={() => handleEditQuotation(quotation.id)} title="Edit Quotation">
+                        <Button variant="outline" size="sm" onClick={() => handleEditQuotation(quotation.id)} title="Enter/Edit Supplier Response">
                           <Icons.Edit className="h-4 w-4" />
                         </Button>
                       )}
-                      {canManage && quotation.status === "Sent" && (
-                         <Button variant="outline" size="sm" onClick={() => handleMarkAsReceived(quotation.id)} title="Mark as Received">
-                            <Icons.Package className="h-4 w-4" /> {/* Placeholder icon */}
-                        </Button>
-                      )}
-                       {canManage && (quotation.status === "Received" || quotation.status === "Partially Awarded") && (
-                         <Button variant="default" size="sm" onClick={() => handleAwardQuotation(quotation.id)} title="Award Quotation" className="bg-green-500 hover:bg-green-600 text-white">
-                            <Icons.DollarSign className="h-4 w-4" /> {/* Placeholder, consider Award icon */}
-                        </Button>
-                      )}
+                      {/* Removed Mark as Received button as edit serves similar purpose by opening detail page */}
+                      {/* Removed Award Quotation button from list view */}
                     </TableCell>
                   </TableRow>
                 ))

@@ -181,6 +181,13 @@ export default function QuotationDetailPage() {
       toast({ title: "Permission Denied", description: "You cannot update the status.", variant: "destructive" });
       return;
     }
+    // Prevent changing status to "Awarded" or "Partially Awarded" from this page directly
+    if (statusToUpdate === "Awarded" || statusToUpdate === "Partially Awarded") {
+      toast({ title: "Action Not Allowed", description: `To mark as '${statusToUpdate}', please use the 'Compare Quotations' feature on the Requisition page.`, variant: "default" });
+      setSelectedStatus(quotation.status); // Revert dropdown if they tried to select it
+      return;
+    }
+
     setIsUpdatingStatus(true);
     try {
       await updateQuotationStatus(quotationId, statusToUpdate, currentUser.uid);
@@ -279,7 +286,6 @@ export default function QuotationDetailPage() {
   const canManage = role === 'admin' || role === 'superadmin';
   const canEditRequestDetails = canManage && quotation.status === "Sent";
   const canEnterOrEditResponse = canManage && (quotation.status === "Sent" || quotation.status === "Received");
-  const canAward = canManage && (quotation.status === "Received" || quotation.status === "Partially Awarded");
   const canReject = canManage && (quotation.status === "Received" || quotation.status === "Partially Awarded");
 
   const totalAdditionalCostsValue = quotation.additionalCosts?.reduce((sum, cost) => sum + Number(cost.amount), 0) || 0;
@@ -303,11 +309,7 @@ export default function QuotationDetailPage() {
                 {quotation.status === "Sent" ? "Enter Supplier Response" : "Edit Supplier Response"}
               </Button>
             )}
-             {canAward && (
-              <Button onClick={() => handleStatusUpdate("Awarded")} className="bg-green-500 hover:bg-green-600 text-white">
-                <Icons.DollarSign className="mr-2 h-4 w-4" /> Award Quotation
-              </Button>
-            )}
+            {/* Award Quotation button removed from here */}
             {canReject && (
               <Button onClick={() => handleStatusUpdate("Rejected")} variant="destructive">
                 <Icons.Delete className="mr-2 h-4 w-4" /> Reject Quotation
@@ -391,14 +393,26 @@ export default function QuotationDetailPage() {
                         </SelectTrigger>
                         <SelectContent>
                         {QUOTATION_STATUSES.map(s => (
-                            <SelectItem key={s} value={s} disabled={s === "Sent" && quotation.status !== "Sent" }>{s}</SelectItem>
+                            <SelectItem 
+                                key={s} 
+                                value={s} 
+                                disabled={
+                                    (s === "Sent" && quotation.status !== "Sent") || 
+                                    s === "Awarded" || s === "Partially Awarded" // Disable direct awarding from dropdown
+                                }
+                            >
+                                {s}
+                            </SelectItem>
                         ))}
                         </SelectContent>
                     </Select>
-                    <Button onClick={() => handleStatusUpdate()} disabled={isUpdatingStatus || selectedStatus === quotation.status}>
+                    <Button onClick={() => handleStatusUpdate()} disabled={isUpdatingStatus || selectedStatus === quotation.status || selectedStatus === "Awarded" || selectedStatus === "Partially Awarded"}>
                         {isUpdatingStatus ? <Icons.Logo className="animate-spin" /> : "Save"}
                     </Button>
                     </div>
+                     {(selectedStatus === "Awarded" || selectedStatus === "Partially Awarded") && (
+                        <p className="text-xs text-muted-foreground">Awarding is done via the Requisition's 'Compare Quotations' page.</p>
+                    )}
                 </div>
             </CardFooter>
            )}
