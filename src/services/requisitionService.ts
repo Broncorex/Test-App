@@ -191,10 +191,14 @@ export const processAndFinalizeAwards = async (
       console.log(`[RequisitionService] Path to requiredProducts for query: ${requiredProductsSubCollectionPath}`);
       
       const requiredProductsCollectionRef = collection(db, requiredProductsSubCollectionPath);
-      console.log(`[RequisitionService] Constructed requiredProductsCollectionRef object:`, requiredProductsCollectionRef); // Log the object
+      console.log(`[RequisitionService] Constructed requiredProductsCollectionRef object:`, requiredProductsCollectionRef);
+
+      // Create an explicit query from the collection reference
+      const queryForRequiredProducts = query(requiredProductsCollectionRef);
 
       console.log(`[RequisitionService] Attempting to get requiredProducts for ${requisitionId}. Query Collection Path: ${requiredProductsSubCollectionPath}`);
-      const requiredProductsSnapForInitialRead = await transaction.get(requiredProductsCollectionRef); // Pass CollectionReference directly
+      // Pass the explicit Query object to transaction.get()
+      const requiredProductsSnapForInitialRead = await transaction.get(queryForRequiredProducts); 
       console.log(`[RequisitionService] Successfully read ${requiredProductsSnapForInitialRead.size} requiredProduct documents for ${requisitionId}.`);
       requiredProductsSnapForInitialRead.forEach(docSnap => {
          console.log(`[RequisitionService] RequiredProduct Doc ID: ${docSnap.id}, Data:`, docSnap.data());
@@ -253,7 +257,11 @@ export const processAndFinalizeAwards = async (
       
       console.log(`[RequisitionService] Re-evaluating requisition status for ${requisitionId}. Path for required products subcollection: ${requiredProductsSubCollectionPath}`);
       const updatedRequiredProductsCollectionRef = collection(db, requiredProductsSubCollectionPath);
-      const updatedRequiredProductsSnapAfterAwards = await transaction.get(updatedRequiredProductsCollectionRef);
+      
+      // Create an explicit query from the collection reference for the second read
+      const queryForUpdatedRequiredProducts = query(updatedRequiredProductsCollectionRef);
+      
+      const updatedRequiredProductsSnapAfterAwards = await transaction.get(queryForUpdatedRequiredProducts);
       console.log(`[RequisitionService] Fetched ${updatedRequiredProductsSnapAfterAwards.size} requiredProducts again for status check.`);
 
       let allRequirementsMet = true;
