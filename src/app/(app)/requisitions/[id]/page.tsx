@@ -18,7 +18,7 @@ import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Icons } from "@/components/icons";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogClose } from "@/components/ui/dialog";
-import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
+import { Form, FormControl, FormField, FormItem, FormMessage as ShadFormMessage, FormLabel as ShadFormLabel } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Calendar } from "@/components/ui/calendar";
@@ -39,12 +39,24 @@ import { Separator } from "@/components/ui/separator";
 
 const supplierQuoteDetailSchema = z.object({
   supplierId: z.string(),
-  supplierName: z.string(), // For display convenience
+  supplierName: z.string(), 
   selectedProductIds: z.array(z.string()).min(1, "Must select at least one product for this supplier."),
 });
 
 const quotationRequestFormSchema = z.object({
-  suppliersToQuote: z.array(supplierQuoteDetailSchema).min(1, "At least one supplier must be configured for quotation."),
+  suppliersToQuote: z.array(supplierQuoteDetailSchema)
+    .min(1, "At least one supplier must be configured for quotation.")
+    .superRefine((suppliers, ctx) => {
+        suppliers.forEach((supplier, index) => {
+            if (supplier.selectedProductIds.length === 0) {
+                ctx.addIssue({
+                    code: z.ZodIssueCode.custom,
+                    message: `Supplier ${supplier.supplierName} must have at least one product selected.`,
+                    path: ["suppliersToQuote", index, "selectedProductIds"],
+                });
+            }
+        });
+    }),
   responseDeadline: z.date({ required_error: "Response deadline is required." }),
   notes: z.string().optional(),
 });
@@ -82,7 +94,7 @@ export default function RequisitionDetailPage() {
     resolver: zodResolver(quotationRequestFormSchema),
     defaultValues: {
       suppliersToQuote: [],
-      responseDeadline: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      responseDeadline: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // Default 7 days from now
       notes: "",
     },
   });
@@ -135,19 +147,18 @@ export default function RequisitionDetailPage() {
     for (const supplier of availableSuppliers) {
       links[supplier.id] = {};
       for (const reqProduct of requisition.requiredProducts) {
-        // Create a promise for each fetch operation
         const promise = getSupplierProduct(supplier.id, reqProduct.productId)
           .then(link => {
             links[supplier.id][reqProduct.productId] = link;
           })
           .catch(error => {
             console.error(`Error fetching link for supplier ${supplier.id}, product ${reqProduct.productId}:`, error);
-            links[supplier.id][reqProduct.productId] = null;
+            links[supplier.id][reqProduct.productId] = null; // Ensure property exists
           });
         productFetchPromises.push(promise);
       }
     }
-    await Promise.all(productFetchPromises); // Wait for all fetches to complete
+    await Promise.all(productFetchPromises);
     setAllSupplierProductLinks(links);
     setIsLoadingAllSupplierLinks(false);
   }, [requisition?.requiredProducts, availableSuppliers]);
@@ -160,13 +171,11 @@ export default function RequisitionDetailPage() {
         responseDeadline: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
         notes: requisition?.notes || "",
     });
-    setAllSupplierProductLinks({}); // Clear old links
+    setAllSupplierProductLinks({});
 
     try {
       const suppliers = await getAllSuppliers(true);
       setAvailableSuppliers(suppliers);
-      // Note: prepareSupplierProductLinks will be called by the useEffect below
-      // once availableSuppliers is set and dialog is open.
     } catch (error) {
       toast({ title: "Error", description: "Could not load suppliers for quotation request.", variant: "destructive" });
     }
@@ -235,7 +244,6 @@ export default function RequisitionDetailPage() {
         continue;
       }
       try {
-        // The backend createQuotation service needs to be modified to accept productDetailsToRequest
         const quotationData: CreateQuotationRequestData = {
           requisitionId: requisition.id,
           supplierId: supplierQuote.supplierId,
@@ -249,13 +257,7 @@ export default function RequisitionDetailPage() {
                 requiredQuantity: rp.requiredQuantity,
             }))
         };
-        
-        // console.log("Calling createQuotation with (frontend):", JSON.stringify(quotationData, null, 2));
-        // The actual call to createQuotation will occur here.
-        // The current signature in quotationService.ts might need adjustment
-        // to accept `productDetailsToRequest` instead of inferring from the whole requisition.
         await createQuotation(quotationData, currentUser.uid);
-
         successCount++;
       } catch (error: any) {
         console.error(`Error creating quotation for supplier ${supplierQuote.supplierName}:`, error);
@@ -432,7 +434,7 @@ export default function RequisitionDetailPage() {
            {canManageStatus && (
             <CardFooter className="border-t pt-4">
                 <div className="w-full space-y-2">
-                    <Label htmlFor="status-update" className="font-semibold">Update Status:</Label>
+                    <ShadFormLabel htmlFor="status-update" className="font-semibold">Update Status:</ShadFormLabel>
                     <div className="flex gap-2">
                     <Select value={selectedStatus} onValueChange={(value) => setSelectedStatus(value as RequisitionStatus)}>
                         <SelectTrigger id="status-update" className="flex-1">
@@ -490,13 +492,13 @@ export default function RequisitionDetailPage() {
       </div>
 
       <Dialog open={isQuoteRequestDialogOpen} onOpenChange={setIsQuoteRequestDialogOpen}>
-        <DialogContent className="sm:max-w-2xl md:max-w-3xl flex flex-col max-h-[90vh]"> {/* Increased max-width */}
+        <DialogContent className="sm:max-w-2xl md:max-w-3xl flex flex-col max-h-[90vh]">
            <Form {...quoteRequestForm}>
             <form onSubmit={quoteRequestForm.handleSubmit(handleQuoteRequestSubmit)} className="flex flex-col flex-grow min-h-0">
               <DialogHeader>
                 <DialogTitle className="font-headline">Request Quotations</DialogTitle>
                 <DialogDescription>
-                  Select suppliers, specify products for each, and set a response deadline for requisition: {requisition.id.substring(0,8)}...
+                  Select suppliers, choose products for each, and set a response deadline for requisition: {requisition.id.substring(0,8)}...
                 </DialogDescription>
               </DialogHeader>
               
@@ -523,9 +525,9 @@ export default function RequisitionDetailPage() {
                   render={() => (
                     <FormItem>
                       <div className="mb-2">
-                        <FormLabel className="text-base font-semibold">Suppliers to Quote *</FormLabel>
+                        <ShadFormLabel className="text-base font-semibold">Suppliers to Quote *</ShadFormLabel>
                         <p className="text-sm text-muted-foreground">
-                          Select suppliers, then expand to choose products for each. Price ranges are shown if available.
+                          Select suppliers, then expand to choose products for each. Applicable price ranges are shown.
                         </p>
                       </div>
                       {isLoadingSuppliers ? <p>Loading suppliers...</p> :
@@ -556,7 +558,7 @@ export default function RequisitionDetailPage() {
                                     checked={isSupplierSelectedForQuoting}
                                     disabled={!hasAnyQuotableProduct && !isSupplierSelectedForQuoting}
                                     onCheckedChange={(checked) => {
-                                      if (hasAnyQuotableProduct || !checked) { // Allow unchecking even if no quotable products
+                                      if (hasAnyQuotableProduct || !checked) {
                                         toggleSupplierForQuoting(supplier, !!checked);
                                         if (checked && !expandedSupplierProducts[supplier.id] && hasAnyQuotableProduct) {
                                           setExpandedSupplierProducts(prev => ({ ...prev, [supplier.id]: true }));
@@ -565,9 +567,9 @@ export default function RequisitionDetailPage() {
                                     }}
                                     onClick={(e) => e.stopPropagation()} 
                                   />
-                                  <Label htmlFor={`supplier-checkbox-${supplier.id}`} className={cn("font-semibold text-md", !hasAnyQuotableProduct && "text-muted-foreground")}>
+                                  <ShadFormLabel htmlFor={`supplier-checkbox-${supplier.id}`} className={cn("font-semibold text-md", !hasAnyQuotableProduct && "text-muted-foreground")}>
                                     {supplier.name}
-                                  </Label>
+                                  </ShadFormLabel>
                                 </div>
                                 {hasAnyQuotableProduct && (
                                   <Button type="button" variant="ghost" size="sm" className="p-1 h-auto">
@@ -595,6 +597,18 @@ export default function RequisitionDetailPage() {
                                         const canQuoteThisProduct = !!(link && link.isActive && link.isAvailable);
                                         const currentSupplierFormData = suppliersToQuoteFields[formSupplierIndex];
 
+                                        let applicablePriceRange: PriceRange | null = null;
+                                        if (link && link.priceRanges) {
+                                          for (const range of link.priceRanges) {
+                                            const meetsMin = reqProduct.requiredQuantity >= range.minQuantity;
+                                            const meetsMax = range.maxQuantity === null || reqProduct.requiredQuantity <= range.maxQuantity;
+                                            if (meetsMin && meetsMax) {
+                                              applicablePriceRange = range;
+                                              break; 
+                                            }
+                                          }
+                                        }
+
                                         return (
                                           <div key={reqProduct.productId} className="p-2 rounded-md border bg-background relative">
                                             <FormField
@@ -614,9 +628,9 @@ export default function RequisitionDetailPage() {
                                                     />
                                                   </FormControl>
                                                   <div className="flex-1">
-                                                    <FormLabel className="font-normal text-sm">
+                                                    <ShadFormLabel className="font-normal text-sm">
                                                       {reqProduct.productName} (Req. Qty: {reqProduct.requiredQuantity})
-                                                    </FormLabel>
+                                                    </ShadFormLabel>
                                                     {!canQuoteThisProduct && (
                                                       <p className="text-xs text-destructive">This supplier does not offer this product or it's unavailable.</p>
                                                     )}
@@ -628,13 +642,17 @@ export default function RequisitionDetailPage() {
                                               <div className="mt-1 pl-8 text-xs">
                                                 <p className="font-medium text-muted-foreground">Current Price Ranges:</p>
                                                 <ul className="list-disc list-inside">
-                                                  {link.priceRanges.map((range, idx) => (
-                                                    <li key={idx}>
-                                                      Qty {range.minQuantity}{range.maxQuantity ? `-${range.maxQuantity}` : '+'}
-                                                      : ${range.price?.toFixed(2) ?? 'N/A'} ({range.priceType})
-                                                      {range.additionalConditions && <span className="text-muted-foreground text-[10px]"> ({range.additionalConditions})</span>}
-                                                    </li>
-                                                  ))}
+                                                  {link.priceRanges.map((range, idx) => {
+                                                    const isApplicable = applicablePriceRange === range;
+                                                    return (
+                                                      <li key={idx} className={cn(isApplicable && "bg-primary/10 p-1 rounded-sm")}>
+                                                        Qty {range.minQuantity}{range.maxQuantity ? `-${range.maxQuantity}` : '+'}
+                                                        : <span className={cn(isApplicable && "font-bold text-primary")}>${range.price?.toFixed(2) ?? 'N/A'}</span> ({range.priceType})
+                                                        {range.additionalConditions && <span className="text-muted-foreground text-[10px]"> ({range.additionalConditions})</span>}
+                                                        {isApplicable && <Badge variant="outline" className="ml-1 text-xs px-1 py-0 h-auto border-primary text-primary">Applicable</Badge>}
+                                                      </li>
+                                                    );
+                                                  })}
                                                 </ul>
                                               </div>
                                             )}
@@ -645,9 +663,9 @@ export default function RequisitionDetailPage() {
                                         );
                                       })}
                                       {quoteRequestForm.formState.errors.suppliersToQuote?.[formSupplierIndex]?.selectedProductIds && (
-                                          <p className="text-sm font-medium text-destructive mt-1">
+                                          <ShadFormMessage className="mt-1">
                                               {quoteRequestForm.formState.errors.suppliersToQuote?.[formSupplierIndex]?.selectedProductIds?.message}
-                                          </p>
+                                          </ShadFormMessage>
                                       )}
                                     </div>
                                   )}
@@ -659,14 +677,14 @@ export default function RequisitionDetailPage() {
                       </ScrollArea>
                       }
                       {quoteRequestForm.formState.errors.suppliersToQuote && typeof quoteRequestForm.formState.errors.suppliersToQuote.message === 'string' && (
-                         <p className="text-sm font-medium text-destructive pt-1">
+                         <ShadFormMessage className="pt-1">
                             {quoteRequestForm.formState.errors.suppliersToQuote.message}
-                        </p>
+                        </ShadFormMessage>
                       )}
                        {quoteRequestForm.formState.errors.suppliersToQuote?.root && (
-                         <p className="text-sm font-medium text-destructive pt-1">
+                         <ShadFormMessage className="pt-1">
                             {quoteRequestForm.formState.errors.suppliersToQuote.root.message}
-                        </p>
+                        </ShadFormMessage>
                       )}
                     </FormItem>
                   )}
@@ -677,7 +695,7 @@ export default function RequisitionDetailPage() {
                   name="responseDeadline"
                   render={({ field }) => (
                     <FormItem className="flex flex-col">
-                      <FormLabel>Response Deadline *</FormLabel>
+                      <ShadFormLabel>Response Deadline *</ShadFormLabel>
                       <Popover>
                         <PopoverTrigger asChild>
                           <FormControl>
@@ -691,7 +709,7 @@ export default function RequisitionDetailPage() {
                           <Calendar mode="single" selected={field.value} onSelect={field.onChange} disabled={(date) => date < new Date(new Date().setDate(new Date().getDate() -1 )) } initialFocus/>
                         </PopoverContent>
                       </Popover>
-                      <FormMessage />
+                      <ShadFormMessage />
                     </FormItem>
                   )}
                 />
@@ -700,9 +718,9 @@ export default function RequisitionDetailPage() {
                   name="notes"
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>Notes to Suppliers (Optional)</FormLabel>
+                      <ShadFormLabel>Notes to Suppliers (Optional)</ShadFormLabel>
                       <FormControl><Textarea placeholder="General instructions for all selected suppliers." {...field} /></FormControl>
-                      <FormMessage />
+                      <ShadFormMessage />
                     </FormItem>
                   )}
                 />
@@ -725,3 +743,4 @@ export default function RequisitionDetailPage() {
     </>
   );
 }
+
