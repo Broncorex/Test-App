@@ -31,7 +31,8 @@ import Link from "next/link";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
-import { Label } from "@/components/ui/label";
+import { Label as ShadLabel } from "@/components/ui/label"; // Standard Label for non-form contexts
+import { ComparisonDialog } from "@/components/quotations/comparison-dialog";
 
 
 const receivedQuotationItemSchema = z.object({
@@ -78,7 +79,12 @@ export default function QuotationDetailPage() {
   
   const [isReceiveDialogOpen, setIsReceiveDialogOpen] = useState(false);
   const [isSubmittingReceive, setIsSubmittingReceive] = useState(false);
-  const [hasOtherReceivedQuotes, setHasOtherReceivedQuotes] = useState(false);
+  
+  const [isComparisonDialogOpen, setIsComparisonDialogOpen] = useState(false);
+  const [comparisonQuotations, setComparisonQuotations] = useState<Quotation[]>([]);
+  const [isLoadingComparison, setIsLoadingComparison] = useState(false);
+  const [showComparisonCard, setShowComparisonCard] = useState(false);
+
 
   const receiveForm = useForm<ReceiveQuotationFormData>({
     resolver: zodResolver(receiveQuotationFormSchema),
@@ -129,11 +135,16 @@ export default function QuotationDetailPage() {
             details: detailsForForm,
           });
         }
-        // Check for other received quotations for the same requisition
-        if (fetchedQuotation.requisitionId && (fetchedQuotation.status === "Received" || fetchedQuotation.status === "Partially Awarded" || fetchedQuotation.status === "Awarded" || fetchedQuotation.status === "Lost")) {
+        
+        if (fetchedQuotation.requisitionId && (fetchedQuotation.status === "Received" || fetchedQuotation.status === "Partially Awarded" || fetchedQuotation.status === "Awarded")) {
              const allQuotesForRequisition = await getAllQuotations({ requisitionId: fetchedQuotation.requisitionId });
-             const otherReceived = allQuotesForRequisition.filter(q => q.id !== fetchedQuotation.id && (q.status === "Received" || q.status === "Partially Awarded" || q.status === "Awarded"));
-             setHasOtherReceivedQuotes(otherReceived.length > 0);
+             const otherRelevantQuotes = allQuotesForRequisition.filter(q => 
+                q.id !== fetchedQuotation.id && 
+                (q.status === "Received" || q.status === "Partially Awarded" || q.status === "Awarded")
+             );
+             setShowComparisonCard(otherRelevantQuotes.length > 0);
+        } else {
+            setShowComparisonCard(false);
         }
 
 
@@ -175,8 +186,9 @@ export default function QuotationDetailPage() {
     try {
       await updateQuotationStatus(quotationId, statusToUpdate, currentUser.uid);
       setQuotation(prev => prev ? { ...prev, status: statusToUpdate, updatedAt: Timestamp.now() } : null);
-      setSelectedStatus(statusToUpdate); // Update local selectedStatus as well
+      setSelectedStatus(statusToUpdate); 
       toast({ title: "Status Updated", description: `Quotation status changed to ${statusToUpdate}.` });
+      fetchQuotationData(); // Re-fetch to update comparison card visibility
     } catch (error) {
       console.error("Error updating quotation status:", error);
       toast({ title: "Update Failed", description: "Could not update quotation status.", variant: "destructive" });
@@ -208,6 +220,22 @@ export default function QuotationDetailPage() {
       toast({ title: "Submission Failed", description: error.message || "Could not record supplier response.", variant: "destructive" });
     }
     setIsSubmittingReceive(false);
+  };
+
+  const handleOpenComparisonDialog = async () => {
+    if (!quotation || !quotation.requisitionId) return;
+    setIsLoadingComparison(true);
+    setIsComparisonDialogOpen(true);
+    try {
+        const allQuotes = await getAllQuotations({ requisitionId: quotation.requisitionId });
+        // Filter for only relevant statuses for comparison
+        setComparisonQuotations(allQuotes.filter(q => ["Received", "Awarded", "Partially Awarded", "Lost"].includes(q.status)));
+    } catch (error) {
+        console.error("Error fetching quotations for comparison:", error);
+        toast({ title: "Error", description: "Could not load quotations for comparison.", variant: "destructive" });
+        setIsComparisonDialogOpen(false); // Close dialog on error
+    }
+    setIsLoadingComparison(false);
   };
 
   const formatTimestampDate = (timestamp?: Timestamp | null): string => {
@@ -268,7 +296,7 @@ export default function QuotationDetailPage() {
   const canManageStatus = role === 'admin' || role === 'superadmin';
   const canEnterResponse = canManageStatus && quotation.status === "Sent";
   const canEditResponse = canManageStatus && quotation.status === "Received";
-  const canEditQuotation = canManageStatus && quotation.status === "Sent"; // Before it's received
+  const canEditQuotationRequest = canManageStatus && quotation.status === "Sent";
   const canAward = canManageStatus && (quotation.status === "Received" || quotation.status === "Partially Awarded");
   const canReject = canManageStatus && (quotation.status === "Received" || quotation.status === "Partially Awarded");
 
@@ -279,7 +307,7 @@ export default function QuotationDetailPage() {
         title={`Quotation: ${quotation.id.substring(0,8)}...`}
         description={`For Requisition: ${quotation.requisitionId.substring(0,8)}... | Supplier: ${quotation.supplierName || quotation.supplierId}`}
         actions={
-          <div className="flex gap-2">
+          <div className="flex gap-2 flex-wrap">
             {canEnterResponse && (
               <Button onClick={() => setIsReceiveDialogOpen(true)}>
                 <Icons.Package className="mr-2 h-4 w-4" /> 
@@ -292,8 +320,8 @@ export default function QuotationDetailPage() {
                 Edit Supplier Response
               </Button>
             )}
-            {canEditQuotation && (
-              <Button onClick={() => console.log("Open Edit Quotation (request details) form")} variant="outline" disabled>
+            {canEditQuotationRequest && (
+              <Button onClick={() => console.log("Open Edit Quotation Request Details (form similar to receive, but for request fields)")} variant="outline">
                 <Icons.Edit className="mr-2 h-4 w-4" />
                 Edit Request Details
               </Button>
@@ -353,7 +381,7 @@ export default function QuotationDetailPage() {
            {canManageStatus && (
             <CardFooter className="border-t pt-4">
                 <div className="w-full space-y-2">
-                    <Label htmlFor="status-update" className="font-semibold">Update Status:</Label>
+                    <ShadLabel htmlFor="status-update" className="font-semibold">Update Status:</ShadLabel>
                     <div className="flex gap-2">
                     <Select value={selectedStatus} onValueChange={(value) => setSelectedStatus(value as QuotationStatus)}>
                         <SelectTrigger id="status-update" className="flex-1">
@@ -361,7 +389,7 @@ export default function QuotationDetailPage() {
                         </SelectTrigger>
                         <SelectContent>
                         {QUOTATION_STATUSES.map(s => (
-                            <SelectItem key={s} value={s} disabled={s === "Sent" && quotation.status !== "Sent" /* Prevent reverting to Sent unless it was Sent */ }>{s}</SelectItem>
+                            <SelectItem key={s} value={s} disabled={s === "Sent" && quotation.status !== "Sent" }>{s}</SelectItem>
                         ))}
                         </SelectContent>
                     </Select>
@@ -418,7 +446,7 @@ export default function QuotationDetailPage() {
         </Card>
       </div>
 
-      {hasOtherReceivedQuotes && canManageStatus && (
+      {showComparisonCard && canManageStatus && (
         <Card className="mt-6 md:col-span-3">
           <CardHeader>
             <CardTitle className="font-headline">Compare Quotations</CardTitle>
@@ -427,10 +455,10 @@ export default function QuotationDetailPage() {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <Button onClick={() => console.log("Navigate to comparison view for requisition:", quotation.requisitionId)}>
-              <Icons.LayoutList className="mr-2 h-4 w-4" /> Compare All Quotations
+            <Button onClick={handleOpenComparisonDialog} disabled={isLoadingComparison}>
+              {isLoadingComparison ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.LayoutList className="mr-2 h-4 w-4" /> }
+              Compare All Quotations
             </Button>
-            <p className="text-sm text-muted-foreground mt-2">This feature will allow side-by-side comparison of all received quotes for this requisition.</p>
           </CardContent>
         </Card>
       )}
@@ -566,6 +594,17 @@ export default function QuotationDetailPage() {
           </Form>
         </DialogContent>
       </Dialog>
+
+      {quotation && (
+        <ComparisonDialog
+          isOpen={isComparisonDialogOpen}
+          onClose={() => setIsComparisonDialogOpen(false)}
+          quotations={comparisonQuotations}
+          isLoading={isLoadingComparison}
+          currentRequisitionId={quotation.requisitionId}
+          currentQuotationId={quotation.id}
+        />
+      )}
     </>
   );
 }
