@@ -18,7 +18,7 @@ import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Icons } from "@/components/icons";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogClose } from "@/components/ui/dialog";
-import { Form, FormControl, FormField, FormItem, FormMessage as ShadFormMessage, FormLabel as ShadFormLabelFromHookForm } from "@/components/ui/form"; // Renamed alias to avoid confusion
+import { Form, FormControl, FormField, FormItem, FormMessage as ShadFormMessage, FormLabel as ShadFormLabelFromHookForm } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Calendar } from "@/components/ui/calendar";
@@ -33,8 +33,9 @@ import { getSupplierProduct } from "@/services/supplierProductService";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
-import { Label } from "@/components/ui/label"; // Standard Label for non-form contexts
+import { Label } from "@/components/ui/label"; 
 import { Separator } from "@/components/ui/separator";
+import Link from "next/link";
 
 
 const supplierQuoteDetailSchema = z.object({
@@ -94,7 +95,7 @@ export default function RequisitionDetailPage() {
     resolver: zodResolver(quotationRequestFormSchema),
     defaultValues: {
       suppliersToQuote: [],
-      responseDeadline: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // Default 7 days from now
+      responseDeadline: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), 
       notes: "",
     },
   });
@@ -153,7 +154,7 @@ export default function RequisitionDetailPage() {
           })
           .catch(error => {
             console.error(`Error fetching link for supplier ${supplier.id}, product ${reqProduct.productId}:`, error);
-            links[supplier.id][reqProduct.productId] = null; // Ensure property exists
+            links[supplier.id][reqProduct.productId] = null; 
           });
         productFetchPromises.push(promise);
       }
@@ -305,7 +306,7 @@ export default function RequisitionDetailPage() {
 
   const handleSaveNotes = async () => {
     if (!requisition || !currentUser || !canManageStatus) return;
-    setIsUpdatingStatus(true);
+    setIsUpdatingStatus(true); // Use the same state for simplicity or create a new one
     try {
       await updateRequisition(requisitionId, { notes: editableNotes });
       setRequisition(prev => prev ? { ...prev, notes: editableNotes, updatedAt: Timestamp.now() } : null);
@@ -367,6 +368,7 @@ export default function RequisitionDetailPage() {
 
   const canManageStatus = role === 'admin' || role === 'superadmin';
   const canRequestQuotes = canManageStatus && (requisition.status === "Pending Quotation" || requisition.status === "Quoted");
+  const canCompareQuotes = canManageStatus && ["Quoted", "Received", "Awarded", "Partially Awarded", "Lost", "Completed", "PO in Progress"].includes(requisition.status);
 
 
   return (
@@ -375,11 +377,19 @@ export default function RequisitionDetailPage() {
         title={`Requisition: ${requisition.id.substring(0,8)}...`}
         description={`Details for requisition created on ${new Date(requisition.creationDate.seconds * 1000).toLocaleDateString()}`}
         actions={
-          <div className="flex gap-2">
+          <div className="flex gap-2 flex-wrap">
             {canRequestQuotes && (
               <Button onClick={handleOpenQuoteRequestDialog} disabled={isLoadingSuppliers || isLoadingAllSupplierLinks}>
                  { (isLoadingSuppliers || isLoadingAllSupplierLinks) ? <Icons.Logo className="mr-2 h-4 w-4 animate-spin" /> : <Icons.Send className="mr-2 h-4 w-4" />}
                  Request Quotations
+              </Button>
+            )}
+            {canCompareQuotes && (
+              <Button asChild variant="outline">
+                <Link href={`/requisitions/${requisition.id}/compare-quotations`}>
+                    <Icons.LayoutList className="mr-2 h-4 w-4" />
+                    Compare Linked Quotations
+                </Link>
               </Button>
             )}
             <Button onClick={() => router.back()} variant="outline">Back to List</Button>
@@ -599,7 +609,7 @@ export default function RequisitionDetailPage() {
 
                                         let applicablePriceRange: PriceRange | null = null;
                                         if (link && link.priceRanges) {
-                                          // Sort ranges by minQuantity to ensure correct selection for overlapping/adjacent ranges
+                                          
                                           const sortedRanges = [...link.priceRanges].sort((a,b) => a.minQuantity - b.minQuantity);
                                           for (const range of sortedRanges) {
                                             const meetsMin = reqProduct.requiredQuantity >= range.minQuantity;
@@ -647,7 +657,7 @@ export default function RequisitionDetailPage() {
                                                   {link.priceRanges.map((range, idx) => {
                                                     const isApplicable = applicablePriceRange === range;
                                                     return (
-                                                      <li key={idx} className={cn(isApplicable && "bg-primary/10 p-1 rounded-sm")}>
+                                                      <li key={idx} className={cn("py-0.5",isApplicable && "bg-primary/10 p-1 rounded-sm")}>
                                                         Qty {range.minQuantity}{range.maxQuantity ? `-${range.maxQuantity}` : '+'}
                                                         : <span className={cn(isApplicable && "font-bold text-primary")}>${range.price?.toFixed(2) ?? 'N/A'}</span> ({range.priceType})
                                                         {range.additionalConditions && <span className="text-muted-foreground text-[10px]"> ({range.additionalConditions})</span>}
@@ -746,3 +756,4 @@ export default function RequisitionDetailPage() {
   );
 }
 
+    
