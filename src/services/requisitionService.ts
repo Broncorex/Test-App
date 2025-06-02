@@ -191,30 +191,27 @@ export const processAndFinalizeAwards = async (
       console.log(`[RequisitionService] Path to requiredProducts for query: ${requiredProductsSubCollectionPath}`);
       
       const requiredProductsCollectionRef = collection(db, requiredProductsSubCollectionPath);
-      console.log(`[RequisitionService] Constructed requiredProductsCollectionRef object:`, requiredProductsCollectionRef);
-
-      // Create an explicit query from the collection reference
-      const queryForRequiredProducts = query(requiredProductsCollectionRef);
-
+      const queryForRequiredProducts = query(requiredProductsCollectionRef, orderBy("productName")); // Added orderBy
+      console.log(`[RequisitionService] Constructed queryForRequiredProducts object:`, queryForRequiredProducts);
+      
       console.log(`[RequisitionService] Attempting to get requiredProducts for ${requisitionId}. Query Collection Path: ${requiredProductsSubCollectionPath}`);
-      // Pass the explicit Query object to transaction.get()
-      const requiredProductsSnapForInitialRead = await transaction.get(queryForRequiredProducts); 
+      const requiredProductsSnapForInitialRead = await transaction.get(queryForRequiredProducts);
       console.log(`[RequisitionService] Successfully read ${requiredProductsSnapForInitialRead.size} requiredProduct documents for ${requisitionId}.`);
+      
       requiredProductsSnapForInitialRead.forEach(docSnap => {
-         console.log(`[RequisitionService] RequiredProduct Doc ID: ${docSnap.id}, Data:`, docSnap.data());
+         console.log(`[RequisitionService] Initial Read - RequiredProduct Doc ID: ${docSnap.id}, Data:`, docSnap.data());
       });
-
 
       const requiredProductsMap = new Map<string, { id: string; data: RequisitionRequiredProduct }>();
       requiredProductsSnapForInitialRead.forEach(docSnap => {
         const productData = docSnap.data() as RequisitionRequiredProduct;
-        if (productData && productData.productId) { // Safety check
+        if (productData && productData.productId) { 
             requiredProductsMap.set(productData.productId, { id: docSnap.id, data: productData });
         } else {
-            console.warn(`[RequisitionService] RequiredProduct document ${docSnap.id} in requisition ${requisitionId} is missing 'productId' field or data.`);
+            console.warn(`[RequisitionService] Initial Read - RequiredProduct document ${docSnap.id} in requisition ${requisitionId} is missing 'productId' field or data.`);
         }
       });
-      console.log(`[RequisitionService] Built requiredProductsMap with ${requiredProductsMap.size} entries.`);
+      console.log(`[RequisitionService] Built requiredProductsMap with ${requiredProductsMap.size} entries from initial read.`);
       
       const awardedQuotationIds = new Set<string>();
 
@@ -257,22 +254,24 @@ export const processAndFinalizeAwards = async (
       
       console.log(`[RequisitionService] Re-evaluating requisition status for ${requisitionId}. Path for required products subcollection: ${requiredProductsSubCollectionPath}`);
       const updatedRequiredProductsCollectionRef = collection(db, requiredProductsSubCollectionPath);
-      
-      // Create an explicit query from the collection reference for the second read
-      const queryForUpdatedRequiredProducts = query(updatedRequiredProductsCollectionRef);
+      const queryForUpdatedRequiredProducts = query(updatedRequiredProductsCollectionRef, orderBy("productName")); // Added orderBy
       
       const updatedRequiredProductsSnapAfterAwards = await transaction.get(queryForUpdatedRequiredProducts);
       console.log(`[RequisitionService] Fetched ${updatedRequiredProductsSnapAfterAwards.size} requiredProducts again for status check.`);
+      updatedRequiredProductsSnapAfterAwards.forEach(docSnap => {
+         console.log(`[RequisitionService] Updated Read - RequiredProduct Doc ID: ${docSnap.id}, Data:`, docSnap.data());
+      });
+
 
       let allRequirementsMet = true;
       if (updatedRequiredProductsSnapAfterAwards.empty && requiredProductsMap.size > 0) {
           allRequirementsMet = false; 
-          console.log(`[RequisitionService] Requisition ${requisitionId}: Not all requirements met (subcollection empty after updates, but expected products).`);
+          console.log(`[RequisitionService] Requisition ${requisitionId}: Not all requirements met (subcollection empty after updates, but expected products based on initial map).`);
       } else if (updatedRequiredProductsSnapAfterAwards.empty && requiredProductsMap.size === 0) {
           allRequirementsMet = true; 
-          console.log(`[RequisitionService] Requisition ${requisitionId}: No products were required initially, or all map entries were processed and updated.`);
+          console.log(`[RequisitionService] Requisition ${requisitionId}: No products were required initially, or map was empty. Considered met.`);
       } else {
-          updatedRequiredProductsSnapAfterAwards.docs.forEach(docSnap => {
+          updatedRequiredProductsSnapAfterAwards.forEach(docSnap => {
              const rp = docSnap.data() as RequisitionRequiredProduct;
              if (!rp || rp.requiredQuantity === undefined) {
                  console.warn(`[RequisitionService] Requisition ${requisitionId}: Product ${docSnap.id} data is incomplete or missing 'requiredQuantity'. Assuming not met for safety.`);
@@ -287,7 +286,7 @@ export const processAndFinalizeAwards = async (
       }
 
       let newRequisitionStatus: RequisitionStatus = requisitionData.status as RequisitionStatus; 
-      if (selectedAwards.length > 0 || newRequisitionStatus === "Quoted") { 
+      if (selectedAwards.length > 0 || newRequisitionStatus === "Quoted" || newRequisitionStatus === "Pending Quotation") { 
         if (allRequirementsMet) {
           newRequisitionStatus = "Completed"; 
           console.log(`[RequisitionService] All requirements met for ${requisitionId}. Setting status to "Completed".`);
@@ -310,6 +309,3 @@ export const processAndFinalizeAwards = async (
     return { success: false, message: error.message || "Failed to process awards." };
   }
 };
-
-
-    
