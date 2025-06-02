@@ -51,14 +51,18 @@ export const navItems: NavItemStructure[] = [
   {
     href: '/requisitions',
     label: 'Requisitions',
-    icon: Icons.ClipboardList, // Added icon
+    icon: Icons.ClipboardList, 
     allowedRoles: ['employee', 'admin', 'superadmin'],
+    subItems: [
+        { href: '/requisitions', label: 'View Requisitions', icon: Icons.List, allowedRoles: ['employee', 'admin', 'superadmin'] },
+        { href: '/requisitions/new', label: 'New Requisition', icon: Icons.Add, allowedRoles: ['employee', 'admin', 'superadmin'] },
+    ]
   },
   {
     href: '/quotations',
     label: 'Quotations',
-    icon: Icons.DollarSign, // Placeholder icon, can be changed
-    allowedRoles: ['admin', 'superadmin'], // Initially for admin/superadmin
+    icon: Icons.DollarSign, 
+    allowedRoles: ['admin', 'superadmin'], 
   },
   {
     href: '/admin',
@@ -71,4 +75,3 @@ export const navItems: NavItemStructure[] = [
     ]
   },
 ];
-

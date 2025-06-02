@@ -1,0 +1,190 @@
+
+"use client";
+
+import React, { useState, useEffect, useCallback, useMemo } from "react";
+import { useRouter } from "next/navigation";
+import Link from "next/link";
+import { PageHeader } from "@/components/shared/page-header";
+import { Button } from "@/components/ui/button";
+import { Icons } from "@/components/icons";
+import {
+  Table,
+  TableHeader,
+  TableBody,
+  TableRow,
+  TableHead,
+  TableCell,
+} from "@/components/ui/table";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { useToast } from "@/hooks/use-toast";
+import type { Requisition, RequisitionStatus, User } from "@/types";
+import { REQUISITION_STATUSES } from "@/types";
+import { Skeleton } from "@/components/ui/skeleton";
+import { useAuth } from "@/hooks/use-auth-store";
+import { getAllRequisitions, type RequisitionFilters } from "@/services/requisitionService";
+import { Badge } from "@/components/ui/badge";
+import { Timestamp } from "firebase/firestore";
+// Placeholder for getAllUsers - if needed for filtering by user
+// import { getAllUsers } from "@/services/userService"; 
+
+export default function RequisitionsPage() {
+  const [requisitions, setRequisitions] = useState<Requisition[]>([]);
+  // const [usersForFilter, setUsersForFilter] = useState<User[]>([]); // For admin user filter
+  const [isLoadingData, setIsLoadingData] = useState(true);
+  const [filterStatus, setFilterStatus] = useState<RequisitionStatus | "all">("all");
+  const [filterRequestingUserId, setFilterRequestingUserId] = useState<string>("all"); // For admin
+
+  const { toast } = useToast();
+  const { role, appUser, currentUser } = useAuth();
+  const router = useRouter();
+
+  const canManageAll = role === 'admin' || role === 'superadmin';
+
+  const fetchPageData = useCallback(async () => {
+    if (!appUser || !currentUser) return;
+    setIsLoadingData(true);
+    try {
+      // if (canManageAll) {
+      //   const fetchedUsers = await getAllUsers(); // Implement this if needed
+      //   setUsersForFilter(fetchedUsers);
+      // }
+
+      const filters: RequisitionFilters = {
+        status: filterStatus !== "all" ? filterStatus : undefined,
+        requestingUserId: (canManageAll && filterRequestingUserId !== "all") ? filterRequestingUserId : undefined,
+      };
+      
+      const fetchedRequisitions = await getAllRequisitions(filters, currentUser.uid, role);
+      setRequisitions(fetchedRequisitions);
+
+    } catch (error) {
+      console.error("Error fetching requisitions page data:", error);
+      toast({ title: "Error", description: "Failed to fetch requisitions.", variant: "destructive" });
+    }
+    setIsLoadingData(false);
+  }, [toast, appUser, currentUser, role, filterStatus, filterRequestingUserId, canManageAll]);
+
+  useEffect(() => {
+    fetchPageData();
+  }, [fetchPageData]);
+
+  const formatTimestamp = (timestamp: Timestamp | string | null | undefined): string => {
+    if (!timestamp) return "N/A";
+    if (typeof timestamp === 'string') return new Date(timestamp).toLocaleDateString();
+    if (timestamp instanceof Timestamp) return timestamp.toDate().toLocaleDateString();
+    return "Invalid Date";
+  };
+
+  const getStatusBadgeVariant = (status: RequisitionStatus) => {
+    switch (status) {
+      case "Pending Quotation": return "secondary";
+      case "Quoted": return "default";
+      case "PO in Progress": return "outline";
+      case "Completed": return "default";
+      case "Canceled": return "destructive";
+      default: return "secondary";
+    }
+  };
+  const getStatusBadgeClass = (status: RequisitionStatus) => {
+    switch (status) {
+      case "Completed": return "bg-green-500 hover:bg-green-600 text-white";
+      default: return "";
+    }
+  };
+
+  return (
+    <>
+      <PageHeader
+        title="Requisition Management"
+        description="View, track, and manage purchase requisitions."
+        actions={
+          <Button onClick={() => router.push('/requisitions/new')}>
+            <Icons.Add className="mr-2 h-4 w-4" /> Create New Requisition
+          </Button>
+        }
+      />
+      <Card className="shadow-lg">
+        <CardHeader>
+          <CardTitle className="font-headline">Requisition List</CardTitle>
+          <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+            <Select value={filterStatus} onValueChange={(value) => setFilterStatus(value as RequisitionStatus | "all")}>
+              <SelectTrigger><SelectValue placeholder="Filter by Status" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Statuses</SelectItem>
+                {REQUISITION_STATUSES.map(stat => <SelectItem key={stat} value={stat}>{stat}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            {/* {canManageAll && (
+              <Select value={filterRequestingUserId} onValueChange={setFilterRequestingUserId} disabled={usersForFilter.length === 0}>
+                <SelectTrigger><SelectValue placeholder="Filter by Requesting User" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Users</SelectItem>
+                  {usersForFilter.map(user => <SelectItem key={user.id} value={user.id}>{user.displayName || user.email}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            )} */}
+          </div>
+        </CardHeader>
+        <CardContent>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Requisition ID</TableHead>
+                <TableHead>Requesting User</TableHead>
+                <TableHead>Creation Date</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead className="text-right">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {isLoadingData ? (
+                Array.from({ length: 5 }).map((_, idx) => (
+                  <TableRow key={`skeleton-requisition-${idx}`}>
+                    <TableCell><Skeleton className="h-5 w-20" /></TableCell>
+                    <TableCell><Skeleton className="h-5 w-32" /></TableCell>
+                    <TableCell><Skeleton className="h-5 w-24" /></TableCell>
+                    <TableCell><Skeleton className="h-6 w-28" /></TableCell>
+                    <TableCell className="text-right"><Skeleton className="h-8 w-20 ml-auto" /></TableCell>
+                  </TableRow>
+                ))
+              ) : requisitions.length > 0 ? (
+                requisitions.map((req) => (
+                  <TableRow key={req.id}>
+                    <TableCell className="font-medium truncate max-w-[150px]">{req.id}</TableCell>
+                    <TableCell>{req.requestingUserName || "N/A"}</TableCell>
+                    <TableCell>{formatTimestamp(req.creationDate)}</TableCell>
+                    <TableCell>
+                      <Badge variant={getStatusBadgeVariant(req.status)} className={getStatusBadgeClass(req.status)}>
+                        {req.status}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="text-right space-x-1">
+                      <Button variant="outline" size="sm" onClick={() => router.push(`/requisitions/${req.id}`)}>
+                        <Icons.View className="h-4 w-4" /> View Details
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))
+              ) : (
+                <TableRow>
+                  <TableCell colSpan={5} className="h-24 text-center">
+                    No requisitions found.
+                  </TableCell>
+                </TableRow>
+              )}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
+    </>
+  );
+}
+

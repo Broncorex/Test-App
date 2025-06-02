@@ -40,7 +40,7 @@ import {
   Briefcase,
   UsersRound, 
   LayoutList,
-  Calendar as LucideCalendar, // Added for date pickers
+  Calendar as LucideCalendar,
 } from 'lucide-react';
 
 export const StockPilotLogo = (props: SVGProps<SVGSVGElement>) => (
@@ -85,7 +85,7 @@ export const Icons = {
   Inbound: Archive,
   Outbound: LucideSend,
   Send: LucideSend,
-  Inventory: ClipboardList,
+  Inventory: ClipboardList, // Changed from Package to ClipboardList for Inventory specifically
   Location: MapPin,
   Business: Briefcase,
   ShoppingCart: ShoppingCart,
@@ -106,7 +106,6 @@ export const Icons = {
   List: List,
   Grid: Grid,
   LayoutList: LayoutList,
-  ClipboardList: ClipboardList, // Explicitly for Requisitions
-  Calendar: LucideCalendar, // Added
+  ClipboardList: ClipboardList, 
+  Calendar: LucideCalendar,
 };
-

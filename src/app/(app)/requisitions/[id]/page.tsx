@@ -31,6 +31,8 @@ import { getAllSuppliers } from "@/services/supplierService";
 import { createQuotation, type CreateQuotationRequestData } from "@/services/quotationService";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { cn } from "@/lib/utils";
+import { Label } from "@/components/ui/label"; // Added Label import
 
 
 const quotationRequestFormSchema = z.object({
@@ -56,12 +58,14 @@ export default function RequisitionDetailPage() {
   const [isQuoteRequestDialogOpen, setIsQuoteRequestDialogOpen] = useState(false);
   const [isSubmittingQuoteRequest, setIsSubmittingQuoteRequest] = useState(false);
   const [availableSuppliers, setAvailableSuppliers] = useState<Supplier[]>([]);
+  const [isLoadingSuppliers, setIsLoadingSuppliers] = useState(false);
+
 
   const quoteRequestForm = useForm<QuotationRequestFormData>({
     resolver: zodResolver(quotationRequestFormSchema),
     defaultValues: {
       supplierIds: [],
-      responseDeadline: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // Default to 1 week from now
+      responseDeadline: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), 
       notes: "",
     },
   });
@@ -96,20 +100,20 @@ export default function RequisitionDetailPage() {
   }, [fetchRequisitionData]);
 
   const handleOpenQuoteRequestDialog = async () => {
-    setIsLoading(true);
+    setIsLoadingSuppliers(true);
     try {
-      const suppliers = await getAllSuppliers(true); // Fetch active suppliers
+      const suppliers = await getAllSuppliers(true); 
       setAvailableSuppliers(suppliers);
       quoteRequestForm.reset({
         supplierIds: [],
         responseDeadline: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-        notes: requisition?.notes || "", // Pre-fill notes from requisition
+        notes: requisition?.notes || "", 
       });
       setIsQuoteRequestDialogOpen(true);
     } catch (error) {
       toast({ title: "Error", description: "Could not load suppliers for quotation request.", variant: "destructive" });
     }
-    setIsLoading(false);
+    setIsLoadingSuppliers(false);
   };
 
   const handleQuoteRequestSubmit = async (data: QuotationRequestFormData) => {
@@ -141,7 +145,7 @@ export default function RequisitionDetailPage() {
     
     if (successCount > 0) {
       toast({ title: "Quotation Requests Sent", description: `${successCount} quotation request(s) sent successfully.` });
-      fetchRequisitionData(); // Refresh requisition to see if status changed to "Quoted"
+      fetchRequisitionData(); 
     }
     if (errorCount === 0 && successCount > 0) {
       setIsQuoteRequestDialogOpen(false);
@@ -171,6 +175,11 @@ export default function RequisitionDetailPage() {
     }
     setIsUpdatingStatus(false);
   };
+  
+  const formatTimestampDateTime = (timestamp?: Timestamp | null): string => {
+    if (!timestamp) return "N/A";
+    return timestamp.toDate().toLocaleString();
+  };
 
   const getStatusBadgeVariant = (status: RequisitionStatus) => {
     switch (status) {
@@ -190,7 +199,7 @@ export default function RequisitionDetailPage() {
   };
 
 
-  if (isLoading && !requisition) { // Show loading skeleton only if requisition is not yet loaded
+  if (isLoading && !requisition) { 
     return (
       <div className="space-y-4">
         <PageHeader title="Requisition Details" description="Loading requisition information..." />
@@ -221,7 +230,7 @@ export default function RequisitionDetailPage() {
         actions={
           <div className="flex gap-2">
             {canRequestQuotes && (
-              <Button onClick={handleOpenQuoteRequestDialog} disabled={isLoading}>
+              <Button onClick={handleOpenQuoteRequestDialog} disabled={isLoadingSuppliers}>
                 <Icons.Send className="mr-2 h-4 w-4" /> Request Quotations
               </Button>
             )}
@@ -238,14 +247,14 @@ export default function RequisitionDetailPage() {
           <CardContent className="space-y-3 text-sm">
             <div className="flex justify-between"><span className="text-muted-foreground">Requisition ID:</span><span className="font-medium truncate max-w-[150px]">{requisition.id}</span></div>
             <div className="flex justify-between"><span className="text-muted-foreground">Created By:</span><span className="font-medium">{requisition.requestingUserName || requisition.requestingUserId}</span></div>
-            <div className="flex justify-between"><span className="text-muted-foreground">Creation Date:</span><span className="font-medium">{new Date(requisition.creationDate.seconds * 1000).toLocaleString()}</span></div>
+            <div className="flex justify-between"><span className="text-muted-foreground">Creation Date:</span><span className="font-medium">{formatTimestampDateTime(requisition.creationDate)}</span></div>
             <div className="flex justify-between items-center"><span className="text-muted-foreground">Status:</span>
               <Badge variant={getStatusBadgeVariant(requisition.status)} className={getStatusBadgeClass(requisition.status)}>
                 {requisition.status}
               </Badge>
             </div>
             <div><span className="text-muted-foreground">Notes:</span><p className="font-medium whitespace-pre-wrap">{requisition.notes || "N/A"}</p></div>
-            <div className="flex justify-between"><span className="text-muted-foreground">Last Updated:</span><span className="font-medium">{new Date(requisition.updatedAt.seconds * 1000).toLocaleString()}</span></div>
+            <div className="flex justify-between"><span className="text-muted-foreground">Last Updated:</span><span className="font-medium">{formatTimestampDateTime(requisition.updatedAt)}</span></div>
           </CardContent>
            {canManageStatus && (
             <CardFooter className="border-t pt-4">
@@ -278,7 +287,7 @@ export default function RequisitionDetailPage() {
           </CardHeader>
           <CardContent>
             {requisition.requiredProducts && requisition.requiredProducts.length > 0 ? (
-               <ScrollArea className="h-[calc(100vh-20rem)]"> {/* Adjust height as needed */}
+               <ScrollArea className="h-[calc(100vh-20rem)]"> 
                 <Table>
                   <TableHeader>
                     <TableRow>
@@ -307,7 +316,6 @@ export default function RequisitionDetailPage() {
         </Card>
       </div>
 
-      {/* Quotation Request Dialog */}
       <Dialog open={isQuoteRequestDialogOpen} onOpenChange={setIsQuoteRequestDialogOpen}>
         <DialogContent className="sm:max-w-lg">
            <Form {...quoteRequestForm}>
@@ -329,8 +337,8 @@ export default function RequisitionDetailPage() {
                         <FormLabel className="text-base font-semibold">Suppliers *</FormLabel>
                         <p className="text-sm text-muted-foreground">Select one or more suppliers to request quotes from.</p>
                       </div>
-                      {availableSuppliers.length === 0 && !isLoading ? <p>No active suppliers found.</p> :
-                      isLoading && availableSuppliers.length === 0 ? <p>Loading suppliers...</p> :
+                      {availableSuppliers.length === 0 && !isLoadingSuppliers ? <p>No active suppliers found.</p> :
+                      isLoadingSuppliers && availableSuppliers.length === 0 ? <p>Loading suppliers...</p> :
                       <ScrollArea className="h-40 rounded-md border p-2">
                         {availableSuppliers.map((supplier) => (
                           <FormField
@@ -400,7 +408,7 @@ export default function RequisitionDetailPage() {
 
               <DialogFooter>
                 <DialogClose asChild><Button type="button" variant="outline">Cancel</Button></DialogClose>
-                <Button type="submit" disabled={isSubmittingQuoteRequest || isLoading || availableSuppliers.length === 0}>
+                <Button type="submit" disabled={isSubmittingQuoteRequest || isLoadingSuppliers || availableSuppliers.length === 0}>
                   {isSubmittingQuoteRequest ? <Icons.Logo className="animate-spin" /> : <Icons.Send />}
                   {isSubmittingQuoteRequest ? "Sending..." : "Send Requests"}
                 </Button>
