@@ -23,7 +23,7 @@ import { cn } from "@/lib/utils";
 const formatTimestampDate = (timestamp?: Timestamp | null): string => {
     if (!timestamp) return "N/A";
     let date: Date;
-    if (timestamp instanceof Timestamp) { // Check instance of imported Timestamp
+    if (timestamp instanceof Timestamp) { 
       date = timestamp.toDate();
     } else if (typeof timestamp === 'string') {
       date = new Date(timestamp);
@@ -58,12 +58,15 @@ const formatTimestampDate = (timestamp?: Timestamp | null): string => {
 export default function CompareQuotationsPage({ params }: { params: { requisitionId: string } }) {
   const router = useRouter();
   const requisitionId = params.requisitionId;
+  console.log("DEBUG: CompareQuotationsPage rendered for requisitionId:", requisitionId); // DEBUG LINE
   const { toast } = useToast();
   const { currentUser, role } = useAuth();
 
   const [quotations, setQuotations] = useState<Quotation[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isAwarding, setIsAwarding] = useState<string | null>(null); 
+  const [currentViewingQuotationId, setCurrentViewingQuotationId] = useState<string | null>(null);
+
 
   const fetchQuotationsForComparison = useCallback(async () => {
     if (!requisitionId) {
@@ -74,6 +77,7 @@ export default function CompareQuotationsPage({ params }: { params: { requisitio
     setIsLoading(true);
     try {
       const allQuotes = await getAllQuotations({ requisitionId });
+      // Filter for statuses relevant to comparison
       setQuotations(allQuotes.filter(q => ["Received", "Awarded", "Partially Awarded", "Lost"].includes(q.status)));
     } catch (error) {
       console.error("Error fetching quotations for comparison:", error);
@@ -83,6 +87,9 @@ export default function CompareQuotationsPage({ params }: { params: { requisitio
   }, [requisitionId, toast]);
 
   useEffect(() => {
+    // Attempt to get current quotation ID from query params if navigating from quotation detail
+    const queryParams = new URLSearchParams(window.location.search);
+    setCurrentViewingQuotationId(queryParams.get("currentQuoteId"));
     fetchQuotationsForComparison();
   }, [fetchQuotationsForComparison]);
 
@@ -95,7 +102,7 @@ export default function CompareQuotationsPage({ params }: { params: { requisitio
     try {
         await updateQuotationStatus(quotationIdToAward, "Awarded", currentUser.uid);
         toast({ title: "Quotation Awarded", description: `Quotation ${quotationIdToAward.substring(0,6)}... has been marked as Awarded.`});
-        fetchQuotationsForComparison(); // Refresh the list
+        fetchQuotationsForComparison(); 
     } catch (error: any) {
         toast({ title: "Award Failed", description: error.message || "Could not award quotation.", variant: "destructive"});
     }
@@ -112,7 +119,7 @@ export default function CompareQuotationsPage({ params }: { params: { requisitio
       <Card>
         <CardHeader>
           <CardTitle className="font-headline">Quotation Comparison</CardTitle>
-          <CardDescription>Review received quotations to make an informed decision.</CardDescription>
+          <CardDescription>Review received quotations to make an informed decision. The quotation you were previously viewing (if any) is highlighted.</CardDescription>
         </CardHeader>
         <CardContent>
           {isLoading ? (
@@ -140,7 +147,7 @@ export default function CompareQuotationsPage({ params }: { params: { requisitio
                 </TableHeader>
                 <TableBody>
                   {quotations.map((quote) => (
-                    <TableRow key={quote.id} className={cn(quote.id === params.quotationId && "bg-muted")}>
+                    <TableRow key={quote.id} className={cn(quote.id === currentViewingQuotationId && "bg-primary/10")}>
                       <TableCell className="font-medium">{quote.supplierName || quote.supplierId.substring(0,8)+"..."}</TableCell>
                       <TableCell>
                         <Badge variant={getStatusBadgeVariant(quote.status)} className={getStatusBadgeClass(quote.status)}>

@@ -275,10 +275,11 @@ export default function QuotationDetailPage() {
     );
   }
 
-  const canManageStatus = role === 'admin' || role === 'superadmin';
-  const canEditResponse = canManageStatus && (quotation.status === "Sent" || quotation.status === "Received");
-  const canAward = canManageStatus && (quotation.status === "Received" || quotation.status === "Partially Awarded");
-  const canReject = canManageStatus && (quotation.status === "Received" || quotation.status === "Partially Awarded");
+  const canManage = role === 'admin' || role === 'superadmin';
+  const canEditRequestDetails = canManage && quotation.status === "Sent";
+  const canEnterOrEditResponse = canManage && (quotation.status === "Sent" || quotation.status === "Received");
+  const canAward = canManage && (quotation.status === "Received" || quotation.status === "Partially Awarded");
+  const canReject = canManage && (quotation.status === "Received" || quotation.status === "Partially Awarded");
 
 
   return (
@@ -288,12 +289,12 @@ export default function QuotationDetailPage() {
         description={`For Requisition: ${quotation.requisitionId.substring(0,8)}... | Supplier: ${quotation.supplierName || quotation.supplierId}`}
         actions={
           <div className="flex gap-2 flex-wrap">
-            {canManageStatus && quotation.status === "Sent" && (
-                 <Button onClick={() => console.log("Edit Quotation Request Details - TBD")} variant="outline">
+            {canEditRequestDetails && (
+                 <Button onClick={() => console.log("Edit Quotation Request Details - TBD. Modal similar to Supplier Response but for request fields.")} variant="outline">
                     <Icons.Edit className="mr-2 h-4 w-4" /> Edit Quotation Request
                 </Button>
             )}
-            {canEditResponse && (
+            {canEnterOrEditResponse && (
               <Button onClick={() => setIsReceiveDialogOpen(true)} variant={quotation.status === "Sent" ? "default" : "outline"}>
                 <Icons.Package className="mr-2 h-4 w-4" /> 
                 {quotation.status === "Sent" ? "Enter Supplier Response" : "Edit Supplier Response"}
@@ -351,7 +352,7 @@ export default function QuotationDetailPage() {
             <div className="flex justify-between"><span className="text-muted-foreground">Created By:</span><span className="font-medium">{quotation.generatedByUserName || quotation.createdBy}</span></div>
 
           </CardContent>
-           {canManageStatus && (
+           {canManage && (
             <CardFooter className="border-t pt-4">
                 <div className="w-full space-y-2">
                     <ShadLabel htmlFor="status-update" className="font-semibold">Update Status:</ShadLabel>
@@ -422,19 +423,20 @@ export default function QuotationDetailPage() {
       {quotation.requisitionId && (role === 'admin' || role === 'superadmin') && (
         <Card className="mt-6 md:col-span-3">
           <CardHeader>
-            <CardTitle className="font-headline">Compare Quotations</CardTitle>
-            <CardDescription>
-              View other quotations linked to Requisition ID: <span className="font-semibold">{quotation.requisitionId.substring(0,8)}...</span>
-            </CardDescription>
+            <CardTitle className="font-headline">Compare Quotations for this Requisition</CardTitle>
           </CardHeader>
           <CardContent>
-             <Button asChild variant="outline" disabled={isLoadingCanCompare}>
-                <Link href={`/requisitions/${quotation.requisitionId}/compare-quotations`}>
-                    {isLoadingCanCompare ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.LayoutList className="mr-2 h-4 w-4" />}
-                    {canCompare ? "Compare All Quotations for this Requisition" : "View Other Quotations (if any)"}
-                </Link>
-            </Button>
-            {!isLoadingCanCompare && !canCompare && <p className="text-sm text-muted-foreground mt-2">No other relevant quotations found to compare for this requisition at the moment.</p>}
+             {isLoadingCanCompare ? (<Skeleton className="h-10 w-64" />) : 
+             canCompare ? (
+                <Button asChild variant="outline">
+                    <Link href={`/requisitions/${quotation.requisitionId}/compare-quotations?currentQuoteId=${quotation.id}`}>
+                        <Icons.LayoutList className="mr-2 h-4 w-4" />
+                        Compare All Received Quotations
+                    </Link>
+                </Button>
+             ) : (
+                <p className="text-sm text-muted-foreground">No other relevant quotations found to compare for this requisition at the moment.</p>
+             )}
           </CardContent>
         </Card>
       )}

@@ -254,7 +254,7 @@ export default function RequisitionDetailPage() {
             .filter(rp => supplierQuote.selectedProductIds.includes(rp.productId))
             .map(rp => ({
                 productId: rp.productId,
-                productName: rp.productName,
+                productName: rp.productName, 
                 requiredQuantity: rp.requiredQuantity,
             }))
         };
@@ -306,7 +306,7 @@ export default function RequisitionDetailPage() {
 
   const handleSaveNotes = async () => {
     if (!requisition || !currentUser || !canManageStatus) return;
-    setIsUpdatingStatus(true); // Use the same state for simplicity or create a new one
+    setIsUpdatingStatus(true); 
     try {
       await updateRequisition(requisitionId, { notes: editableNotes });
       setRequisition(prev => prev ? { ...prev, notes: editableNotes, updatedAt: Timestamp.now() } : null);
@@ -659,7 +659,7 @@ export default function RequisitionDetailPage() {
                                                     return (
                                                       <li key={idx} className={cn("py-0.5",isApplicable && "bg-primary/10 p-1 rounded-sm")}>
                                                         Qty {range.minQuantity}{range.maxQuantity ? `-${range.maxQuantity}` : '+'}
-                                                        : <span className={cn(isApplicable && "font-bold text-primary")}>${range.price?.toFixed(2) ?? 'N/A'}</span> ({range.priceType})
+                                                        : <span className={cn("font-medium",isApplicable && "text-primary")}>${range.price?.toFixed(2) ?? 'N/A'}</span> ({range.priceType})
                                                         {range.additionalConditions && <span className="text-muted-foreground text-[10px]"> ({range.additionalConditions})</span>}
                                                         {isApplicable && <Badge variant="outline" className="ml-1 text-xs px-1 py-0 h-auto border-primary text-primary">Applicable</Badge>}
                                                       </li>
