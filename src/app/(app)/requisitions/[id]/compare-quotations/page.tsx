@@ -6,7 +6,7 @@ import Link from "next/link";
 import { useEffect, useState, useCallback, useMemo } from "react";
 import { PageHeader } from "@/components/shared/page-header";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription, CardFooter } from "@/components/ui/card"; // Added CardFooter
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -32,14 +32,14 @@ interface QuotationOffer extends QuotationDetail {
 }
 
 interface ProductToCompare extends RequisitionRequiredProduct {
-  requisitionProductId: string; // Using the subcollection item's ID for unique key
+  requisitionProductId: string;
   offers: QuotationOffer[];
   alreadyPurchased: number;
 }
 
 interface SelectedOfferInfo {
   quotationId: string;
-  quotationDetailId: string; // This is the 'id' from QuotationDetail
+  quotationDetailId: string;
   supplierName: string;
   productId: string;
   productName: string;
@@ -47,16 +47,15 @@ interface SelectedOfferInfo {
   unitPrice: number;
 }
 
-
 const formatTimestampDate = (timestamp?: Timestamp | null): string => {
     if (!timestamp) return "N/A";
     let date: Date;
-    if (timestamp instanceof Timestamp) { 
+    if (timestamp instanceof Timestamp) {
       date = timestamp.toDate();
     } else if (typeof timestamp === 'string') {
       date = new Date(timestamp);
     } else {
-      return "Invalid Date Object"; 
+      return "Invalid Date Object";
     }
     return isValid(date) ? format(date, "PPP") : "Invalid Date";
 };
@@ -66,8 +65,8 @@ const getStatusBadgeVariant = (status?: QuotationStatus) => {
   switch (status) {
     case "Sent": return "outline";
     case "Received": return "default";
-    case "Awarded": return "default"; 
-    case "Partially Awarded": return "default"; 
+    case "Awarded": return "default";
+    case "Partially Awarded": return "default";
     case "Rejected":
     case "Lost":
       return "destructive";
@@ -87,16 +86,15 @@ const getStatusBadgeClass = (status?: QuotationStatus) => {
 export default function CompareQuotationsPage() {
   const params = useParams();
   const router = useRouter();
-  const requisitionId = params.id as string; 
-  
+  const requisitionId = params.id as string; // Correctly access id from params for client components
+  console.log("DEBUG: CompareQuotationsPage rendered for requisitionId:", requisitionId);
   const { toast } = useToast();
   const { currentUser, role } = useAuth();
 
   const [requisition, setRequisition] = useState<Requisition | null>(null);
   const [productsForComparison, setProductsForComparison] = useState<ProductToCompare[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [isAwarding, setIsAwarding] = useState<string | null>(null); // For individual award from summary table
-  const [currentViewingQuotationId, setCurrentViewingQuotationId] = useState<string | null>(null); // From query param
+  const [currentViewingQuotationId, setCurrentViewingQuotationId] = useState<string | null>(null);
 
   const [selectedOffers, setSelectedOffers] = useState<Record<string, SelectedOfferInfo | null>>({}); // Key: requisitionProductId
 
@@ -106,9 +104,8 @@ export default function CompareQuotationsPage() {
       toast({ title: "Error", description: "Requisition ID is missing.", variant: "destructive" });
       return;
     }
-    console.log("DEBUG: CompareQuotationsPage fetching data for requisitionId:", requisitionId);
     setIsLoading(true);
-    setSelectedOffers({}); // Reset selections on new data fetch
+    setSelectedOffers({});
 
     try {
       const fetchedRequisition = await getRequisitionById(requisitionId);
@@ -126,7 +123,7 @@ export default function CompareQuotationsPage() {
       const relevantQuotesWithDetails: Quotation[] = [];
       for (const quoteHeader of allQuotesForRequisition) {
         if (["Received", "Awarded", "Partially Awarded", "Lost"].includes(quoteHeader.status)) {
-          const detailedQuote = await getQuotationById(quoteHeader.id); // Fetch full details including subcollection
+          const detailedQuote = await getQuotationById(quoteHeader.id);
           if (detailedQuote) {
             relevantQuotesWithDetails.push(detailedQuote);
           }
@@ -138,7 +135,7 @@ export default function CompareQuotationsPage() {
       fetchedRequisition.requiredProducts.forEach(reqProduct => {
         productsToCompareMap.set(reqProduct.productId, {
           ...reqProduct,
-          requisitionProductId: reqProduct.id, // Use the subcollection item ID as a unique key for selection state
+          requisitionProductId: reqProduct.id,
           offers: [],
           alreadyPurchased: reqProduct.purchasedQuantity || 0,
         });
@@ -169,10 +166,8 @@ export default function CompareQuotationsPage() {
   }, [requisitionId, toast]);
 
   useEffect(() => {
-    // For client components, access searchParams via useSearchParams hook if needed,
-    // but for this case, we are mainly using path param.
-    // If currentQuoteId was in searchParams:
-    // const searchParams = useSearchParams();
+    // If you need to get currentQuoteId from searchParams:
+    // const searchParams = useSearchParams(); // from 'next/navigation'
     // setCurrentViewingQuotationId(searchParams.get("currentQuoteId"));
     fetchComparisonData();
   }, [fetchComparisonData]);
@@ -189,7 +184,7 @@ export default function CompareQuotationsPage() {
         
         if (quantityToAwardThisTime <= 0) {
             toast({ title: "Cannot Select", description: "Required quantity already met or offer has zero quantity.", variant: "default"});
-            updated[requisitionProductId] = null; // Deselect or prevent selection
+            updated[requisitionProductId] = null; 
         } else {
             updated[requisitionProductId] = {
                 quotationId: offer.quotationId,
@@ -202,7 +197,7 @@ export default function CompareQuotationsPage() {
             };
         }
       } else {
-        updated[requisitionProductId] = null; // Deselect
+        updated[requisitionProductId] = null;
       }
       return updated;
     });
@@ -224,16 +219,19 @@ export default function CompareQuotationsPage() {
         toast({ title: "Permission Denied", description: "You cannot perform this action.", variant: "destructive"});
         return;
     }
-    // TODO: Implement actual backend logic for finalizing awards.
-    // This would involve:
-    // 1. Grouping selected offers by quotationId.
-    // 2. Updating each involved Quotation's status (e.g., to "Partially Awarded" or "Awarded").
-    // 3. Updating `purchasedQuantity` on the Requisition's `requiredProducts`.
-    // 4. Updating the overall Requisition status if fully awarded.
-    // 5. Potentially creating Purchase Orders.
+    
+    // Placeholder for actual backend logic
     console.log("Finalizing awards with selections:", selectedOffers);
-    toast({ title: "Awards Finalized (Simulated)", description: "Selected offers have been processed (simulation). Backend logic needed.", variant: "success"});
-    // Possibly re-fetch data or navigate
+    toast({ title: "Awards Finalized (Simulated)", description: "Selected offers have been processed. Backend logic for status updates and PO generation is pending.", variant: "success"});
+    // Future:
+    // 1. Iterate through selectedOffers
+    // 2. For each unique quotationId involved, update its status (e.g., Partially Awarded, Awarded, Lost)
+    //    - Fetch the quotation, compare awarded items to its details to determine if fully or partially awarded.
+    // 3. For each awarded product, update the corresponding Requisition.requiredProducts[x].purchasedQuantity.
+    // 4. Update the overall Requisition status if all items are fully purchased.
+    // 5. Optionally, initiate Purchase Order creation based on awarded items.
+    // After successful backend operations, re-fetch data or navigate as appropriate.
+    // fetchComparisonData(); // To reflect changes if staying on page
   };
 
 
@@ -305,7 +303,7 @@ export default function CompareQuotationsPage() {
                       <Table>
                         <TableHeader>
                           <TableRow>
-                            <TableHead className="w-10"></TableHead> {/* Radio button */}
+                            <TableHead className="w-10"></TableHead>
                             <TableHead>Supplier</TableHead>
                             <TableHead className="text-right">Quoted Qty</TableHead>
                             <TableHead className="text-right">Unit Price</TableHead>
@@ -318,7 +316,6 @@ export default function CompareQuotationsPage() {
                         <TableBody>
                           {product.offers.map((offer) => {
                             const isSelected = selectedOffers[product.requisitionProductId]?.quotationDetailId === offer.id;
-                            const effectiveAwardQty = isSelected ? selectedOffers[product.requisitionProductId]!.awardedQuantity : Math.min(remainingToAward, offer.quotedQuantity);
                             const canSelectOffer = remainingToAward > 0 && offer.quotedQuantity > 0;
 
                             return (
@@ -412,3 +409,4 @@ export default function CompareQuotationsPage() {
     </>
   );
 }
+
