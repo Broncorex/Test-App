@@ -1,9 +1,9 @@
 
 "use client";
 
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation"; // Added useSearchParams here
 import Link from "next/link";
-import { useEffect, useState, useCallback, useMemo } from "react";
+import React, { useEffect, useState, useCallback, useMemo } from "react"; // Added React import
 import { PageHeader } from "@/components/shared/page-header";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription, CardFooter } from "@/components/ui/card";
@@ -30,8 +30,8 @@ interface QuotationOffer extends QuotationDetail {
   supplierName: string;
   supplierId: string;
   overallQuotationStatus: QuotationStatus;
-  quotationTotal: number; // Original total of the quotation this offer came from
-  quotationAdditionalCosts?: QuotationAdditionalCost[]; // Original additional costs
+  quotationTotal: number; 
+  quotationAdditionalCosts?: QuotationAdditionalCost[]; 
 }
 
 interface ProductToCompare extends RequisitionRequiredProduct {
@@ -65,14 +65,15 @@ const formatTimestampDate = (timestamp?: Timestamp | null): string => {
     return isValid(date) ? format(date, "PPP") : "Invalid Date";
 };
 
-export default function CompareQuotationsPage() {
-  const params = useParams();
+export default function CompareQuotationsPage({ params }: { params: { id: string } }) { 
   const router = useRouter();
-  
-  const requisitionId = params.id as string;
-  const currentQuoteIdFromParams = useSearchParams().get("currentQuoteId");
+  const pathParams = useParams(); // Use useParams hook
+  const searchParams = useSearchParams(); // Use useSearchParams hook
 
-  console.log("DEBUG: CompareQuotationsPage rendered for requisitionId (params.id):", requisitionId);
+  const requisitionId = pathParams.id as string; 
+  const currentQuoteIdFromParams = searchParams.get("currentQuoteId");
+
+  console.log("DEBUG: CompareQuotationsPage rendered for requisitionId:", requisitionId);
   const { toast } = useToast();
   const { currentUser, role } = useAuth();
 
@@ -82,7 +83,7 @@ export default function CompareQuotationsPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmittingAwards, setIsSubmittingAwards] = useState(false);
 
-  const [selectedOffers, setSelectedOffers] = useState<Record<string, SelectedOfferInfo | null>>({}); // Key: requisitionProductId
+  const [selectedOffers, setSelectedOffers] = useState<Record<string, SelectedOfferInfo | null>>({});
 
 
   const fetchComparisonData = useCallback(async () => {
@@ -175,7 +176,7 @@ export default function CompareQuotationsPage() {
             toast({ title: "Cannot Select", description: "This offer has zero quantity or required quantity already met by other means.", variant: "default"});
             updated[requisitionProductId] = null; 
         } else if (quantityToAwardThisTime <= 0 && remainingToAward <= 0) {
-             updated[requisitionProductId] = null; // Requirement met, clear selection
+             updated[requisitionProductId] = null; 
         }
         else {
             updated[requisitionProductId] = {
@@ -348,7 +349,7 @@ export default function CompareQuotationsPage() {
                           <TableBody>
                             {product.offers.map((offer) => {
                               const isSelected = selectedOffers[product.requisitionProductId]?.quotationDetailId === offer.id;
-                              const potentialAwardQty = Math.min(remainingToAwardForProduct, offer.quotedQuantity);
+                              const potentialAwardQty = Math.min(remainingToAwardForProduct > 0 ? remainingToAwardForProduct : 0, offer.quotedQuantity);
                               const canSelectOffer = remainingToAwardForProduct > 0 && offer.quotedQuantity > 0 && potentialAwardQty > 0;
 
                               return (
@@ -366,7 +367,7 @@ export default function CompareQuotationsPage() {
                                   <TableCell className="text-right font-semibold text-primary">{canSelectOffer ? potentialAwardQty : "-"}</TableCell>
                                   <TableCell className="text-right">${(Number(potentialAwardQty) * Number(offer.unitPriceQuoted)).toFixed(2)}</TableCell>
                                   <TableCell>{formatTimestampDate(offer.estimatedDeliveryDate)}</TableCell>
-                                  <TableCell className="text-xs max-w-[150px] truncate" title={offer.conditions}>{offer.conditions || "N/A"}</TableCell>
+                                  <TableCell className="text-xs max-w-[150px] truncate" title={offer.conditions || undefined}>{offer.conditions || "N/A"}</TableCell>
                                   <TableCell className="text-center">
                                     <Button variant="ghost" size="icon" asChild title={`View Quotation ${offer.quotationId.substring(0,6)}...`}>
                                       <Link href={`/quotations/${offer.quotationId}`} target="_blank" rel="noopener noreferrer">
@@ -463,3 +464,4 @@ export default function CompareQuotationsPage() {
   );
 }
 
+    
