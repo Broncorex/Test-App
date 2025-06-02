@@ -176,11 +176,6 @@ export const processAndFinalizeAwards = async (
     return { success: false, message: `Failed to pre-fetch required products: ${error.message}` };
   }
 
-  if (initialRequiredProductsList.length === 0 && selectedAwards.length > 0) {
-      console.warn(`[RequisitionService] Requisition ${requisitionId} has no initial required products listed, but awards are being processed. This might indicate an issue.`);
-  }
-
-  // Create a map for easy lookup of initial required product data by productId
   const requiredProductsMap = new Map<string, { id: string; data: RequisitionRequiredProduct }>();
   initialRequiredProductsList.forEach(rp => {
     if (rp.productId) {
@@ -191,6 +186,7 @@ export const processAndFinalizeAwards = async (
   });
   console.log(`[RequisitionService] Built requiredProductsMap with ${requiredProductsMap.size} entries from pre-fetched data.`);
 
+
   try {
     await runTransaction(db, async (transaction) => {
       console.log(`[RequisitionService] Transaction started for requisitionId: ${requisitionId}`);
@@ -198,7 +194,7 @@ export const processAndFinalizeAwards = async (
 
       // --- Phase 2: Perform ALL transactional READS upfront ---
       const requisitionRef = doc(db, "requisitions", requisitionId);
-      console.log(`[RequisitionService] Reading requisition document: ${requisitionRef.path}`);
+      console.log(`[RequisitionService] Attempting to read requisition document: ${requisitionRef.path}`);
       const requisitionSnap = await transaction.get(requisitionRef);
 
       if (!requisitionSnap.exists()) {
@@ -206,9 +202,14 @@ export const processAndFinalizeAwards = async (
         throw new Error("Requisition not found.");
       }
       const requisitionDataFromTransaction = requisitionSnap.data();
-      console.log(`[RequisitionService] Successfully read requisition ${requisitionId} (Status: ${requisitionDataFromTransaction.status})`);
-
-      const allQuotationsForRequisitionQuery = query(collection(db, "cotizaciones"), where("requisitionId", "==", requisitionId));
+      console.log(`[RequisitionService] Successfully fetched requisition ${requisitionId} within transaction. Status: ${requisitionDataFromTransaction.status}`);
+      
+      // Corrected collection name to "cotizaciones" and added orderBy
+      const allQuotationsForRequisitionQuery = query(
+        collection(db, "cotizaciones"), // Corrected from "quotes"
+        where("requisitionId", "==", requisitionId),
+        orderBy("createdAt") // Added orderBy
+      );
       console.log(`[RequisitionService] Reading all quotations for requisition ${requisitionId}`);
       const allQuotationsSnap = await transaction.get(allQuotationsForRequisitionQuery);
       console.log(`[RequisitionService] Successfully read ${allQuotationsSnap.size} quotations for requisition ${requisitionId}`);
@@ -217,37 +218,34 @@ export const processAndFinalizeAwards = async (
       const awardedQuotationIds = new Set<string>();
       selectedAwards.forEach(award => awardedQuotationIds.add(award.quotationId));
 
-      // Calculate projected purchased quantities based on initial state and selected awards
       const projectedPurchases = new Map<string, number>();
-      initialRequiredProductsList.forEach(initialRP => {
-        let currentProjectedQty = initialRP.data.purchasedQuantity || 0;
-        const awardForThisProduct = selectedAwards.find(sa => sa.productId === initialRP.productId);
-        if (awardForThisProduct) {
-          currentProjectedQty += awardForThisProduct.awardedQuantity;
-        }
-        projectedPurchases.set(initialRP.productId, currentProjectedQty);
-      });
-      console.log(`[RequisitionService] Calculated projected purchases:`, projectedPurchases);
-
-
-      // Determine new requisition status
       let allRequirementsMet = true;
-      if (initialRequiredProductsList.length === 0) {
-        console.log(`[RequisitionService] Requisition ${requisitionId}: No products were initially required. Considering all requirements met.`);
-        allRequirementsMet = true;
+
+      if (initialRequiredProductsList.length === 0 && selectedAwards.length > 0) {
+          console.warn(`[RequisitionService] Requisition ${requisitionId} has no initial required products, but awards are being processed. This might be an error in requisition data.`);
+          allRequirementsMet = false; // Cannot meet requirements if none were defined.
+      } else if (initialRequiredProductsList.length === 0 && selectedAwards.length === 0) {
+           console.log(`[RequisitionService] Requisition ${requisitionId} has no initial required products and no awards. Considering requirements met (vacuously).`);
+           allRequirementsMet = true;
       } else {
-        for (const initialRP of initialRequiredProductsList) {
-          const projectedQty = projectedPurchases.get(initialRP.productId) || 0;
-          if (projectedQty < initialRP.data.requiredQuantity) {
-            allRequirementsMet = false;
-            console.log(`[RequisitionService] Requisition ${requisitionId}: Product ${initialRP.productId} not fully met. Required: ${initialRP.data.requiredQuantity}, Projected: ${projectedQty}`);
-            break;
+          for (const initialRP of initialRequiredProductsList) {
+              let currentProjectedQty = initialRP.data.purchasedQuantity || 0;
+              const awardForThisProduct = selectedAwards.find(sa => sa.productId === initialRP.productId);
+              if (awardForThisProduct) {
+              currentProjectedQty += awardForThisProduct.awardedQuantity;
+              }
+              projectedPurchases.set(initialRP.productId, currentProjectedQty);
+
+              if (currentProjectedQty < initialRP.data.requiredQuantity) {
+              allRequirementsMet = false;
+              console.log(`[RequisitionService] Product ${initialRP.productId} not fully met. Required: ${initialRP.data.requiredQuantity}, Projected: ${currentProjectedQty}`);
+              }
           }
-        }
       }
 
+
       let newRequisitionStatus: RequisitionStatus = requisitionDataFromTransaction.status as RequisitionStatus;
-      if (selectedAwards.length > 0 || newRequisitionStatus === "Quoted" || newRequisitionStatus === "Pending Quotation") {
+       if (selectedAwards.length > 0 || newRequisitionStatus === "Quoted" || newRequisitionStatus === "Pending Quotation") {
           if (allRequirementsMet) {
               newRequisitionStatus = "Completed";
               console.log(`[RequisitionService] All requirements met for ${requisitionId}. Setting status to "Completed".`);
@@ -298,12 +296,9 @@ export const processAndFinalizeAwards = async (
 
   } catch (error: any) {
     console.error(`[RequisitionService] Error in processAndFinalizeAwards for requisitionId ${requisitionId}:`, error);
-    // Log the specific Firestore error code if available
     if (error.code) {
         console.error(`[RequisitionService] Firestore error code: ${error.code}`);
     }
     return { success: false, message: error.message || "Failed to process awards due to an unexpected error." };
   }
 };
-
-    
