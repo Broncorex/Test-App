@@ -71,7 +71,7 @@ interface ProductToCompare extends RequisitionRequiredProduct {
 
 export interface SelectedOfferInfo {
   quotationId: string;
-  quotationDetailId: string;
+  quotationDetailId: string; 
   supplierName: string;
   supplierId: string;
   productId: string;
@@ -142,10 +142,9 @@ export default function CompareQuotationsPage() {
         .filter((quoteHeader) =>
           ["Received", "Partially Awarded", "Awarded"].includes(quoteHeader.status)
         )
-        .map((quoteHeader) => getQuotationById(quoteHeader.id));
+        .map((quoteHeader) => getQuotationById(quoteHeader.id)); // getQuotationById fetches details
 
-      const detailedQuotesNullable = await Promise.all(detailedRelevantQuotesPromises);
-      const validDetailedQuotes = detailedQuotesNullable.filter((q) => q !== null) as Quotation[];
+      const validDetailedQuotes = (await Promise.all(detailedRelevantQuotesPromises)).filter(q => q !== null) as Quotation[];
       setRelevantQuotesWithDetails(validDetailedQuotes);
 
       const productsToCompareMap = new Map<string, ProductToCompare>();
@@ -159,7 +158,7 @@ export default function CompareQuotationsPage() {
         });
       });
 
-      validDetailedQuotes.forEach((quote) => {
+      validDetailedQuotes.forEach((quote) => { // quote here has .quotationDetails
         quote.quotationDetails?.forEach((detail) => {
           const productEntry = productsToCompareMap.get(detail.productId);
           if (productEntry) {
@@ -446,7 +445,8 @@ export default function CompareQuotationsPage() {
 
     setIsSubmittingAwards(true);
     try {
-      const result = await processAndFinalizeAwards(requisitionId, awardsToProcess, currentUser.uid);
+      // Pass relevantQuotesWithDetails to the backend service
+      const result = await processAndFinalizeAwards(requisitionId, awardsToProcess, relevantQuotesWithDetails, currentUser.uid);
       if (result.success) {
         toast({
           title: "Awards Processed & POs Created!",
@@ -455,11 +455,9 @@ export default function CompareQuotationsPage() {
           duration: 7000,
         });
         if (result.createdPurchaseOrderIds && result.createdPurchaseOrderIds.length > 0) {
-            // Optionally redirect to the first PO or the PO list
-            // router.push(`/purchase-orders/${result.createdPurchaseOrderIds[0]}`);
-            router.push('/purchase-orders'); // Or to the PO list
+            router.push('/purchase-orders'); 
         } else {
-            fetchComparisonData(); // Refresh current page data if no POs created but other state changed
+            fetchComparisonData(); 
         }
       } else {
         toast({ title: "Finalization Failed", description: result.message || "Could not process awards or create POs.", variant: "destructive" });
