@@ -15,7 +15,7 @@ import {
   TableHead,
   TableCell,
 } from "@/components/ui/table";
-import { Input } from "@/components/ui/input"; // Added Input
+import { Input } from "@/components/ui/input"; 
 import {
   Select,
   SelectContent,
@@ -37,7 +37,7 @@ export default function RequisitionsPage() {
   const [requisitions, setRequisitions] = useState<Requisition[]>([]);
   const [isLoadingData, setIsLoadingData] = useState(true);
   const [filterStatus, setFilterStatus] = useState<RequisitionStatus | "all">("all");
-  const [filterRequestingUserId, setFilterRequestingUserId] = useState<string>(""); // Changed from "all" to "" for text input
+  const [filterRequestingUserName, setFilterRequestingUserName] = useState<string>(""); 
 
   const { toast } = useToast();
   const { role, appUser, currentUser } = useAuth();
@@ -51,8 +51,9 @@ export default function RequisitionsPage() {
     try {
       const filters: RequisitionFilters = {
         status: filterStatus !== "all" ? filterStatus : undefined,
-        // Pass userId if it's not empty and user is admin/superadmin
-        requestingUserId: (canManageAll && filterRequestingUserId.trim() !== "") ? filterRequestingUserId.trim() : undefined,
+        // We will not pass userName to backend for filtering; it will be client-side for admins
+        // If user is employee, backend handles filtering by their ID.
+        // If admin is filtering by a specific User ID (not name), that would go here, but current UI is name based.
       };
       
       const fetchedRequisitions = await getAllRequisitions(filters, currentUser.uid, role);
@@ -63,7 +64,7 @@ export default function RequisitionsPage() {
       toast({ title: "Error", description: "Failed to fetch requisitions.", variant: "destructive" });
     }
     setIsLoadingData(false);
-  }, [toast, appUser, currentUser, role, filterStatus, filterRequestingUserId, canManageAll]);
+  }, [toast, appUser, currentUser, role, filterStatus]);
 
   useEffect(() => {
     fetchPageData();
@@ -93,6 +94,27 @@ export default function RequisitionsPage() {
     }
   };
 
+  const displayedRequisitions = useMemo(() => {
+    let filtered = requisitions;
+
+    if (canManageAll && filterRequestingUserName.trim() !== "") {
+      const lowerCaseFilterName = filterRequestingUserName.trim().toLowerCase();
+      filtered = filtered.filter(req => 
+        req.requestingUserName?.toLowerCase().includes(lowerCaseFilterName)
+      );
+    }
+    // Status filter is applied at backend for initial fetch, 
+    // but if we want to apply it again on client side after name filter, we can:
+    // if (filterStatus !== "all") {
+    //   filtered = filtered.filter(req => req.status === filterStatus);
+    // }
+    // However, it's generally better to let the backend do as much filtering as possible.
+    // The backend already filters by status based on filterStatus state.
+
+    return filtered;
+  }, [requisitions, filterRequestingUserName, canManageAll]);
+
+
   return (
     <>
       <PageHeader
@@ -117,9 +139,9 @@ export default function RequisitionsPage() {
             </Select>
             {canManageAll && (
               <Input
-                placeholder="Filter by Requesting User ID..."
-                value={filterRequestingUserId}
-                onChange={(e) => setFilterRequestingUserId(e.target.value)}
+                placeholder="Filter by Requesting User Name..."
+                value={filterRequestingUserName}
+                onChange={(e) => setFilterRequestingUserName(e.target.value)}
               />
             )}
           </div>
@@ -143,11 +165,11 @@ export default function RequisitionsPage() {
                     <TableCell><Skeleton className="h-5 w-32" /></TableCell>
                     <TableCell><Skeleton className="h-5 w-24" /></TableCell>
                     <TableCell><Skeleton className="h-6 w-28" /></TableCell>
-                    <TableCell className="text-right"><Skeleton className="h-8 w-20 ml-auto" /></TableCell>
+                    <TableCell className="text-right"><Skeleton className="h-8 w-32 ml-auto" /></TableCell>
                   </TableRow>
                 ))
-              ) : requisitions.length > 0 ? (
-                requisitions.map((req) => (
+              ) : displayedRequisitions.length > 0 ? (
+                displayedRequisitions.map((req) => (
                   <TableRow key={req.id}>
                     <TableCell className="font-medium truncate max-w-[150px]">{req.id}</TableCell>
                     <TableCell>{req.requestingUserName || "N/A"}</TableCell>
@@ -159,7 +181,7 @@ export default function RequisitionsPage() {
                     </TableCell>
                     <TableCell className="text-right space-x-1">
                       <Button variant="outline" size="sm" onClick={() => router.push(`/requisitions/${req.id}`)}>
-                        <Icons.View className="h-4 w-4" /> View Details
+                        <Icons.View className="h-4 w-4 mr-1" /> View Details
                       </Button>
                     </TableCell>
                   </TableRow>
@@ -167,7 +189,7 @@ export default function RequisitionsPage() {
               ) : (
                 <TableRow>
                   <TableCell colSpan={5} className="h-24 text-center">
-                    No requisitions found.
+                    No requisitions found matching your criteria.
                   </TableCell>
                 </TableRow>
               )}
