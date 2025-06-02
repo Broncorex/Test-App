@@ -17,7 +17,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import type { Quotation, QuotationStatus } from "@/types";
 import { format, isValid } from "date-fns";
-import type { Timestamp } from "firebase/firestore";
+import { Timestamp } from "firebase/firestore"; // Added import
 import Link from "next/link";
 import { Icons } from "@/components/icons";
 import { cn } from "@/lib/utils";
@@ -187,4 +187,3 @@ export function ComparisonDialog({
     </Dialog>
   );
 }
-
