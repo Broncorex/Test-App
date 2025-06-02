@@ -45,7 +45,7 @@ import {
   updateSupplierProduct,
   toggleSupplierProductActiveStatus,
   type CreateSupplierProductData,
-  type UpdateSupplierProductData
+  type UpdateSupplierProductData as UpdateSPData
 } from "@/services/supplierProductService";
 import type { Product, Category, Supplier, ProveedorProducto, PriceRange } from "@/types";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -229,9 +229,9 @@ export default function EditProductPage() {
 
   const calculatedSellingPrice = useMemo(() => {
     return calculateSellingPrice(
-      watchedBasePrice || 0,
-      watchedDiscountPercentage || 0,
-      watchedDiscountAmount || 0
+      Number(watchedBasePrice || 0),
+      Number(watchedDiscountPercentage || 0),
+      Number(watchedDiscountAmount || 0)
     );
   }, [watchedBasePrice, watchedDiscountPercentage, watchedDiscountAmount]);
 
@@ -271,9 +271,9 @@ export default function EditProductPage() {
         reset({
           name: fetchedProd.name,
           description: fetchedProd.description,
-          basePrice: fetchedProd.basePrice,
-          discountPercentage: fetchedProd.discountPercentage || 0,
-          discountAmount: fetchedProd.discountAmount || 0,
+          basePrice: Number(fetchedProd.basePrice),
+          discountPercentage: Number(fetchedProd.discountPercentage || 0),
+          discountAmount: Number(fetchedProd.discountAmount || 0),
           unitOfMeasure: fetchedProd.unitOfMeasure || "",
           categoryIds: fetchedProd.categoryIds || [],
           isAvailableForSale: fetchedProd.isAvailableForSale,
@@ -281,13 +281,13 @@ export default function EditProductPage() {
           promotionEndDate: formatDateForInput(fetchedProd.promotionEndDate),
           imageUrl: fetchedProd.imageUrl,
           tags: (fetchedProd.tags || []).join(", "),
-          lowStockThreshold: fetchedProd.lowStockThreshold,
+          lowStockThreshold: Number(fetchedProd.lowStockThreshold),
           supplierId: fetchedProd.supplierId,
           barcode: fetchedProd.barcode,
-          weight: fetchedProd.weight,
-          dimensions_length: getDimensionValue(fetchedProd.dimensions?.length, flatProductData.dimensions_length),
-          dimensions_width: getDimensionValue(fetchedProd.dimensions?.width, flatProductData.dimensions_width),
-          dimensions_height: getDimensionValue(fetchedProd.dimensions?.height, flatProductData.dimensions_height),
+          weight: Number(fetchedProd.weight),
+          dimensions_length: Number(getDimensionValue(fetchedProd.dimensions?.length, flatProductData.dimensions_length)),
+          dimensions_width: Number(getDimensionValue(fetchedProd.dimensions?.width, flatProductData.dimensions_width)),
+          dimensions_height: Number(getDimensionValue(fetchedProd.dimensions?.height, flatProductData.dimensions_height)),
           dimensions_unit: fetchedProd.dimensions?.dimensionUnit || flatProductData.dimensions_unit || "cm",
           supplierSpecificInfo: supplierSpecificInfoData,
         });
@@ -408,17 +408,27 @@ export default function EditProductPage() {
 
     try {
       const productData: UpdateProductData = {
-        name: values.name, description: values.description, basePrice: values.basePrice,
-        discountPercentage: values.discountPercentage, discountAmount: values.discountAmount,
-        unitOfMeasure: values.unitOfMeasure, categoryIds: values.categoryIds,
+        name: values.name, 
+        description: values.description, 
+        basePrice: Number(values.basePrice),
+        discountPercentage: Number(values.discountPercentage || 0), 
+        discountAmount: Number(values.discountAmount || 0),
+        unitOfMeasure: values.unitOfMeasure, 
+        categoryIds: values.categoryIds,
         isAvailableForSale: values.isAvailableForSale,
         promotionStartDate: values.promotionStartDate ? Timestamp.fromDate(new Date(values.promotionStartDate)) : null,
         promotionEndDate: values.promotionEndDate ? Timestamp.fromDate(new Date(values.promotionEndDate)) : null,
-        imageUrl: finalImageUrl, tags: values.tags.split(",").map(tag => tag.trim()).filter(tag => tag.length > 0),
-        lowStockThreshold: values.lowStockThreshold, supplierId: values.supplierId, barcode: values.barcode,
-        weight: values.weight, dimensions: {
-          length: values.dimensions_length, width: values.dimensions_width,
-          height: values.dimensions_height, dimensionUnit: values.dimensions_unit,
+        imageUrl: finalImageUrl, 
+        tags: values.tags.split(",").map(tag => tag.trim()).filter(tag => tag.length > 0),
+        lowStockThreshold: Number(values.lowStockThreshold), 
+        supplierId: values.supplierId, 
+        barcode: values.barcode,
+        weight: Number(values.weight), 
+        dimensions: {
+          length: Number(values.dimensions_length), 
+          width: Number(values.dimensions_width),
+          height: Number(values.dimensions_height), 
+          dimensionUnit: values.dimensions_unit,
         }
       };
       await updateProduct(productId, productData);
@@ -429,7 +439,12 @@ export default function EditProductPage() {
             supplierId: item.supplierId,
             productId: productId, 
             supplierSku: item.supplierSku,
-            priceRanges: item.priceRanges.map(pr => ({...pr, price: pr.price === null ? null : Number(pr.price), maxQuantity: pr.maxQuantity === null ? null : Number(pr.maxQuantity) })),
+            priceRanges: item.priceRanges.map(pr => ({
+                ...pr, 
+                price: pr.price === null ? null : Number(pr.price), 
+                minQuantity: Number(pr.minQuantity),
+                maxQuantity: pr.maxQuantity === null ? null : Number(pr.maxQuantity)
+            })),
             isAvailable: item.isAvailable,
             notes: item.notes || "",
           };
@@ -441,7 +456,7 @@ export default function EditProductPage() {
                 await toggleSupplierProductActiveStatus(item.id, true); 
                }
             } else { 
-              await updateSupplierProduct(item.id, serviceData as UpdateSupplierProductData);
+              await updateSupplierProduct(item.id, serviceData as UpdateSPData);
             }
           } else if (item.isActive !== false) { 
             await createSupplierProduct(serviceData as CreateSupplierProductData, currentUser.uid);
@@ -696,3 +711,4 @@ export default function EditProductPage() {
     </>
   );
 }
+

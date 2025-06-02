@@ -72,9 +72,8 @@ const supplierProductFormSchema = z.object({
 
       for (let i = 0; i < sortedRanges.length; i++) {
         const current = sortedRanges[i];
-        const originalIndex = ranges.indexOf(current); // Get original index for error path
+        const originalIndex = ranges.indexOf(current); 
 
-        // Rule 1: maxQuantity (if not null) must be greater than minQuantity
         if (current.maxQuantity !== null && current.maxQuantity !== undefined) {
           if (current.maxQuantity <= current.minQuantity) {
             ctx.addIssue({
@@ -85,12 +84,10 @@ const supplierProductFormSchema = z.object({
           }
         }
 
-        // Rule 2: Check for overlaps with the *next* range
         if (i < sortedRanges.length - 1) {
           const next = sortedRanges[i + 1];
           const originalNextIndex = ranges.indexOf(next);
 
-          // If current range has defined max quantity
           if (current.maxQuantity !== null && current.maxQuantity !== undefined) {
             if (next.minQuantity <= current.maxQuantity) {
               ctx.addIssue({
@@ -100,7 +97,6 @@ const supplierProductFormSchema = z.object({
               });
             }
           } else {
-            // Current range has maxQuantity = null (i.e., "or more")
             ctx.addIssue({
               code: z.ZodIssueCode.custom,
               message: "A price range with no maximum quantity (i.e., 'or more') must be the last range defined.",
@@ -199,7 +195,7 @@ export default function CreateProductPage() {
 
   const calculatedSellingPrice = useMemo(() => {
     return calculateSellingPrice(
-      watchedBasePrice || 0, watchedDiscountPercentage || 0, watchedDiscountAmount || 0
+      Number(watchedBasePrice || 0), Number(watchedDiscountPercentage || 0), Number(watchedDiscountAmount || 0)
     );
   }, [watchedBasePrice, watchedDiscountPercentage, watchedDiscountAmount]);
 
@@ -317,16 +313,26 @@ export default function CreateProductPage() {
     try {
       const finalFormValues = getValues(); 
       const productData: CreateProductData = {
-        name: finalFormValues.name, description: finalFormValues.description, sku: finalFormValues.sku || undefined,
-        basePrice: finalFormValues.basePrice, discountPercentage: finalFormValues.discountPercentage,
-        discountAmount: finalFormValues.discountAmount, unitOfMeasure: finalFormValues.unitOfMeasure,
-        categoryIds: finalFormValues.categoryIds, isAvailableForSale: finalFormValues.isAvailableForSale,
-        imageUrl: uploadedImageUrl, tags: finalFormValues.tags.split(",").map(tag => tag.trim()).filter(tag => tag.length > 0),
-        lowStockThreshold: finalFormValues.lowStockThreshold, supplierId: finalFormValues.supplierId,
-        barcode: finalFormValues.barcode, weight: finalFormValues.weight,
+        name: finalFormValues.name, 
+        description: finalFormValues.description, 
+        sku: finalFormValues.sku || undefined,
+        basePrice: Number(finalFormValues.basePrice), 
+        discountPercentage: Number(finalFormValues.discountPercentage || 0),
+        discountAmount: Number(finalFormValues.discountAmount || 0), 
+        unitOfMeasure: finalFormValues.unitOfMeasure,
+        categoryIds: finalFormValues.categoryIds, 
+        isAvailableForSale: finalFormValues.isAvailableForSale,
+        imageUrl: uploadedImageUrl, 
+        tags: finalFormValues.tags.split(",").map(tag => tag.trim()).filter(tag => tag.length > 0),
+        lowStockThreshold: Number(finalFormValues.lowStockThreshold), 
+        supplierId: finalFormValues.supplierId,
+        barcode: finalFormValues.barcode, 
+        weight: Number(finalFormValues.weight),
         dimensions: {
-          length: finalFormValues.dimensions_length, width: finalFormValues.dimensions_width,
-          height: finalFormValues.dimensions_height, dimensionUnit: finalFormValues.dimensions_unit,
+          length: Number(finalFormValues.dimensions_length), 
+          width: Number(finalFormValues.dimensions_width),
+          height: Number(finalFormValues.dimensions_height), 
+          dimensionUnit: finalFormValues.dimensions_unit,
         },
         costPrice: 0, 
         promotionStartDate: finalFormValues.promotionStartDate ? Timestamp.fromDate(new Date(finalFormValues.promotionStartDate)) : null,
@@ -338,9 +344,17 @@ export default function CreateProductPage() {
         for (const item of finalFormValues.supplierSpecificInfo) {
           if (item.isActive !== false) { 
             const spData: CreateSPData = {
-              supplierId: item.supplierId, productId: newProductId, supplierSku: item.supplierSku,
-              priceRanges: item.priceRanges.map(pr => ({...pr, price: pr.price === null ? null : Number(pr.price), maxQuantity: pr.maxQuantity === null ? null : Number(pr.maxQuantity) })),
-              isAvailable: item.isAvailable, notes: item.notes || "",
+              supplierId: item.supplierId, 
+              productId: newProductId, 
+              supplierSku: item.supplierSku,
+              priceRanges: item.priceRanges.map(pr => ({
+                ...pr, 
+                price: pr.price === null ? null : Number(pr.price), 
+                minQuantity: Number(pr.minQuantity),
+                maxQuantity: pr.maxQuantity === null ? null : Number(pr.maxQuantity) 
+              })),
+              isAvailable: item.isAvailable, 
+              notes: item.notes || "",
             };
             await createSupplierProduct(spData, currentUser.uid);
           }
@@ -532,6 +546,9 @@ export default function CreateProductPage() {
                     <Button type="button" variant="outline" size="sm" onClick={() => appendPriceRange({ minQuantity: 0, maxQuantity: null, price: null, priceType: "fixed", additionalConditions: "" })}>
                       <Icons.Add className="mr-2 h-4 w-4"/> Add Price Range
                     </Button>
+                     {supplierProductDialogForm.formState.errors.priceRanges && typeof supplierProductDialogForm.formState.errors.priceRanges.message === 'string' && (
+                        <p className="text-sm font-medium text-destructive">{supplierProductDialogForm.formState.errors.priceRanges.message}</p>
+                     )}
                   </CardContent>
                 </Card>
 
@@ -551,3 +568,4 @@ export default function CreateProductPage() {
     </>
   );
 }
+

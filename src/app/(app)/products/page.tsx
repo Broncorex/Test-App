@@ -20,13 +20,13 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useToast } from "@/hooks/use-toast";
-import type { Product, Category, Supplier, ProveedorProducto } from "@/types"; // Added ProveedorProducto
+import type { Product, Category, Supplier, ProveedorProducto } from "@/types"; 
 import { Skeleton } from "@/components/ui/skeleton";
 import { useAuth } from "@/hooks/use-auth-store";
 import { getAllProducts, toggleProductActiveStatus, type ProductFilters } from "@/services/productService";
 import { getAllCategories } from "@/services/categoryService";
 import { getAllSuppliers } from "@/services/supplierService";
-import { getAllSupplierProductsByProduct } from "@/services/supplierProductService"; // Added
+import { getAllSupplierProductsByProduct } from "@/services/supplierProductService"; 
 import {
   AlertDialog,
   AlertDialogAction,
@@ -57,7 +57,7 @@ import {
 } from "@/components/ui/select";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Timestamp } from "firebase/firestore";
-import { Separator } from "@/components/ui/separator"; // Added
+import { Separator } from "@/components/ui/separator"; 
 
 export default function ProductsPage() {
   const [products, setProducts] = useState<Product[]>([]);
@@ -72,8 +72,8 @@ export default function ProductsPage() {
 
   const [isViewDialogOpen, setIsViewDialogOpen] = useState(false);
   const [viewingProduct, setViewingProduct] = useState<Product | null>(null);
-  const [viewingSupplierProducts, setViewingSupplierProducts] = useState<ProveedorProducto[]>([]); // New state
-  const [isLoadingSupplierProducts, setIsLoadingSupplierProducts] = useState(false); // New state
+  const [viewingSupplierProducts, setViewingSupplierProducts] = useState<ProveedorProducto[]>([]); 
+  const [isLoadingSupplierProducts, setIsLoadingSupplierProducts] = useState(false); 
 
   const { toast } = useToast();
   const { role } = useAuth();
@@ -137,12 +137,29 @@ export default function ProductsPage() {
   };
 
   const handleViewDetails = async (product: Product) => {
-    setViewingProduct(product);
+    // Ensure numeric fields are indeed numbers before setting state for view
+    const numericProduct: Product = {
+        ...product,
+        costPrice: Number(product.costPrice),
+        basePrice: Number(product.basePrice),
+        sellingPrice: Number(product.sellingPrice),
+        discountPercentage: Number(product.discountPercentage || 0),
+        discountAmount: Number(product.discountAmount || 0),
+        lowStockThreshold: Number(product.lowStockThreshold),
+        weight: Number(product.weight),
+        dimensions: {
+            ...(product.dimensions || {}), // Handle case where dimensions might be missing
+            length: Number(product.dimensions?.length || 0),
+            width: Number(product.dimensions?.width || 0),
+            height: Number(product.dimensions?.height || 0),
+            dimensionUnit: product.dimensions?.dimensionUnit || "cm",
+        }
+    };
+    setViewingProduct(numericProduct);
     setIsViewDialogOpen(true);
-    setViewingSupplierProducts([]); // Clear previous
+    setViewingSupplierProducts([]); 
     setIsLoadingSupplierProducts(true);
     try {
-      // Fetch all (active and inactive) supplier-product links
       const supProds = await getAllSupplierProductsByProduct(product.id, true); 
       setViewingSupplierProducts(supProds);
     } catch (error) {
@@ -251,7 +268,7 @@ export default function ProductsPage() {
                     <TableCell>{product.sku}</TableCell>
                     <TableCell>{getCategoryNames(product.categoryIds)}</TableCell>
                     <TableCell>{getSupplierName(product.supplierId)}</TableCell>
-                    <TableCell className="text-right">${product.sellingPrice.toFixed(2)}</TableCell>
+                    <TableCell className="text-right">${Number(product.sellingPrice || 0).toFixed(2)}</TableCell>
                     <TableCell>
                       <Badge variant={product.isActive ? "default" : "destructive"} className={product.isActive ? "bg-green-500 text-white hover:bg-green-600" : "hover:bg-red-700"}>
                         {product.isActive ? "Active" : "Inactive"}
@@ -341,20 +358,20 @@ export default function ProductsPage() {
                   <div><Label className="text-xs font-semibold text-muted-foreground">Categories</Label><p className="text-sm">{getCategoryNames(viewingProduct.categoryIds)}</p></div>
                   <div><Label className="text-xs font-semibold text-muted-foreground">Primary Supplier</Label><p className="text-sm">{getSupplierName(viewingProduct.supplierId)}</p></div>
                   
-                  <div><Label className="text-xs font-semibold text-muted-foreground">Cost Price</Label><p className="text-sm">${viewingProduct.costPrice.toFixed(2)}</p></div>
-                  <div><Label className="text-xs font-semibold text-muted-foreground">Base Price</Label><p className="text-sm">${viewingProduct.basePrice.toFixed(2)}</p></div>
+                  <div><Label className="text-xs font-semibold text-muted-foreground">Cost Price</Label><p className="text-sm">${Number(viewingProduct.costPrice).toFixed(2)}</p></div>
+                  <div><Label className="text-xs font-semibold text-muted-foreground">Base Price</Label><p className="text-sm">${Number(viewingProduct.basePrice).toFixed(2)}</p></div>
                   
-                  <div><Label className="text-xs font-semibold text-muted-foreground">Discount %</Label><p className="text-sm">{viewingProduct.discountPercentage || 0}%</p></div>
-                  <div><Label className="text-xs font-semibold text-muted-foreground">Discount Amount</Label><p className="text-sm">${(viewingProduct.discountAmount || 0).toFixed(2)}</p></div>
+                  <div><Label className="text-xs font-semibold text-muted-foreground">Discount %</Label><p className="text-sm">{Number(viewingProduct.discountPercentage || 0)}%</p></div>
+                  <div><Label className="text-xs font-semibold text-muted-foreground">Discount Amount</Label><p className="text-sm">${Number(viewingProduct.discountAmount || 0).toFixed(2)}</p></div>
                   
-                  <div><Label className="text-xs font-semibold text-muted-foreground">Selling Price</Label><p className="text-sm font-bold text-primary">${viewingProduct.sellingPrice.toFixed(2)}</p></div>
-                  <div><Label className="text-xs font-semibold text-muted-foreground">Low Stock Threshold</Label><p className="text-sm">{viewingProduct.lowStockThreshold}</p></div>
+                  <div><Label className="text-xs font-semibold text-muted-foreground">Selling Price</Label><p className="text-sm font-bold text-primary">${Number(viewingProduct.sellingPrice).toFixed(2)}</p></div>
+                  <div><Label className="text-xs font-semibold text-muted-foreground">Low Stock Threshold</Label><p className="text-sm">{Number(viewingProduct.lowStockThreshold)}</p></div>
 
-                  <div><Label className="text-xs font-semibold text-muted-foreground">Weight</Label><p className="text-sm">{viewingProduct.weight} kg</p></div>
+                  <div><Label className="text-xs font-semibold text-muted-foreground">Weight</Label><p className="text-sm">{Number(viewingProduct.weight)} kg</p></div>
                   <div>
                     <Label className="text-xs font-semibold text-muted-foreground">Dimensions (LxWxH)</Label>
                     <p className="text-sm">
-                      {viewingProduct.dimensions.length} x {viewingProduct.dimensions.width} x {viewingProduct.dimensions.height} {viewingProduct.dimensions.dimensionUnit || ""}
+                      {Number(viewingProduct.dimensions.length)} x {Number(viewingProduct.dimensions.width)} x {Number(viewingProduct.dimensions.height)} {viewingProduct.dimensions.dimensionUnit || ""}
                     </p>
                   </div>
                    <div><Label className="text-xs font-semibold text-muted-foreground">Unit of Measure</Label><p className="text-sm">{viewingProduct.unitOfMeasure || "N/A"}</p></div>
@@ -416,12 +433,12 @@ export default function ProductsPage() {
                                   {sp.priceRanges.map((pr, index) => (
                                     <li key={index} className="text-xs flex justify-between border-b border-dashed border-border/50 py-0.5">
                                       <span>
-                                        Qty: {pr.minQuantity}
-                                        {pr.maxQuantity ? `-${pr.maxQuantity}` : '+'}
+                                        Qty: {Number(pr.minQuantity)}
+                                        {pr.maxQuantity ? `-${Number(pr.maxQuantity)}` : '+'}
                                         {pr.additionalConditions && <span className="text-muted-foreground text-[11px]"> ({pr.additionalConditions})</span>}
                                       </span>
                                       <span className="font-medium">
-                                        {pr.priceType === 'fixed' && pr.price !== null ? `$${pr.price.toFixed(2)}` : pr.priceType}
+                                        {pr.priceType === 'fixed' && pr.price !== null ? `$${Number(pr.price).toFixed(2)}` : pr.priceType}
                                       </span>
                                     </li>
                                   ))}
