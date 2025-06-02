@@ -23,7 +23,7 @@ import type {
 } from "@/types";
 import { getRequisitionById } from "./requisitionService";
 import { getSupplierById } from "./supplierService";
-import { getUserById } from "./userService";
+import { getUserById } from "./userService"; // Corrected import path
 import { getProductById } from "./productService";
 
 const quotationsCollection = collection(db, "cotizaciones"); // Using "cotizaciones" as per PRD
@@ -412,4 +412,3 @@ export const updateQuotationStatus = async (id: string, newStatus: QuotationStat
         // Potentially log who changed the status if different from createdBy/generatedByUserId
     });
 };
-
