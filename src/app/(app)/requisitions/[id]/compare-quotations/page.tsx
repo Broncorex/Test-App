@@ -13,7 +13,7 @@ import {
   CardHeader,
   CardTitle,
   CardDescription,
-  CardFooter,
+  CardFooter, // Ensure CardFooter is imported
 } from "@/components/ui/card";
 import {
   Table,
@@ -45,7 +45,7 @@ import {
 import { useAuth } from "@/hooks/use-auth-store";
 import { useToast } from "@/hooks/use-toast";
 import { format, isValid, differenceInCalendarDays } from "date-fns";
-import { Timestamp } from "firebase/firestore"; // Added Timestamp import
+import { Timestamp } from "firebase/firestore";
 import { Icons } from "@/components/icons";
 import { cn } from "@/lib/utils";
 import { Separator } from "@/components/ui/separator";
@@ -62,7 +62,7 @@ interface QuotationOffer extends QuotationDetail {
 }
 
 interface ProductToCompare extends RequisitionRequiredProduct {
-  requisitionProductId: string; // This is the ID of the RequiredProduct document in subcollection
+  requisitionProductId: string;
   offers: QuotationOffer[];
   alreadyPurchased: number;
   remainingToAward: number;
@@ -70,7 +70,7 @@ interface ProductToCompare extends RequisitionRequiredProduct {
 
 export interface SelectedOfferInfo {
   quotationId: string;
-  quotationDetailId: string; // This is the ID of the QuotationDetail document
+  quotationDetailId: string;
   supplierName: string;
   supplierId: string;
   productId: string;
@@ -110,7 +110,6 @@ export default function CompareQuotationsPage() {
   const [isSubmittingAwards, setIsSubmittingAwards] = useState(false);
 
   const [selectedOffers, setSelectedOffers] = useState<Record<string, SelectedOfferInfo | null>>({});
-
   const [maxDeliveryDays, setMaxDeliveryDays] = useState<string>("");
   const [isCalculatingCombination, setIsCalculatingCombination] = useState(false);
 
@@ -189,28 +188,21 @@ export default function CompareQuotationsPage() {
 
   const handleOfferSelection = (
     requisitionProductId: string,
-    selectedQuotationDetailId: string | null // Now receives the quotationDetailId or null if clearing
+    clickedOfferDetailId: string | null 
   ) => {
-    setSelectedOffers((prev) => {
-      const updated = { ...prev };
+    setSelectedOffers((prevSelectedOffers) => {
+      const updated = { ...prevSelectedOffers };
       const productBeingAwarded = productsForComparison.find((p) => p.requisitionProductId === requisitionProductId);
-      if (!productBeingAwarded) return prev;
+      if (!productBeingAwarded) return prevSelectedOffers;
 
-      const currentlySelectedOfferForProduct = prev[requisitionProductId];
-
-      // If the clicked offer is the same as the one already selected, deselect it
-      if (currentlySelectedOfferForProduct && selectedQuotationDetailId === currentlySelectedOfferForProduct.quotationDetailId) {
+      // If no offer ID is provided (e.g. from a 'Clear' button), deselect.
+      if (clickedOfferDetailId === null) {
         updated[requisitionProductId] = null;
         return updated;
       }
-      
-      // If no quotationDetailId is provided (e.g. from a clear button, not used with radio) or no offer is found
-      if (!selectedQuotationDetailId) {
-          updated[requisitionProductId] = null;
-          return updated;
-      }
 
-      const offer = productBeingAwarded.offers.find(o => o.id === selectedQuotationDetailId);
+      // If an offer ID is provided, proceed to select it.
+      const offer = productBeingAwarded.offers.find(o => o.id === clickedOfferDetailId);
 
       if (offer) {
         const remainingToAward = productBeingAwarded.remainingToAward;
@@ -228,7 +220,7 @@ export default function CompareQuotationsPage() {
         } else {
           updated[requisitionProductId] = {
             quotationId: offer.quotationId,
-            quotationDetailId: offer.id,
+            quotationDetailId: offer.id, 
             supplierName: offer.supplierName,
             supplierId: offer.supplierId,
             productId: offer.productId,
@@ -238,7 +230,7 @@ export default function CompareQuotationsPage() {
           };
         }
       } else {
-        updated[requisitionProductId] = null; // Offer not found, clear selection
+        updated[requisitionProductId] = null; // Offer not found for the ID, clear selection
       }
       return updated;
     });
@@ -340,27 +332,27 @@ export default function CompareQuotationsPage() {
                 return etaA - etaB;
             });
             bestOfferForProduct = fullyFulfillingOffers[0];
-        } else { // No single offer fulfills, find best partial
+        } else { 
             validOffersForProduct.sort((a, b) => {
                  if (a.unitPriceQuoted !== b.unitPriceQuoted) return a.unitPriceQuoted - b.unitPriceQuoted;
                 const etaA = a.estimatedDeliveryDate?.toMillis() || Infinity;
                 const etaB = b.estimatedDeliveryDate?.toMillis() || Infinity;
                 return etaA - etaB;
             });
-            bestOfferForProduct = validOffersForProduct[0]; // Pick the cheapest available offer
+            bestOfferForProduct = validOffersForProduct[0]; 
         }
         
         if (bestOfferForProduct) {
             const quantityToAwardThisTime = Math.min(product.remainingToAward, bestOfferForProduct.quotedQuantity);
              if (quantityToAwardThisTime < product.remainingToAward && quantityToAwardThisTime > 0) {
-                allProductsAttemptedForFulfillment = false; // Flag that not all items fully met by this heuristic pass
+                allProductsAttemptedForFulfillment = false; 
                 toast({
                     title: "Partial Fulfillment Warning",
                     description: `Best offer for ${product.productName} from ${bestOfferForProduct.supplierName} only covers ${quantityToAwardThisTime} of ${product.remainingToAward} units.`,
                     variant: "default",
                     duration: 6000
                 });
-            } else if (quantityToAwardThisTime <= 0) { // Should not happen if remainingToAward > 0 and validOffers filters correctly
+            } else if (quantityToAwardThisTime <= 0) { 
                  allProductsAttemptedForFulfillment = false;
                  newSelectedOffers[product.requisitionProductId] = null;
                  continue;
@@ -375,7 +367,7 @@ export default function CompareQuotationsPage() {
                 awardedQuantity: quantityToAwardThisTime,
                 unitPrice: bestOfferForProduct.unitPriceQuoted,
             };
-        } else { // No suitable offer found even for partial.
+        } else { 
             allProductsAttemptedForFulfillment = false;
             newSelectedOffers[product.requisitionProductId] = null;
         }
@@ -418,8 +410,8 @@ export default function CompareQuotationsPage() {
 
   const handleFinalizeAwards = async () => {
     const awardsToProcess = Object.values(selectedOffers).filter((offer) => offer !== null) as SelectedOfferInfo[];
-    if (awardsToProcess.length === 0) {
-      toast({ title: "No Selections", description: "Please select at least one offer to award.", variant: "default" });
+    if (awardsToProcess.length === 0 && productsForComparison.some(p => p.remainingToAward > 0)) {
+      toast({ title: "No Selections", description: "Please select at least one offer to award or ensure all requirements are met.", variant: "default" });
       return;
     }
     if (!currentUser || (role !== "admin" && role !== "superadmin")) {
@@ -444,7 +436,14 @@ export default function CompareQuotationsPage() {
             variant: "default",
             duration: 10000, 
         });
+    } else if (awardsToProcess.length > 0) {
+        toast({
+            title: "Award Confirmation",
+            description: "All selected product requirements appear to be met. Proceeding with finalization.",
+            variant: "default",
+        });
     }
+
 
     setIsSubmittingAwards(true);
     try {
@@ -540,7 +539,6 @@ export default function CompareQuotationsPage() {
                   <RadioGroup
                     value={selectedOffers[product.requisitionProductId]?.quotationDetailId || ""}
                     onValueChange={(value) => {
-                      // The value from RadioGroup is the quotationDetailId (which is offer.id)
                       handleOfferSelection(product.requisitionProductId, value);
                     }}
                   >
@@ -596,6 +594,18 @@ export default function CompareQuotationsPage() {
                   <p className="text-sm text-muted-foreground">No supplier offers received for this product yet.</p>
                 )}
               </CardContent>
+               {product.offers.length > 0 && (
+                 <CardFooter className="pt-2 border-t">
+                    <Button 
+                        variant="outline" 
+                        size="sm" 
+                        onClick={() => handleOfferSelection(product.requisitionProductId, null)}
+                        disabled={!selectedOffers[product.requisitionProductId]}
+                    >
+                        <Icons.Delete className="mr-2 h-3 w-3" /> Clear Selection for {product.productName}
+                    </Button>
+                 </CardFooter>
+                )}
             </Card>
           ))}
 
@@ -656,7 +666,7 @@ export default function CompareQuotationsPage() {
                 </div>
               </CardContent>
               <CardFooter className="flex justify-end">
-                <Button size="lg" onClick={handleFinalizeAwards} disabled={awardSummaryDetails.awardedItems.length === 0 || isSubmittingAwards || isLoading}>
+                <Button size="lg" onClick={handleFinalizeAwards} disabled={awardSummaryDetails.awardedItems.length === 0 && productsForComparison.some(p => p.remainingToAward > 0) || isSubmittingAwards || isLoading}>
                   {isSubmittingAwards ? <Icons.Logo className="mr-2 h-5 w-5 animate-spin" /> : <Icons.DollarSign className="mr-2 h-5 w-5" />}
                   {isSubmittingAwards ? "Processing..." : "Confirm & Finalize Awards"}
                 </Button>
@@ -668,3 +678,5 @@ export default function CompareQuotationsPage() {
     </>
   );
 }
+
+    
