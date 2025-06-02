@@ -9,7 +9,7 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth-store";
-import { getQuotationById, updateQuotationStatus, receiveQuotation, type UpdateReceivedQuotationData } from "@/services/quotationService";
+import { getQuotationById, updateQuotationStatus, receiveQuotation, type UpdateReceivedQuotationData, getAllQuotations } from "@/services/quotationService";
 import type { Quotation, QuotationStatus, QuotationDetail, QuotationAdditionalCost, Product } from "@/types";
 import { QUOTATION_STATUSES, QUOTATION_ADDITIONAL_COST_TYPES } from "@/types";
 import { Timestamp } from "firebase/firestore";
@@ -23,7 +23,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Calendar } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { format } from "date-fns";
+import { format, isValid } from "date-fns";
 import { useFieldArray, useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
@@ -31,9 +31,9 @@ import Link from "next/link";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
+import { Label } from "@/components/ui/label";
 
 
-// Schema for "Receive Quotation" Dialog
 const receivedQuotationItemSchema = z.object({
   productId: z.string(),
   productName: z.string(),
@@ -78,6 +78,7 @@ export default function QuotationDetailPage() {
   
   const [isReceiveDialogOpen, setIsReceiveDialogOpen] = useState(false);
   const [isSubmittingReceive, setIsSubmittingReceive] = useState(false);
+  const [hasOtherReceivedQuotes, setHasOtherReceivedQuotes] = useState(false);
 
   const receiveForm = useForm<ReceiveQuotationFormData>({
     resolver: zodResolver(receiveQuotationFormSchema),
@@ -97,7 +98,7 @@ export default function QuotationDetailPage() {
     name: "additionalCosts",
   });
 
-  const fetchQuotation = useCallback(async () => {
+  const fetchQuotationData = useCallback(async () => {
     if (!quotationId || !appUser) return;
     setIsLoading(true);
     try {
@@ -128,6 +129,13 @@ export default function QuotationDetailPage() {
             details: detailsForForm,
           });
         }
+        // Check for other received quotations for the same requisition
+        if (fetchedQuotation.requisitionId && (fetchedQuotation.status === "Received" || fetchedQuotation.status === "Partially Awarded" || fetchedQuotation.status === "Awarded" || fetchedQuotation.status === "Lost")) {
+             const allQuotesForRequisition = await getAllQuotations({ requisitionId: fetchedQuotation.requisitionId });
+             const otherReceived = allQuotesForRequisition.filter(q => q.id !== fetchedQuotation.id && (q.status === "Received" || q.status === "Partially Awarded" || q.status === "Awarded"));
+             setHasOtherReceivedQuotes(otherReceived.length > 0);
+        }
+
 
       } else {
         toast({ title: "Error", description: "Quotation not found.", variant: "destructive" });
@@ -141,8 +149,8 @@ export default function QuotationDetailPage() {
   }, [quotationId, appUser, router, toast, receiveForm]);
 
   useEffect(() => {
-    fetchQuotation();
-  }, [fetchQuotation]);
+    fetchQuotationData();
+  }, [fetchQuotationData]);
 
   const watchedDetails = receiveForm.watch("details");
   const watchedAdditionalCosts = receiveForm.watch("additionalCosts");
@@ -156,17 +164,19 @@ export default function QuotationDetailPage() {
   }, [watchedDetails, watchedAdditionalCosts, receiveForm]);
 
 
-  const handleStatusUpdate = async () => {
-    if (!quotation || !selectedStatus || selectedStatus === quotation.status || !currentUser) return;
+  const handleStatusUpdate = async (newStatus?: QuotationStatus) => {
+    const statusToUpdate = newStatus || selectedStatus;
+    if (!quotation || !statusToUpdate || statusToUpdate === quotation.status || !currentUser) return;
     if (role !== 'admin' && role !== 'superadmin') {
       toast({ title: "Permission Denied", description: "You cannot update the status.", variant: "destructive" });
       return;
     }
     setIsUpdatingStatus(true);
     try {
-      await updateQuotationStatus(quotationId, selectedStatus, currentUser.uid);
-      setQuotation(prev => prev ? { ...prev, status: selectedStatus, updatedAt: Timestamp.now() } : null);
-      toast({ title: "Status Updated", description: `Quotation status changed to ${selectedStatus}.` });
+      await updateQuotationStatus(quotationId, statusToUpdate, currentUser.uid);
+      setQuotation(prev => prev ? { ...prev, status: statusToUpdate, updatedAt: Timestamp.now() } : null);
+      setSelectedStatus(statusToUpdate); // Update local selectedStatus as well
+      toast({ title: "Status Updated", description: `Quotation status changed to ${statusToUpdate}.` });
     } catch (error) {
       console.error("Error updating quotation status:", error);
       toast({ title: "Update Failed", description: "Could not update quotation status.", variant: "destructive" });
@@ -192,7 +202,7 @@ export default function QuotationDetailPage() {
       await receiveQuotation(quotationId, payload, currentUser.uid);
       toast({ title: "Quotation Response Saved", description: "Supplier response has been recorded."});
       setIsReceiveDialogOpen(false);
-      fetchQuotation(); 
+      fetchQuotationData(); 
     } catch (error: any) {
       console.error("Error submitting received quotation:", error);
       toast({ title: "Submission Failed", description: error.message || "Could not record supplier response.", variant: "destructive" });
@@ -202,7 +212,15 @@ export default function QuotationDetailPage() {
 
   const formatTimestampDate = (timestamp?: Timestamp | null): string => {
     if (!timestamp) return "N/A";
-    return timestamp.toDate().toLocaleDateString();
+    let date: Date;
+    if (timestamp instanceof Timestamp) {
+      date = timestamp.toDate();
+    } else if (typeof timestamp === 'string') {
+      date = new Date(timestamp);
+    } else {
+      return "Invalid Date";
+    }
+    return isValid(date) ? format(date, "PPP") : "Invalid Date";
   };
   
   const getStatusBadgeVariant = (status?: QuotationStatus) => {
@@ -222,7 +240,7 @@ export default function QuotationDetailPage() {
     if (!status) return "";
     switch (status) {
       case "Awarded": return "bg-green-500 hover:bg-green-600 text-white";
-      case "Partially Awarded": return "bg-yellow-400 hover:bg-yellow-500 text-black"; // Using black text for better contrast on yellow
+      case "Partially Awarded": return "bg-yellow-400 hover:bg-yellow-500 text-black";
       default: return "";
     }
   };
@@ -248,7 +266,12 @@ export default function QuotationDetailPage() {
   }
 
   const canManageStatus = role === 'admin' || role === 'superadmin';
-  const canReceiveOrEditQuote = canManageStatus && (quotation.status === "Sent" || quotation.status === "Received");
+  const canEnterResponse = canManageStatus && quotation.status === "Sent";
+  const canEditResponse = canManageStatus && quotation.status === "Received";
+  const canEditQuotation = canManageStatus && quotation.status === "Sent"; // Before it's received
+  const canAward = canManageStatus && (quotation.status === "Received" || quotation.status === "Partially Awarded");
+  const canReject = canManageStatus && (quotation.status === "Received" || quotation.status === "Partially Awarded");
+
 
   return (
     <>
@@ -257,10 +280,32 @@ export default function QuotationDetailPage() {
         description={`For Requisition: ${quotation.requisitionId.substring(0,8)}... | Supplier: ${quotation.supplierName || quotation.supplierId}`}
         actions={
           <div className="flex gap-2">
-            {canReceiveOrEditQuote && (
+            {canEnterResponse && (
               <Button onClick={() => setIsReceiveDialogOpen(true)}>
                 <Icons.Package className="mr-2 h-4 w-4" /> 
-                {quotation.status === "Sent" ? "Enter Supplier Response" : "Edit Supplier Response"}
+                Enter Supplier Response
+              </Button>
+            )}
+             {canEditResponse && (
+              <Button onClick={() => setIsReceiveDialogOpen(true)} variant="outline">
+                <Icons.Edit className="mr-2 h-4 w-4" /> 
+                Edit Supplier Response
+              </Button>
+            )}
+            {canEditQuotation && (
+              <Button onClick={() => console.log("Open Edit Quotation (request details) form")} variant="outline" disabled>
+                <Icons.Edit className="mr-2 h-4 w-4" />
+                Edit Request Details
+              </Button>
+            )}
+             {canAward && (
+              <Button onClick={() => handleStatusUpdate("Awarded")} className="bg-green-500 hover:bg-green-600 text-white">
+                <Icons.DollarSign className="mr-2 h-4 w-4" /> Award Quotation
+              </Button>
+            )}
+            {canReject && (
+              <Button onClick={() => handleStatusUpdate("Rejected")} variant="destructive">
+                <Icons.Delete className="mr-2 h-4 w-4" /> Reject Quotation
               </Button>
             )}
             <Button onClick={() => router.back()} variant="outline">Back to List</Button>
@@ -316,11 +361,11 @@ export default function QuotationDetailPage() {
                         </SelectTrigger>
                         <SelectContent>
                         {QUOTATION_STATUSES.map(s => (
-                            <SelectItem key={s} value={s}>{s}</SelectItem>
+                            <SelectItem key={s} value={s} disabled={s === "Sent" && quotation.status !== "Sent" /* Prevent reverting to Sent unless it was Sent */ }>{s}</SelectItem>
                         ))}
                         </SelectContent>
                     </Select>
-                    <Button onClick={handleStatusUpdate} disabled={isUpdatingStatus || selectedStatus === quotation.status}>
+                    <Button onClick={() => handleStatusUpdate()} disabled={isUpdatingStatus || selectedStatus === quotation.status}>
                         {isUpdatingStatus ? <Icons.Logo className="animate-spin" /> : "Save"}
                     </Button>
                     </div>
@@ -359,8 +404,8 @@ export default function QuotationDetailPage() {
                         <TableCell className="text-right">${Number(item.unitPriceQuoted ?? 0).toFixed(2)}</TableCell>
                         <TableCell className="text-right">${(Number(item.quotedQuantity ?? 0) * Number(item.unitPriceQuoted ?? 0)).toFixed(2)}</TableCell>
                         <TableCell>{formatTimestampDate(item.estimatedDeliveryDate)}</TableCell>
-                        <TableCell className="whitespace-pre-wrap text-xs max-w-[100px] truncate">{item.conditions || "N/A"}</TableCell>
-                        <TableCell className="whitespace-pre-wrap text-xs max-w-[100px] truncate">{item.notes || "N/A"}</TableCell>
+                        <TableCell className="whitespace-pre-wrap text-xs max-w-[100px] truncate" title={item.conditions}>{item.conditions || "N/A"}</TableCell>
+                        <TableCell className="whitespace-pre-wrap text-xs max-w-[100px] truncate" title={item.notes}>{item.notes || "N/A"}</TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
@@ -372,6 +417,23 @@ export default function QuotationDetailPage() {
           </CardContent>
         </Card>
       </div>
+
+      {hasOtherReceivedQuotes && canManageStatus && (
+        <Card className="mt-6 md:col-span-3">
+          <CardHeader>
+            <CardTitle className="font-headline">Compare Quotations</CardTitle>
+            <CardDescription>
+              There are other quotations received for Requisition ID: <Link href={`/requisitions/${quotation.requisitionId}`} className="text-primary hover:underline">{quotation.requisitionId}</Link>.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Button onClick={() => console.log("Navigate to comparison view for requisition:", quotation.requisitionId)}>
+              <Icons.LayoutList className="mr-2 h-4 w-4" /> Compare All Quotations
+            </Button>
+            <p className="text-sm text-muted-foreground mt-2">This feature will allow side-by-side comparison of all received quotes for this requisition.</p>
+          </CardContent>
+        </Card>
+      )}
 
       <Dialog open={isReceiveDialogOpen} onOpenChange={setIsReceiveDialogOpen}>
         <DialogContent className="sm:max-w-4xl flex flex-col max-h-[90vh]">
@@ -507,4 +569,5 @@ export default function QuotationDetailPage() {
     </>
   );
 }
+
     
