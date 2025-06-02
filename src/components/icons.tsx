@@ -39,7 +39,8 @@ import {
   Building,
   Briefcase,
   UsersRound, 
-  LayoutList, // Added for Categories
+  LayoutList,
+  Calendar as LucideCalendar, // Added for date pickers
 } from 'lucide-react';
 
 export const StockPilotLogo = (props: SVGProps<SVGSVGElement>) => (
@@ -71,7 +72,7 @@ export const Icons = {
   Products: Boxes,
   Warehouses: Building,
   Suppliers: UsersRound,
-  Categories: LayoutList, // New icon for categories
+  Categories: LayoutList,
   Users: Users,
   Settings: Settings,
   Logout: LogOut,
@@ -104,5 +105,8 @@ export const Icons = {
   MoreHorizontal: MoreHorizontal,
   List: List,
   Grid: Grid,
-  LayoutList: LayoutList, // Exporting LayoutList explicitly
+  LayoutList: LayoutList,
+  ClipboardList: ClipboardList, // Explicitly for Requisitions
+  Calendar: LucideCalendar, // Added
 };
+

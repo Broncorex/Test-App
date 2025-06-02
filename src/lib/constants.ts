@@ -33,7 +33,7 @@ export const navItems: NavItemStructure[] = [
   {
     href: '/categories',
     label: 'Categories',
-    icon: Icons.LayoutList, // Using LayoutList for categories
+    icon: Icons.LayoutList,
     allowedRoles: ['admin', 'superadmin'],
   },
   {
@@ -45,8 +45,20 @@ export const navItems: NavItemStructure[] = [
   {
     href: '/suppliers',
     label: 'Suppliers',
-    icon: Icons.Suppliers, 
+    icon: Icons.Suppliers,
     allowedRoles: ['admin', 'superadmin'],
+  },
+  {
+    href: '/requisitions',
+    label: 'Requisitions',
+    icon: Icons.ClipboardList, // Added icon
+    allowedRoles: ['employee', 'admin', 'superadmin'],
+  },
+  {
+    href: '/quotations',
+    label: 'Quotations',
+    icon: Icons.DollarSign, // Placeholder icon, can be changed
+    allowedRoles: ['admin', 'superadmin'], // Initially for admin/superadmin
   },
   {
     href: '/admin',
@@ -59,3 +71,4 @@ export const navItems: NavItemStructure[] = [
     ]
   },
 ];
+
