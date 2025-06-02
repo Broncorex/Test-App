@@ -161,7 +161,7 @@ export const getRequiredProductsForRequisition = async (requisitionId: string): 
 export const processAndFinalizeAwards = async (
   requisitionId: string,
   selectedAwards: SelectedOfferInfo[],
-  userId: string // User performing the action
+  userId: string 
 ): Promise<{ success: boolean; message?: string }> => {
   try {
     await runTransaction(db, async (transaction) => {
@@ -172,13 +172,12 @@ export const processAndFinalizeAwards = async (
       if (!requisitionSnap.exists()) {
         throw new Error("Requisition not found.");
       }
-      // const requisitionData = requisitionSnap.data() as Requisition; // Not strictly needed here if only updating status
       
       const requiredProductsQuery = query(collection(requisitionRef, "requiredProducts"));
-      const requiredProductsSnap = await transaction.get(requiredProductsQuery); // Fetch all required products for this requisition
+      const requiredProductsSnapForInitialRead = await transaction.get(requiredProductsQuery);
 
-      const requiredProductsMap = new Map<string, { id: string, data: RequiredProduct }>();
-      requiredProductsSnap.forEach(doc => requiredProductsMap.set(doc.data().productId, { id: doc.id, data: doc.data() as RequiredProduct }));
+      const requiredProductsMap = new Map<string, { id: string, data: RequisitionRequiredProduct }>();
+      requiredProductsSnapForInitialRead.forEach(doc => requiredProductsMap.set(doc.data().productId, { id: doc.id, data: doc.data() as RequisitionRequiredProduct }));
       
       const awardedQuotationIds = new Set<string>();
 
@@ -189,66 +188,72 @@ export const processAndFinalizeAwards = async (
           continue;
         }
         const reqProductRef = doc(db, `requisitions/${requisitionId}/requiredProducts/${reqProductEntry.id}`);
-        
         const currentPurchasedQty = reqProductEntry.data.purchasedQuantity || 0;
         const newPurchasedQuantity = currentPurchasedQty + award.awardedQuantity;
-
         transaction.update(reqProductRef, { purchasedQuantity: newPurchasedQuantity });
 
         const quotationRef = doc(db, "cotizaciones", award.quotationId);
-        // Check current status before updating to avoid unnecessary writes or race conditions if logic were more complex
         const quoteSnap = await transaction.get(quotationRef);
         if (quoteSnap.exists()) {
             const quoteData = quoteSnap.data() as Quotation;
-            if (quoteData.status === "Received" || quoteData.status === "Partially Awarded") {
-                 transaction.update(quotationRef, { status: "Awarded", updatedAt: now });
-            } else if (quoteData.status !== "Awarded") { // Only update if not already Awarded (e.g. from another item in same batch)
-                 transaction.update(quotationRef, { status: "Awarded", updatedAt: now });
-            }
+            let newQuoteStatus: QuotationStatus = "Awarded";
+            
+            // Check if this quote can fulfill more for other products in the requisition
+            // This requires knowing all quotationDetails for this quote.
+            // For simplicity, if any part is awarded, mark as "Awarded".
+            // A more complex logic might involve "Partially Awarded" if other items on the same quote remain unawarded.
+            // This simplified logic sets to "Awarded" if any item from it is selected.
+            
+            // A quick check: if not all items from this specific quotation that were *part of this requisition* are awarded,
+            // and *some* are, then it might be "Partially Awarded" for this specific requisition context.
+            // However, the overall Quotation status might depend on other requisitions too if it's a general quote.
+            // Let's keep it simple: if any part is awarded for *this* requisition, we consider the quote "Awarded" in context of this requisition.
+            // If further refinement is needed for global quotation status, that's a larger topic.
+
+            transaction.update(quotationRef, { status: newQuoteStatus, updatedAt: now });
         }
         awardedQuotationIds.add(award.quotationId);
       }
 
-      // Update statuses of other "Received" quotations for this requisition to "Lost"
       const allQuotationsForRequisitionQuery = query(collection(db, "cotizaciones"), where("requisitionId", "==", requisitionId));
-      
-      // IMPORTANT: Firestore transactions cannot read the results of a query directly.
-      // We must fetch these outside the transaction or handle this logic differently (e.g., a follow-up batch write).
-      // For now, this part might not be fully transactional with the rest if done via getDocs.
-      // A more robust solution might involve a Cloud Function trigger or careful client-side orchestration.
-      // Let's assume we fetch *before* the transaction for this example, though it's not ideal for atomicity.
       const allQuotationsSnap = await getDocs(allQuotationsForRequisitionQuery); 
 
       for (const quoteDoc of allQuotationsSnap.docs) {
         if ((quoteDoc.data().status === "Received" || quoteDoc.data().status === "Partially Awarded") && !awardedQuotationIds.has(quoteDoc.id)) {
-          // This update is outside the main transaction if getDocs is used.
-          // If this were a critical part of atomicity, it would need restructuring.
-          // For now, we'll update it non-transactionally or assume it's acceptable for this stage.
-          // To make it transactional, one would need to read all these quote refs first, then update in transaction.
-          // For simplicity of this step, we'll proceed with a separate update for "Lost" status or rely on client re-fetch and display logic.
-          // A better way: pass all relevant quotation IDs (Received/Partially Awarded) to the transaction and update them.
           const quoteRefToUpdate = doc(db, "cotizaciones", quoteDoc.id);
           transaction.update(quoteRefToUpdate, { status: "Lost", updatedAt: now });
         }
       }
       
       // Determine new Requisition status
-      // Re-fetch required products *within the transaction* after updates to ensure atomicity
       const updatedRequiredProductsSnapAfterAwards = await transaction.get(requiredProductsQuery);
-      const allRequirementsMet = updatedRequiredProductsSnapAfterAwards.docs.every(docSnap => {
-         const rp = docSnap.data() as RequiredProduct;
-         return (rp.purchasedQuantity || 0) >= rp.requiredQuantity;
-      });
+      let allRequirementsMet = true;
+      if (updatedRequiredProductsSnapAfterAwards.empty && requiredProductsMap.size > 0) {
+          allRequirementsMet = false; // If subcollection was unexpectedly empty but requisition had products.
+      } else if (updatedRequiredProductsSnapAfterAwards.empty && requiredProductsMap.size === 0) {
+          allRequirementsMet = true; // No products were required.
+      } else {
+          updatedRequiredProductsSnapAfterAwards.docs.forEach(docSnap => {
+             const rp = docSnap.data() as RequisitionRequiredProduct;
+             if ((rp.purchasedQuantity || 0) < rp.requiredQuantity) {
+                 allRequirementsMet = false;
+             }
+          });
+      }
 
-      let newRequisitionStatus: RequisitionStatus = "PO in Progress"; 
-      if (allRequirementsMet) {
-        newRequisitionStatus = "Completed"; 
+      let newRequisitionStatus: RequisitionStatus = requisitionSnap.data().status; // Default to current
+      if (selectedAwards.length > 0) { // Only change status if awards were made
+        if (allRequirementsMet) {
+          newRequisitionStatus = "Completed"; 
+        } else {
+          newRequisitionStatus = "PO in Progress"; // Placeholder for partial fulfillment
+        }
       }
       
       transaction.update(requisitionRef, { status: newRequisitionStatus, updatedAt: now });
     });
 
-    return { success: true, message: "Awards processed successfully." };
+    return { success: true, message: "Awards processed successfully and statuses updated." };
   } catch (error: any) {
     console.error("Error processing awards:", error);
     return { success: false, message: error.message || "Failed to process awards." };
