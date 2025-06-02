@@ -166,7 +166,8 @@ export const processAndFinalizeAwards = async (
   console.log(`[RequisitionService] Starting processAndFinalizeAwards for requisitionId: "${requisitionId}" with ${selectedAwards.length} selected awards. User: ${userId}`);
 
   if (!requisitionId || typeof requisitionId !== 'string' || requisitionId.trim() === '') {
-    console.error("[RequisitionService] processAndFinalizeAwards: Invalid requisitionId:", requisitionId);
+    const errorMsg = `[RequisitionService] processAndFinalizeAwards: Invalid requisitionId: '${requisitionId}'`;
+    console.error(errorMsg);
     return { success: false, message: "Invalid Requisition ID provided." };
   }
 
@@ -183,16 +184,22 @@ export const processAndFinalizeAwards = async (
         console.error(`[RequisitionService] Requisition ${requisitionId} not found within transaction.`);
         throw new Error("Requisition not found.");
       }
-      console.log(`[RequisitionService] Successfully fetched requisition ${requisitionId} within transaction. Status: ${requisitionSnap.data().status}`);
+      const requisitionData = requisitionSnap.data();
+      console.log(`[RequisitionService] Successfully fetched requisition ${requisitionId} within transaction. Status: ${requisitionData.status}`);
       
-      // Use requisitionSnap.ref for robust subcollection pathing
-      const requiredProductsSubCollectionRef = collection(requisitionSnap.ref, "requiredProducts");
-      console.log(`[RequisitionService] Path to requiredProducts (using requisitionSnap.ref): ${requiredProductsSubCollectionRef.path}`);
-      const requiredProductsQuery = query(requiredProductsSubCollectionRef);
-      
-      console.log(`[RequisitionService] Attempting to get requiredProducts for ${requisitionId}. Query Collection Path: ${requiredProductsSubCollectionRef.path}`);
+      // Use direct string path for subcollection query
+      const requiredProductsSubCollectionPath = `requisitions/${requisitionId}/requiredProducts`;
+      console.log(`[RequisitionService] Path to requiredProducts for query: ${requiredProductsSubCollectionPath}`);
+      const requiredProductsQuery = query(collection(db, requiredProductsSubCollectionPath));
+      console.log(`[RequisitionService] Constructed requiredProductsQuery object:`, requiredProductsQuery);
+
+      console.log(`[RequisitionService] Attempting to get requiredProducts for ${requisitionId}. Query Collection Path: ${requiredProductsSubCollectionPath}`);
       const requiredProductsSnapForInitialRead = await transaction.get(requiredProductsQuery);
       console.log(`[RequisitionService] Successfully read ${requiredProductsSnapForInitialRead.size} requiredProduct documents for ${requisitionId}.`);
+      requiredProductsSnapForInitialRead.forEach(docSnap => {
+         console.log(`[RequisitionService] RequiredProduct Doc ID: ${docSnap.id}, Data:`, docSnap.data());
+      });
+
 
       const requiredProductsMap = new Map<string, { id: string; data: RequisitionRequiredProduct }>();
       requiredProductsSnapForInitialRead.forEach(docSnap => {
@@ -216,30 +223,22 @@ export const processAndFinalizeAwards = async (
           continue;
         }
 
-        const reqProductRef = doc(db, `requisitions/${requisitionId}/requiredProducts/${reqProductEntry.id}`);
+        // Construct DocumentReference to the specific requiredProduct document for update
+        const reqProductDocRef = doc(db, `requisitions/${requisitionId}/requiredProducts/${reqProductEntry.id}`);
         const currentPurchasedQty = reqProductEntry.data.purchasedQuantity || 0;
         const newPurchasedQuantity = currentPurchasedQty + award.awardedQuantity;
 
         console.log(`[RequisitionService] Updating requiredProduct ${reqProductEntry.id} (ProductID: ${award.productId}): purchasedQuantity from ${currentPurchasedQty} to ${newPurchasedQuantity}`);
-        transaction.update(reqProductRef, { purchasedQuantity: newPurchasedQuantity });
+        transaction.update(reqProductDocRef, { purchasedQuantity: newPurchasedQuantity });
 
         const quotationRef = doc(db, "cotizaciones", award.quotationId);
-        // const quoteSnap = await transaction.get(quotationRef); // Reading quote inside loop can be costly for many awards. Assume status update is fine.
-        // if (quoteSnap.exists()) { } // Already checked its existence implicitly by being in selectedAwards.
         console.log(`[RequisitionService] Marking quotation ${award.quotationId} as "Awarded".`);
         transaction.update(quotationRef, { status: "Awarded" as QuotationStatus, updatedAt: now });
         awardedQuotationIds.add(award.quotationId);
       }
       console.log(`[RequisitionService] Processed ${selectedAwards.length} awards. Awarded quotation IDs: ${Array.from(awardedQuotationIds).join(', ')}`);
 
-      // Mark unawarded "Received" or "Partially Awarded" quotations as "Lost"
       const allQuotationsForRequisitionQuery = query(collection(db, "cotizaciones"), where("requisitionId", "==", requisitionId));
-      // This get is outside the main transaction logic for 'requiredProducts' but needed for other quotes.
-      // For better transactional integrity, these quote refs would ideally be fetched *before* the transaction
-      // or the list of all relevant quotes passed into the transaction.
-      // For now, this subsequent get and updates are outside the main atomicity of the requiredProduct updates.
-      // This is a common pattern if the number of quotes could be very large.
-      // Let's attempt to read and update within the transaction for consistency.
       console.log(`[RequisitionService] Fetching all quotations for requisition ${requisitionId} to mark others as "Lost".`);
       const allQuotationsSnap = await transaction.get(allQuotationsForRequisitionQuery); 
       console.log(`[RequisitionService] Found ${allQuotationsSnap.size} total quotations for requisition ${requisitionId}.`);
@@ -253,17 +252,16 @@ export const processAndFinalizeAwards = async (
         }
       });
       
-      // Re-evaluate requisition status after updates
-      console.log(`[RequisitionService] Re-evaluating requisition status for ${requisitionId}.`);
-      // Fetch the updated requiredProducts again within the same transaction
-      const updatedRequiredProductsSnapAfterAwards = await transaction.get(requiredProductsQuery);
+      console.log(`[RequisitionService] Re-evaluating requisition status for ${requisitionId}. Using query path: ${requiredProductsSubCollectionPath}`);
+      // Re-fetch using the same direct path query
+      const updatedRequiredProductsSnapAfterAwards = await transaction.get(query(collection(db, requiredProductsSubCollectionPath)));
       console.log(`[RequisitionService] Fetched ${updatedRequiredProductsSnapAfterAwards.size} requiredProducts again for status check.`);
 
       let allRequirementsMet = true;
-      if (updatedRequiredProductsSnapAfterAwards.empty && requiredProductsMap.size > 0) { // If subcollection became empty but was not initially.
+      if (updatedRequiredProductsSnapAfterAwards.empty && requiredProductsMap.size > 0) {
           allRequirementsMet = false; 
           console.log(`[RequisitionService] Requisition ${requisitionId}: Not all requirements met (subcollection empty, but expected products).`);
-      } else if (updatedRequiredProductsSnapAfterAwards.empty && requiredProductsMap.size === 0) { // No products were ever required
+      } else if (updatedRequiredProductsSnapAfterAwards.empty && requiredProductsMap.size === 0) {
           allRequirementsMet = true; 
           console.log(`[RequisitionService] Requisition ${requisitionId}: No products were required initially.`);
       } else {
@@ -271,13 +269,13 @@ export const processAndFinalizeAwards = async (
              const rp = docSnap.data() as RequisitionRequiredProduct;
              if ((rp.purchasedQuantity || 0) < rp.requiredQuantity) {
                  allRequirementsMet = false;
-                 console.log(`[RequisitionService] Requisition ${requisitionId}: Product ${rp.productId} not fully met. Required: ${rp.requiredQuantity}, Purchased: ${rp.purchasedQuantity || 0}`);
+                 console.log(`[RequisitionService] Requisition ${requisitionId}: Product ${rp.productId} (Doc ID: ${docSnap.id}) not fully met. Required: ${rp.requiredQuantity}, Purchased: ${rp.purchasedQuantity || 0}`);
              }
           });
       }
 
-      let newRequisitionStatus: RequisitionStatus = requisitionSnap.data().status as RequisitionStatus; 
-      if (selectedAwards.length > 0 || newRequisitionStatus === "Quoted") { // If any award was processed or it was just quoted
+      let newRequisitionStatus: RequisitionStatus = requisitionData.status as RequisitionStatus; 
+      if (selectedAwards.length > 0 || newRequisitionStatus === "Quoted") { // Ensure status update if moving from "Quoted"
         if (allRequirementsMet) {
           newRequisitionStatus = "Completed"; 
           console.log(`[RequisitionService] All requirements met for ${requisitionId}. Setting status to "Completed".`);
