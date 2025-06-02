@@ -9,8 +9,8 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth-store";
-import { getRequisitionById, updateRequisitionStatus, updateRequisition, type UpdateRequisitionData } from "@/services/requisitionService"; // Added updateRequisition
-import type { Requisition, RequisitionStatus, RequiredProduct, Supplier } from "@/types";
+import { getRequisitionById, updateRequisitionStatus, updateRequisition, type UpdateRequisitionData } from "@/services/requisitionService";
+import type { Requisition, RequisitionStatus, RequiredProduct, Supplier, ProveedorProducto, PriceRange } from "@/types";
 import { REQUISITION_STATUSES } from "@/types";
 import { Timestamp } from "firebase/firestore";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -20,7 +20,7 @@ import { Icons } from "@/components/icons";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogClose } from "@/components/ui/dialog";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea"; // Added Textarea
+import { Textarea } from "@/components/ui/textarea";
 import { Calendar } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { format } from "date-fns";
@@ -29,10 +29,12 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
 import { getAllSuppliers } from "@/services/supplierService";
 import { createQuotation, type CreateQuotationRequestData } from "@/services/quotationService";
+import { getSupplierProduct } from "@/services/supplierProductService";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { Label } from "@/components/ui/label";
+import { Separator } from "@/components/ui/separator";
 
 
 const quotationRequestFormSchema = z.object({
@@ -55,13 +57,18 @@ export default function RequisitionDetailPage() {
   const [isUpdatingStatus, setIsUpdatingStatus] = useState(false);
   const [selectedStatus, setSelectedStatus] = useState<RequisitionStatus | undefined>(undefined);
 
-  const [isEditingNotes, setIsEditingNotes] = useState(false); // State for notes editing
-  const [editableNotes, setEditableNotes] = useState(""); // State for editable notes content
+  const [isEditingNotes, setIsEditingNotes] = useState(false);
+  const [editableNotes, setEditableNotes] = useState("");
 
   const [isQuoteRequestDialogOpen, setIsQuoteRequestDialogOpen] = useState(false);
   const [isSubmittingQuoteRequest, setIsSubmittingQuoteRequest] = useState(false);
   const [availableSuppliers, setAvailableSuppliers] = useState<Supplier[]>([]);
   const [isLoadingSuppliers, setIsLoadingSuppliers] = useState(false);
+
+  // State for displaying current supplier pricing in dialog
+  const [detailedSupplierPricing, setDetailedSupplierPricing] = useState<Record<string, Record<string, ProveedorProducto | null>>>({});
+  const [loadingPricingForSupplier, setLoadingPricingForSupplier] = useState<Record<string, boolean>>({});
+  const [expandedPricingForSupplier, setExpandedPricingForSupplier] = useState<Record<string, boolean>>({});
 
 
   const quoteRequestForm = useForm<QuotationRequestFormData>({
@@ -87,7 +94,7 @@ export default function RequisitionDetailPage() {
         }
         setRequisition(fetchedRequisition);
         setSelectedStatus(fetchedRequisition.status);
-        setEditableNotes(fetchedRequisition.notes || ""); // Initialize editableNotes
+        setEditableNotes(fetchedRequisition.notes || "");
       } else {
         toast({ title: "Error", description: "Requisition not found.", variant: "destructive" });
         router.replace("/requisitions");
@@ -105,6 +112,9 @@ export default function RequisitionDetailPage() {
 
   const handleOpenQuoteRequestDialog = async () => {
     setIsLoadingSuppliers(true);
+    setDetailedSupplierPricing({}); // Reset previous pricing details
+    setExpandedPricingForSupplier({});
+    setLoadingPricingForSupplier({});
     try {
       const suppliers = await getAllSuppliers(true); 
       setAvailableSuppliers(suppliers);
@@ -119,6 +129,29 @@ export default function RequisitionDetailPage() {
     }
     setIsLoadingSuppliers(false);
   };
+
+  const toggleSupplierPricingDetails = async (supplierId: string) => {
+    const isCurrentlyExpanded = !!expandedPricingForSupplier[supplierId];
+    setExpandedPricingForSupplier(prev => ({ ...prev, [supplierId]: !isCurrentlyExpanded }));
+
+    if (!isCurrentlyExpanded && !detailedSupplierPricing[supplierId] && requisition?.requiredProducts) {
+      setLoadingPricingForSupplier(prev => ({ ...prev, [supplierId]: true }));
+      const pricingForThisSupplier: Record<string, ProveedorProducto | null> = {};
+      try {
+        for (const reqProduct of requisition.requiredProducts) {
+          const existingLink = await getSupplierProduct(supplierId, reqProduct.productId);
+          pricingForThisSupplier[reqProduct.productId] = existingLink;
+        }
+        setDetailedSupplierPricing(prev => ({ ...prev, [supplierId]: pricingForThisSupplier }));
+      } catch (error) {
+        console.error(`Error fetching pricing for supplier ${supplierId}:`, error);
+        toast({ title: "Pricing Error", description: `Could not fetch existing prices for supplier.`, variant: "destructive" });
+      } finally {
+        setLoadingPricingForSupplier(prev => ({ ...prev, [supplierId]: false }));
+      }
+    }
+  };
+
 
   const handleQuoteRequestSubmit = async (data: QuotationRequestFormData) => {
     if (!requisition || !currentUser) return;
@@ -182,7 +215,7 @@ export default function RequisitionDetailPage() {
 
   const handleSaveNotes = async () => {
     if (!requisition || !currentUser || !canManageStatus) return;
-    setIsUpdatingStatus(true); // Reuse for general update indication
+    setIsUpdatingStatus(true);
     try {
       await updateRequisition(requisitionId, { notes: editableNotes });
       setRequisition(prev => prev ? { ...prev, notes: editableNotes, updatedAt: Timestamp.now() } : null);
@@ -298,7 +331,7 @@ export default function RequisitionDetailPage() {
                 <div className="flex justify-between items-start">
                   <p className="font-medium whitespace-pre-wrap flex-1">{requisition.notes || "N/A"}</p>
                   {canManageStatus && (
-                    <Button variant="ghost" size="sm" onClick={() => setIsEditingNotes(true)} className="ml-2">
+                    <Button variant="ghost" size="icon" onClick={() => setIsEditingNotes(true)} className="ml-2 h-7 w-7">
                       <Icons.Edit className="h-3 w-3" />
                     </Button>
                   )}
@@ -368,9 +401,9 @@ export default function RequisitionDetailPage() {
       </div>
 
       <Dialog open={isQuoteRequestDialogOpen} onOpenChange={setIsQuoteRequestDialogOpen}>
-        <DialogContent className="sm:max-w-lg">
+        <DialogContent className="sm:max-w-2xl flex flex-col max-h-[90vh]"> {/* Increased max-width */}
            <Form {...quoteRequestForm}>
-            <form onSubmit={quoteRequestForm.handleSubmit(handleQuoteRequestSubmit)}>
+            <form onSubmit={quoteRequestForm.handleSubmit(handleQuoteRequestSubmit)} className="flex flex-col flex-grow min-h-0">
               <DialogHeader>
                 <DialogTitle className="font-headline">Request Quotations</DialogTitle>
                 <DialogDescription>
@@ -378,7 +411,23 @@ export default function RequisitionDetailPage() {
                 </DialogDescription>
               </DialogHeader>
               
-              <div className="space-y-4 py-4">
+              <div className="flex-grow overflow-y-auto min-h-0 py-4 pr-2 space-y-4">
+                <div>
+                  <h3 className="text-md font-semibold mb-2">Requisitioned Products:</h3>
+                  <ScrollArea className="h-32 rounded-md border p-2 bg-muted/30">
+                    <ul className="space-y-1 text-sm">
+                      {requisition.requiredProducts?.map(rp => (
+                        <li key={rp.id} className="flex justify-between">
+                          <span>{rp.productName}</span>
+                          <span className="text-muted-foreground">Qty: {rp.requiredQuantity}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </ScrollArea>
+                </div>
+
+                <Separator />
+
                 <FormField
                   control={quoteRequestForm.control}
                   name="supplierIds"
@@ -386,34 +435,78 @@ export default function RequisitionDetailPage() {
                     <FormItem>
                       <div className="mb-2">
                         <FormLabel className="text-base font-semibold">Suppliers *</FormLabel>
-                        <p className="text-sm text-muted-foreground">Select one or more suppliers to request quotes from.</p>
+                        <p className="text-sm text-muted-foreground">Select one or more suppliers. Click <Icons.DollarSign className="inline h-3 w-3"/> to view their current pricing for requisitioned items.</p>
                       </div>
                       {availableSuppliers.length === 0 && !isLoadingSuppliers ? <p>No active suppliers found.</p> :
                       isLoadingSuppliers && availableSuppliers.length === 0 ? <p>Loading suppliers...</p> :
-                      <ScrollArea className="h-40 rounded-md border p-2">
+                      <ScrollArea className="h-48 rounded-md border p-1">
                         {availableSuppliers.map((supplier) => (
-                          <FormField
-                            key={supplier.id}
-                            control={quoteRequestForm.control}
-                            name="supplierIds"
-                            render={({ field }) => {
-                              return (
-                                <FormItem key={supplier.id} className="flex flex-row items-center space-x-3 space-y-0 py-1.5">
-                                  <FormControl>
-                                    <Checkbox
-                                      checked={field.value?.includes(supplier.id)}
-                                      onCheckedChange={(checked) => {
-                                        return checked
-                                          ? field.onChange([...(field.value || []), supplier.id])
-                                          : field.onChange((field.value || []).filter((id) => id !== supplier.id));
-                                      }}
-                                    />
-                                  </FormControl>
-                                  <FormLabel className="font-normal">{supplier.name}</FormLabel>
-                                </FormItem>
-                              );
-                            }}
-                          />
+                          <div key={supplier.id} className="border-b last:border-b-0">
+                            <div className="flex items-center justify-between p-2">
+                                <FormField
+                                control={quoteRequestForm.control}
+                                name="supplierIds"
+                                render={({ field }) => {
+                                    return (
+                                    <FormItem className="flex flex-row items-center space-x-3 space-y-0 flex-1">
+                                        <FormControl>
+                                        <Checkbox
+                                            checked={field.value?.includes(supplier.id)}
+                                            onCheckedChange={(checked) => {
+                                            return checked
+                                                ? field.onChange([...(field.value || []), supplier.id])
+                                                : field.onChange((field.value || []).filter((id) => id !== supplier.id));
+                                            }}
+                                        />
+                                        </FormControl>
+                                        <FormLabel className="font-normal">{supplier.name}</FormLabel>
+                                    </FormItem>
+                                    );
+                                }}
+                                />
+                                <Button type="button" variant="ghost" size="sm" onClick={() => toggleSupplierPricingDetails(supplier.id)} disabled={loadingPricingForSupplier[supplier.id]}>
+                                    {loadingPricingForSupplier[supplier.id] ? <Icons.Logo className="h-4 w-4 animate-spin"/> : <Icons.DollarSign className="h-4 w-4"/>}
+                                    <span className="sr-only">View Current Pricing</span>
+                                </Button>
+                            </div>
+                            {expandedPricingForSupplier[supplier.id] && (
+                              <div className="p-2 ml-4 border-l border-dashed bg-background text-xs">
+                                {loadingPricingForSupplier[supplier.id] ? (
+                                  <p>Loading pricing...</p>
+                                ) : (
+                                  requisition.requiredProducts && requisition.requiredProducts.length > 0 ? (
+                                    <ul className="space-y-1">
+                                      {requisition.requiredProducts.map(reqProduct => {
+                                        const pricing = detailedSupplierPricing[supplier.id]?.[reqProduct.productId];
+                                        return (
+                                          <li key={reqProduct.productId}>
+                                            <span className="font-medium">{reqProduct.productName}:</span>
+                                            {pricing && pricing.isActive && pricing.isAvailable ? (
+                                              pricing.priceRanges.length > 0 ? (
+                                                <ul className="list-disc list-inside pl-2">
+                                                  {pricing.priceRanges.map((range, idx) => (
+                                                    <li key={idx}>
+                                                      Qty {range.minQuantity}{range.maxQuantity ? `-${range.maxQuantity}` : '+'}
+                                                      : ${range.price?.toFixed(2) ?? 'N/A'} ({range.priceType})
+                                                      {range.additionalConditions && <span className="text-muted-foreground text-[10px]"> ({range.additionalConditions})</span>}
+                                                    </li>
+                                                  ))}
+                                                </ul>
+                                              ) : <span className="text-muted-foreground ml-1">No price ranges defined.</span>
+                                            ) : (
+                                              <span className="text-muted-foreground ml-1">No active/available pricing for this supplier.</span>
+                                            )}
+                                          </li>
+                                        );
+                                      })}
+                                    </ul>
+                                  ) : (
+                                    <p>No products in requisition to check pricing for.</p>
+                                  )
+                                )}
+                              </div>
+                            )}
+                          </div>
                         ))}
                       </ScrollArea> }
                       <FormMessage />
@@ -430,7 +523,7 @@ export default function RequisitionDetailPage() {
                       <Popover>
                         <PopoverTrigger asChild>
                           <FormControl>
-                            <Button variant={"outline"} className={cn("pl-3 text-left font-normal", !field.value && "text-muted-foreground")}>
+                            <Button variant={"outline"} className={cn("pl-3 text-left font-normal w-full", !field.value && "text-muted-foreground")}>
                               {field.value ? format(field.value, "PPP") : <span>Pick a date</span>}
                               <Icons.Calendar className="ml-auto h-4 w-4 opacity-50" />
                             </Button>
@@ -457,7 +550,7 @@ export default function RequisitionDetailPage() {
                 />
               </div>
 
-              <DialogFooter>
+              <DialogFooter className="pt-4 flex-shrink-0">
                 <DialogClose asChild><Button type="button" variant="outline">Cancel</Button></DialogClose>
                 <Button type="submit" disabled={isSubmittingQuoteRequest || isLoadingSuppliers || availableSuppliers.length === 0}>
                   {isSubmittingQuoteRequest ? <Icons.Logo className="animate-spin" /> : <Icons.Send />}
@@ -471,3 +564,5 @@ export default function RequisitionDetailPage() {
     </>
   );
 }
+
+    
