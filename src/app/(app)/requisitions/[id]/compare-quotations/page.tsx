@@ -13,7 +13,7 @@ import {
   CardHeader,
   CardTitle,
   CardDescription,
-  CardFooter, // Ensure CardFooter is imported
+  CardFooter,
 } from "@/components/ui/card";
 import {
   Table,
@@ -50,7 +50,7 @@ import { Icons } from "@/components/icons";
 import { cn } from "@/lib/utils";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Badge } from "@/components/ui/badge"; // Added import
+import { Badge } from "@/components/ui/badge";
 
 
 interface QuotationOffer extends QuotationDetail {
@@ -196,13 +196,11 @@ export default function CompareQuotationsPage() {
       const productBeingAwarded = productsForComparison.find((p) => p.requisitionProductId === requisitionProductId);
       if (!productBeingAwarded) return prevSelectedOffers;
 
-      // If no offer ID is provided (e.g. from a 'Clear' button), deselect.
       if (clickedOfferDetailId === null) {
         updated[requisitionProductId] = null;
         return updated;
       }
 
-      // If an offer ID is provided, proceed to select it.
       const offer = productBeingAwarded.offers.find(o => o.id === clickedOfferDetailId);
 
       if (offer) {
@@ -231,7 +229,7 @@ export default function CompareQuotationsPage() {
           };
         }
       } else {
-        updated[requisitionProductId] = null; // Offer not found for the ID, clear selection
+        updated[requisitionProductId] = null;
       }
       return updated;
     });
@@ -433,14 +431,14 @@ export default function CompareQuotationsPage() {
     if (unmetProducts.length > 0) {
         toast({
             title: "Warning: Incomplete Award Quantities",
-            description: `The following products are not fully covered by your current selections: ${unmetProducts.join(', ')}. The requisition status may reflect partial processing.`,
+            description: `The following products are not fully covered by your current selections: ${unmetProducts.join(', ')}. The requisition status may reflect partial processing. Purchase Orders will be created with 'Pending' status.`,
             variant: "default",
             duration: 10000, 
         });
     } else if (awardsToProcess.length > 0) {
         toast({
             title: "Award Confirmation",
-            description: "All selected product requirements appear to be met. Proceeding with finalization.",
+            description: "All selected product requirements appear to be met. Proceeding to create Purchase Orders with 'Pending' status.",
             variant: "default",
         });
     }
@@ -451,13 +449,20 @@ export default function CompareQuotationsPage() {
       const result = await processAndFinalizeAwards(requisitionId, awardsToProcess, currentUser.uid);
       if (result.success) {
         toast({
-          title: "Awards Finalized Successfully!",
-          description: result.message || "Requisition and quotation statuses have been updated.",
+          title: "Awards Processed & POs Created!",
+          description: result.message || `Requisition status updated. ${result.createdPurchaseOrderIds?.length || 0} Purchase Order(s) created with 'Pending' status.`,
           variant: "default",
+          duration: 7000,
         });
-        fetchComparisonData(); 
+        if (result.createdPurchaseOrderIds && result.createdPurchaseOrderIds.length > 0) {
+            // Optionally redirect to the first PO or the PO list
+            // router.push(`/purchase-orders/${result.createdPurchaseOrderIds[0]}`);
+            router.push('/purchase-orders'); // Or to the PO list
+        } else {
+            fetchComparisonData(); // Refresh current page data if no POs created but other state changed
+        }
       } else {
-        toast({ title: "Finalization Failed", description: result.message || "Could not process awards.", variant: "destructive" });
+        toast({ title: "Finalization Failed", description: result.message || "Could not process awards or create POs.", variant: "destructive" });
       }
     } catch (error: any) {
       console.error("Error finalizing awards:", error);
@@ -526,9 +531,9 @@ export default function CompareQuotationsPage() {
                   <div>
                     <CardTitle className="font-headline text-xl">{product.productName}</CardTitle>
                     <CardDescription>
-                      Required: {product.requiredQuantity} | Purchased/Awarded: {product.alreadyPurchased} |
+                      Required: {product.requiredQuantity} | Already Ordered: {product.alreadyPurchased} |
                       <span className={cn("font-semibold", product.remainingToAward <= 0 ? "text-green-600" : "text-orange-600")}>
-                        {""} Remaining to Award: {product.remainingToAward > 0 ? product.remainingToAward : 0}
+                        {""} Remaining to Order: {product.remainingToAward > 0 ? product.remainingToAward : 0}
                       </span>
                     </CardDescription>
                   </div>
@@ -613,8 +618,8 @@ export default function CompareQuotationsPage() {
           {awardSummaryDetails.awardedItems.length > 0 && (
             <Card className="mt-6 shadow-lg">
               <CardHeader>
-                <CardTitle className="font-headline">Award Summary</CardTitle>
-                <CardDescription>Review your selections before finalizing. This action will update relevant statuses.</CardDescription>
+                <CardTitle className="font-headline">Award Summary & PO Creation</CardTitle>
+                <CardDescription>Review selections. Clicking "Finalize" will create Purchase Order(s) with 'Pending' status. Requisition 'Purchased Qty' will update when POs are marked 'Sent'.</CardDescription>
               </CardHeader>
               <CardContent>
                 <div className="relative w-full overflow-auto">
@@ -623,7 +628,7 @@ export default function CompareQuotationsPage() {
                       <TableRow>
                         <TableHead>Product</TableHead>
                         <TableHead>Awarded Supplier</TableHead>
-                        <TableHead className="text-right">Awarded Qty</TableHead>
+                        <TableHead className="text-right">To Order Qty</TableHead>
                         <TableHead className="text-right">Unit Price</TableHead>
                         <TableHead className="text-right">Subtotal Cost</TableHead>
                       </TableRow>
@@ -663,13 +668,13 @@ export default function CompareQuotationsPage() {
                 </div>
                 <Separator className="my-4" />
                 <div className="mt-4 text-right">
-                  <p className="text-lg font-bold">Total Estimated Cost of Award: ${awardSummaryDetails.grandTotal.toFixed(2)}</p>
+                  <p className="text-lg font-bold">Total Estimated Cost for PO(s): ${awardSummaryDetails.grandTotal.toFixed(2)}</p>
                 </div>
               </CardContent>
               <CardFooter className="flex justify-end">
                 <Button size="lg" onClick={handleFinalizeAwards} disabled={awardSummaryDetails.awardedItems.length === 0 && productsForComparison.some(p => p.remainingToAward > 0) || isSubmittingAwards || isLoading}>
-                  {isSubmittingAwards ? <Icons.Logo className="mr-2 h-5 w-5 animate-spin" /> : <Icons.DollarSign className="mr-2 h-5 w-5" />}
-                  {isSubmittingAwards ? "Processing..." : "Confirm & Finalize Awards"}
+                  {isSubmittingAwards ? <Icons.Logo className="mr-2 h-5 w-5 animate-spin" /> : <Icons.ShoppingCart className="mr-2 h-5 w-5" />}
+                  {isSubmittingAwards ? "Processing..." : "Create Pending PO(s)"}
                 </Button>
               </CardFooter>
             </Card>
@@ -679,5 +684,4 @@ export default function CompareQuotationsPage() {
     </>
   );
 }
-
     
