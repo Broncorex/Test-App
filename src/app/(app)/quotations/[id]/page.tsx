@@ -30,6 +30,7 @@ import * as z from "zod";
 import Link from "next/link";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
+import { cn } from "@/lib/utils";
 
 
 // Schema for "Receive Quotation" Dialog
@@ -52,9 +53,9 @@ const additionalCostSchema = z.object({
 
 const receiveQuotationFormSchema = z.object({
   receivedDate: z.date({ required_error: "Received date is required." }),
-  productsSubtotal: z.coerce.number().min(0), // Will be auto-calculated but can be validated
+  productsSubtotal: z.coerce.number().min(0),
   additionalCosts: z.array(additionalCostSchema).optional(),
-  totalQuotation: z.coerce.number().min(0), // Will be auto-calculated
+  totalQuotation: z.coerce.number().min(0),
   shippingConditions: z.string().min(1, "Shipping conditions are required."),
   notes: z.string().optional(),
   details: z.array(receivedQuotationItemSchema).min(1, "At least one item detail is required."),
@@ -102,29 +103,28 @@ export default function QuotationDetailPage() {
     try {
       const fetchedQuotation = await getQuotationById(quotationId);
       if (fetchedQuotation) {
-        // Add authorization for employee viewing their own requisition's quotations later
         setQuotation(fetchedQuotation);
         setSelectedStatus(fetchedQuotation.status);
 
-        // Initialize receiveForm if opening dialog for a "Sent" quotation
-        if (fetchedQuotation.status === "Sent") {
+        if (fetchedQuotation.status === "Sent" || fetchedQuotation.status === "Received") {
           const detailsForForm = fetchedQuotation.quotationDetails?.map(d => ({
             productId: d.productId,
             productName: d.productName,
             requiredQuantity: d.requiredQuantity,
-            quotedQuantity: d.requiredQuantity, // Default to required quantity
-            unitPriceQuoted: 0,
-            conditions: "",
-            estimatedDeliveryDate: fetchedQuotation.responseDeadline.toDate(), // Default to response deadline
-            notes: "",
+            quotedQuantity: d.quotedQuantity ?? d.requiredQuantity,
+            unitPriceQuoted: d.unitPriceQuoted ?? 0,
+            conditions: d.conditions ?? "",
+            estimatedDeliveryDate: d.estimatedDeliveryDate?.toDate() ?? (fetchedQuotation.responseDeadline?.toDate() || new Date()),
+            notes: d.notes ?? "",
           })) || [];
+          
           receiveForm.reset({
-            receivedDate: new Date(),
-            productsSubtotal: 0, // Will be calculated
-            additionalCosts: [],
-            totalQuotation: 0, // Will be calculated
-            shippingConditions: "",
-            notes: fetchedQuotation.notes || "", // Carry over notes from request
+            receivedDate: fetchedQuotation.receivedDate?.toDate() || new Date(),
+            productsSubtotal: fetchedQuotation.productsSubtotal ?? 0,
+            additionalCosts: fetchedQuotation.additionalCosts?.map(ac => ({...ac, amount: Number(ac.amount)})) || [],
+            totalQuotation: fetchedQuotation.totalQuotation ?? 0,
+            shippingConditions: fetchedQuotation.shippingConditions ?? "",
+            notes: fetchedQuotation.notes || "",
             details: detailsForForm,
           });
         }
@@ -148,10 +148,10 @@ export default function QuotationDetailPage() {
   const watchedAdditionalCosts = receiveForm.watch("additionalCosts");
 
   useEffect(() => {
-    const subtotal = watchedDetails.reduce((sum, item) => sum + (item.quotedQuantity * item.unitPriceQuoted), 0);
+    const subtotal = watchedDetails.reduce((sum, item) => sum + (Number(item.quotedQuantity) * Number(item.unitPriceQuoted)), 0);
     receiveForm.setValue("productsSubtotal", subtotal);
     
-    const totalCosts = watchedAdditionalCosts?.reduce((sum, cost) => sum + cost.amount, 0) || 0;
+    const totalCosts = watchedAdditionalCosts?.reduce((sum, cost) => sum + Number(cost.amount), 0) || 0;
     receiveForm.setValue("totalQuotation", subtotal + totalCosts);
   }, [watchedDetails, watchedAdditionalCosts, receiveForm]);
 
@@ -190,12 +190,12 @@ export default function QuotationDetailPage() {
         })),
       };
       await receiveQuotation(quotationId, payload, currentUser.uid);
-      toast({ title: "Quotation Received", description: "Supplier response has been recorded."});
+      toast({ title: "Quotation Response Saved", description: "Supplier response has been recorded."});
       setIsReceiveDialogOpen(false);
-      fetchQuotation(); // Refresh data
-    } catch (error) {
+      fetchQuotation(); 
+    } catch (error: any) {
       console.error("Error submitting received quotation:", error);
-      toast({ title: "Submission Failed", description: "Could not record supplier response.", variant: "destructive" });
+      toast({ title: "Submission Failed", description: error.message || "Could not record supplier response.", variant: "destructive" });
     }
     setIsSubmittingReceive(false);
   };
@@ -222,7 +222,7 @@ export default function QuotationDetailPage() {
     if (!status) return "";
     switch (status) {
       case "Awarded": return "bg-green-500 hover:bg-green-600 text-white";
-      case "Partially Awarded": return "bg-yellow-400 hover:bg-yellow-500 text-black";
+      case "Partially Awarded": return "bg-yellow-400 hover:bg-yellow-500 text-black"; // Using black text for better contrast on yellow
       default: return "";
     }
   };
@@ -248,7 +248,7 @@ export default function QuotationDetailPage() {
   }
 
   const canManageStatus = role === 'admin' || role === 'superadmin';
-  const canReceiveQuote = canManageStatus && quotation.status === "Sent";
+  const canReceiveOrEditQuote = canManageStatus && (quotation.status === "Sent" || quotation.status === "Received");
 
   return (
     <>
@@ -257,9 +257,10 @@ export default function QuotationDetailPage() {
         description={`For Requisition: ${quotation.requisitionId.substring(0,8)}... | Supplier: ${quotation.supplierName || quotation.supplierId}`}
         actions={
           <div className="flex gap-2">
-            {canReceiveQuote && (
+            {canReceiveOrEditQuote && (
               <Button onClick={() => setIsReceiveDialogOpen(true)}>
-                <Icons.Package className="mr-2 h-4 w-4" /> Enter Supplier Response
+                <Icons.Package className="mr-2 h-4 w-4" /> 
+                {quotation.status === "Sent" ? "Enter Supplier Response" : "Edit Supplier Response"}
               </Button>
             )}
             <Button onClick={() => router.back()} variant="outline">Back to List</Button>
@@ -292,7 +293,7 @@ export default function QuotationDetailPage() {
             
             <Separator />
             <div className="flex justify-between"><span className="text-muted-foreground">Products Subtotal:</span><span className="font-medium">${Number(quotation.productsSubtotal || 0).toFixed(2)}</span></div>
-            <div className="flex justify-between"><span className="text-muted-foreground">Additional Costs:</span><span className="font-medium">${quotation.additionalCosts?.reduce((sum, cost) => sum + cost.amount, 0).toFixed(2) || '0.00'}</span></div>
+            <div className="flex justify-between"><span className="text-muted-foreground">Additional Costs:</span><span className="font-medium">${quotation.additionalCosts?.reduce((sum, cost) => sum + Number(cost.amount), 0).toFixed(2) || '0.00'}</span></div>
             <div className="flex justify-between text-md font-semibold"><span className="text-muted-foreground">Total Quotation:</span><span>${Number(quotation.totalQuotation || 0).toFixed(2)}</span></div>
             <Separator />
             
@@ -301,7 +302,7 @@ export default function QuotationDetailPage() {
             
             <Separator />
             <div className="flex justify-between"><span className="text-muted-foreground">Last Updated:</span><span className="font-medium">{new Date(quotation.updatedAt.seconds * 1000).toLocaleString()}</span></div>
-            <div className="flex justify-between"><span className="text-muted-foreground">Created By:</span><span className="font-medium">{/* Add createdByUserName if available */}</span></div>
+            <div className="flex justify-between"><span className="text-muted-foreground">Created By:</span><span className="font-medium">{quotation.generatedByUserName || quotation.createdBy}</span></div>
 
           </CardContent>
            {canManageStatus && (
@@ -335,7 +336,7 @@ export default function QuotationDetailPage() {
           </CardHeader>
           <CardContent>
             {quotation.quotationDetails && quotation.quotationDetails.length > 0 ? (
-              <ScrollArea className="h-[calc(100vh-20rem)]"> {/* Adjust height as needed */}
+              <ScrollArea className="h-[calc(100vh-20rem)]"> 
                 <Table>
                   <TableHeader>
                     <TableRow>
@@ -351,15 +352,15 @@ export default function QuotationDetailPage() {
                   </TableHeader>
                   <TableBody>
                     {quotation.quotationDetails.map((item) => (
-                      <TableRow key={item.id}>
+                      <TableRow key={item.id || item.productId}>
                         <TableCell className="font-medium">{item.productName}</TableCell>
                         <TableCell className="text-right">{item.requiredQuantity}</TableCell>
                         <TableCell className="text-right">{item.quotedQuantity ?? "N/A"}</TableCell>
                         <TableCell className="text-right">${Number(item.unitPriceQuoted ?? 0).toFixed(2)}</TableCell>
                         <TableCell className="text-right">${(Number(item.quotedQuantity ?? 0) * Number(item.unitPriceQuoted ?? 0)).toFixed(2)}</TableCell>
                         <TableCell>{formatTimestampDate(item.estimatedDeliveryDate)}</TableCell>
-                        <TableCell className="whitespace-pre-wrap text-xs max-w-[150px] truncate">{item.conditions || "N/A"}</TableCell>
-                        <TableCell className="whitespace-pre-wrap text-xs max-w-[150px] truncate">{item.notes || "N/A"}</TableCell>
+                        <TableCell className="whitespace-pre-wrap text-xs max-w-[100px] truncate">{item.conditions || "N/A"}</TableCell>
+                        <TableCell className="whitespace-pre-wrap text-xs max-w-[100px] truncate">{item.notes || "N/A"}</TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
@@ -372,13 +373,14 @@ export default function QuotationDetailPage() {
         </Card>
       </div>
 
-      {/* Receive Quotation Dialog */}
       <Dialog open={isReceiveDialogOpen} onOpenChange={setIsReceiveDialogOpen}>
         <DialogContent className="sm:max-w-4xl flex flex-col max-h-[90vh]">
           <Form {...receiveForm}>
             <form onSubmit={receiveForm.handleSubmit(handleReceiveQuotationSubmit)} className="flex flex-col flex-grow min-h-0">
               <DialogHeader>
-                <DialogTitle className="font-headline">Enter Supplier Quotation Response</DialogTitle>
+                <DialogTitle className="font-headline">
+                  {quotation.status === "Sent" ? "Enter Supplier Quotation Response" : "Edit Supplier Quotation Response"}
+                </DialogTitle>
                 <DialogDescription>
                   Fill in the details received from the supplier: {quotation.supplierName || quotation.supplierId}. <br/>
                   For Requisition: {quotation.requisitionId.substring(0,8)}...
@@ -394,7 +396,7 @@ export default function QuotationDetailPage() {
                         <Popover>
                           <PopoverTrigger asChild>
                             <FormControl>
-                              <Button variant={"outline"} className={cn("pl-3 text-left font-normal", !field.value && "text-muted-foreground")}>
+                              <Button variant={"outline"} className={cn("pl-3 text-left font-normal w-full", !field.value && "text-muted-foreground")}>
                                 {field.value ? format(field.value, "PPP") : <span>Pick a date</span>}
                                 <Icons.Calendar className="ml-auto h-4 w-4 opacity-50" />
                               </Button>
@@ -429,8 +431,8 @@ export default function QuotationDetailPage() {
                                 <Popover>
                                   <PopoverTrigger asChild>
                                     <FormControl>
-                                      <Button variant={"outline"} className={cn("pl-3 text-left font-normal", !field.value && "text-muted-foreground")}>
-                                        {field.value ? format(field.value, "PPP") : <span>Pick a date</span>}
+                                      <Button variant={"outline"} className={cn("pl-3 text-left font-normal w-full", !field.value && "text-muted-foreground")}>
+                                        {field.value ? format(field.value, "PPP") : <span>Pick ETA</span>}
                                         <Icons.Calendar className="ml-auto h-4 w-4 opacity-50" />
                                       </Button>
                                     </FormControl>
@@ -483,9 +485,9 @@ export default function QuotationDetailPage() {
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4 p-3 border rounded-md bg-card">
                     <FormField control={receiveForm.control} name="productsSubtotal"
-                        render={({ field }) => (<FormItem><FormLabel>Calculated Products Subtotal</FormLabel><FormControl><Input type="number" {...field} readOnly className="font-semibold text-muted-foreground" /></FormControl><FormMessage /></FormItem>)} />
+                        render={({ field }) => (<FormItem><FormLabel>Calculated Products Subtotal</FormLabel><FormControl><Input type="number" {...field} readOnly className="font-semibold text-muted-foreground bg-muted/50" /></FormControl><FormMessage /></FormItem>)} />
                     <FormField control={receiveForm.control} name="totalQuotation"
-                        render={({ field }) => (<FormItem><FormLabel>Calculated Total Quotation</FormLabel><FormControl><Input type="number" {...field} readOnly className="font-semibold text-primary" /></FormControl><FormMessage /></FormItem>)} />
+                        render={({ field }) => (<FormItem><FormLabel>Calculated Total Quotation</FormLabel><FormControl><Input type="number" {...field} readOnly className="font-semibold text-primary bg-primary/10" /></FormControl><FormMessage /></FormItem>)} />
                 </div>
                 
                 <FormField control={receiveForm.control} name="notes"
@@ -505,4 +507,4 @@ export default function QuotationDetailPage() {
     </>
   );
 }
-
+    
