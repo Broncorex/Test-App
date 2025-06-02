@@ -9,7 +9,7 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth-store";
-import { getRequisitionById, updateRequisitionStatus, type UpdateRequisitionData } from "@/services/requisitionService";
+import { getRequisitionById, updateRequisitionStatus, updateRequisition, type UpdateRequisitionData } from "@/services/requisitionService"; // Added updateRequisition
 import type { Requisition, RequisitionStatus, RequiredProduct, Supplier } from "@/types";
 import { REQUISITION_STATUSES } from "@/types";
 import { Timestamp } from "firebase/firestore";
@@ -20,7 +20,7 @@ import { Icons } from "@/components/icons";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogClose } from "@/components/ui/dialog";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
+import { Textarea } from "@/components/ui/textarea"; // Added Textarea
 import { Calendar } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { format } from "date-fns";
@@ -32,7 +32,7 @@ import { createQuotation, type CreateQuotationRequestData } from "@/services/quo
 import { Checkbox } from "@/components/ui/checkbox";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
-import { Label } from "@/components/ui/label"; // Added Label import
+import { Label } from "@/components/ui/label";
 
 
 const quotationRequestFormSchema = z.object({
@@ -54,6 +54,9 @@ export default function RequisitionDetailPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [isUpdatingStatus, setIsUpdatingStatus] = useState(false);
   const [selectedStatus, setSelectedStatus] = useState<RequisitionStatus | undefined>(undefined);
+
+  const [isEditingNotes, setIsEditingNotes] = useState(false); // State for notes editing
+  const [editableNotes, setEditableNotes] = useState(""); // State for editable notes content
 
   const [isQuoteRequestDialogOpen, setIsQuoteRequestDialogOpen] = useState(false);
   const [isSubmittingQuoteRequest, setIsSubmittingQuoteRequest] = useState(false);
@@ -84,6 +87,7 @@ export default function RequisitionDetailPage() {
         }
         setRequisition(fetchedRequisition);
         setSelectedStatus(fetchedRequisition.status);
+        setEditableNotes(fetchedRequisition.notes || ""); // Initialize editableNotes
       } else {
         toast({ title: "Error", description: "Requisition not found.", variant: "destructive" });
         router.replace("/requisitions");
@@ -175,6 +179,26 @@ export default function RequisitionDetailPage() {
     }
     setIsUpdatingStatus(false);
   };
+
+  const handleSaveNotes = async () => {
+    if (!requisition || !currentUser || !canManageStatus) return;
+    setIsUpdatingStatus(true); // Reuse for general update indication
+    try {
+      await updateRequisition(requisitionId, { notes: editableNotes });
+      setRequisition(prev => prev ? { ...prev, notes: editableNotes, updatedAt: Timestamp.now() } : null);
+      toast({ title: "Notes Updated", description: "Requisition notes have been saved." });
+      setIsEditingNotes(false);
+    } catch (error) {
+      console.error("Error updating requisition notes:", error);
+      toast({ title: "Update Failed", description: "Could not save notes.", variant: "destructive" });
+    }
+    setIsUpdatingStatus(false);
+  };
+
+  const handleCancelEditNotes = () => {
+    setEditableNotes(requisition?.notes || "");
+    setIsEditingNotes(false);
+  };
   
   const formatTimestampDateTime = (timestamp?: Timestamp | null): string => {
     if (!timestamp) return "N/A";
@@ -253,7 +277,34 @@ export default function RequisitionDetailPage() {
                 {requisition.status}
               </Badge>
             </div>
-            <div><span className="text-muted-foreground">Notes:</span><p className="font-medium whitespace-pre-wrap">{requisition.notes || "N/A"}</p></div>
+            <div>
+              <span className="text-muted-foreground">Notes:</span>
+              {isEditingNotes ? (
+                <div className="mt-1 space-y-2">
+                  <Textarea
+                    value={editableNotes}
+                    onChange={(e) => setEditableNotes(e.target.value)}
+                    rows={3}
+                    className="w-full"
+                  />
+                  <div className="flex gap-2 justify-end">
+                    <Button variant="ghost" size="sm" onClick={handleCancelEditNotes}>Cancel</Button>
+                    <Button size="sm" onClick={handleSaveNotes} disabled={isUpdatingStatus}>
+                      {isUpdatingStatus ? <Icons.Logo className="animate-spin" /> : "Save Notes"}
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex justify-between items-start">
+                  <p className="font-medium whitespace-pre-wrap flex-1">{requisition.notes || "N/A"}</p>
+                  {canManageStatus && (
+                    <Button variant="ghost" size="sm" onClick={() => setIsEditingNotes(true)} className="ml-2">
+                      <Icons.Edit className="h-3 w-3" />
+                    </Button>
+                  )}
+                </div>
+              )}
+            </div>
             <div className="flex justify-between"><span className="text-muted-foreground">Last Updated:</span><span className="font-medium">{formatTimestampDateTime(requisition.updatedAt)}</span></div>
           </CardContent>
            {canManageStatus && (

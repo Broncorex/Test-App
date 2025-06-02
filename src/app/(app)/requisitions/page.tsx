@@ -15,7 +15,7 @@ import {
   TableHead,
   TableCell,
 } from "@/components/ui/table";
-import { Input } from "@/components/ui/input";
+import { Input } from "@/components/ui/input"; // Added Input
 import {
   Select,
   SelectContent,
@@ -32,15 +32,12 @@ import { useAuth } from "@/hooks/use-auth-store";
 import { getAllRequisitions, type RequisitionFilters } from "@/services/requisitionService";
 import { Badge } from "@/components/ui/badge";
 import { Timestamp } from "firebase/firestore";
-// Placeholder for getAllUsers - if needed for filtering by user
-// import { getAllUsers } from "@/services/userService"; 
 
 export default function RequisitionsPage() {
   const [requisitions, setRequisitions] = useState<Requisition[]>([]);
-  // const [usersForFilter, setUsersForFilter] = useState<User[]>([]); // For admin user filter
   const [isLoadingData, setIsLoadingData] = useState(true);
   const [filterStatus, setFilterStatus] = useState<RequisitionStatus | "all">("all");
-  const [filterRequestingUserId, setFilterRequestingUserId] = useState<string>("all"); // For admin
+  const [filterRequestingUserId, setFilterRequestingUserId] = useState<string>(""); // Changed from "all" to "" for text input
 
   const { toast } = useToast();
   const { role, appUser, currentUser } = useAuth();
@@ -52,14 +49,10 @@ export default function RequisitionsPage() {
     if (!appUser || !currentUser) return;
     setIsLoadingData(true);
     try {
-      // if (canManageAll) {
-      //   const fetchedUsers = await getAllUsers(); // Implement this if needed
-      //   setUsersForFilter(fetchedUsers);
-      // }
-
       const filters: RequisitionFilters = {
         status: filterStatus !== "all" ? filterStatus : undefined,
-        requestingUserId: (canManageAll && filterRequestingUserId !== "all") ? filterRequestingUserId : undefined,
+        // Pass userId if it's not empty and user is admin/superadmin
+        requestingUserId: (canManageAll && filterRequestingUserId.trim() !== "") ? filterRequestingUserId.trim() : undefined,
       };
       
       const fetchedRequisitions = await getAllRequisitions(filters, currentUser.uid, role);
@@ -122,15 +115,13 @@ export default function RequisitionsPage() {
                 {REQUISITION_STATUSES.map(stat => <SelectItem key={stat} value={stat}>{stat}</SelectItem>)}
               </SelectContent>
             </Select>
-            {/* {canManageAll && (
-              <Select value={filterRequestingUserId} onValueChange={setFilterRequestingUserId} disabled={usersForFilter.length === 0}>
-                <SelectTrigger><SelectValue placeholder="Filter by Requesting User" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All Users</SelectItem>
-                  {usersForFilter.map(user => <SelectItem key={user.id} value={user.id}>{user.displayName || user.email}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            )} */}
+            {canManageAll && (
+              <Input
+                placeholder="Filter by Requesting User ID..."
+                value={filterRequestingUserId}
+                onChange={(e) => setFilterRequestingUserId(e.target.value)}
+              />
+            )}
           </div>
         </CardHeader>
         <CardContent>
@@ -187,4 +178,3 @@ export default function RequisitionsPage() {
     </>
   );
 }
-
