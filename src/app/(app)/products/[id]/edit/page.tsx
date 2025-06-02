@@ -72,7 +72,49 @@ const supplierProductFormSchema = z.object({
   supplierSku: z.string().min(1, "Supplier SKU is required."),
   isAvailable: z.boolean().default(true),
   notes: z.string().optional(),
-  priceRanges: z.array(priceRangeSchema).min(1, "At least one price range is required."),
+  priceRanges: z.array(priceRangeSchema)
+    .min(1, "At least one price range is required.")
+    .superRefine((ranges, ctx) => {
+      if (ranges.length <= 1) return;
+
+      const sortedRanges = [...ranges].sort((a, b) => a.minQuantity - b.minQuantity);
+
+      for (let i = 0; i < sortedRanges.length; i++) {
+        const current = sortedRanges[i];
+        const originalIndex = ranges.indexOf(current);
+
+        if (current.maxQuantity !== null && current.maxQuantity !== undefined) {
+          if (current.maxQuantity <= current.minQuantity) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message: `Max quantity (${current.maxQuantity}) must be greater than its min quantity (${current.minQuantity}).`,
+              path: [originalIndex, "maxQuantity"],
+            });
+          }
+        }
+
+        if (i < sortedRanges.length - 1) {
+          const next = sortedRanges[i + 1];
+          const originalNextIndex = ranges.indexOf(next);
+
+          if (current.maxQuantity !== null && current.maxQuantity !== undefined) {
+            if (next.minQuantity <= current.maxQuantity) {
+              ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                message: `Range overlap: Min quantity (${next.minQuantity}) of this range cannot be less than or equal to max quantity (${current.maxQuantity}) of the previous range.`,
+                path: [originalNextIndex, "minQuantity"],
+              });
+            }
+          } else {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message: "A price range with no maximum quantity (i.e., 'or more') must be the last range defined.",
+              path: [originalIndex, "maxQuantity"],
+            });
+          }
+        }
+      }
+    }),
   isActive: z.boolean().default(true), 
 });
 
@@ -455,10 +497,7 @@ export default function EditProductPage() {
 
   return (
     <>
-      <PageHeader
-        title={`Edit Product: ${product.name}`}
-        description="Update product details. Cost price is updated via receipts."
-      />
+      <PageHeader title={`Edit Product: ${product.name}`} description="Update product details. Cost price is updated via receipts." />
       <Card className="w-full max-w-3xl mx-auto shadow-lg">
         <Form {...form}>
           <form onSubmit={form.handleSubmit(onSubmit)}>
@@ -585,7 +624,7 @@ export default function EditProductPage() {
                 <DialogTitle>{editingSupplierProductIndex !== null ? "Edit" : "Add"} Supplier Product Details</DialogTitle>
                 <DialogDescription>Manage supplier-specific SKU, pricing, and availability for this product.</DialogDescription>
               </DialogHeader>
-              <div className="flex-grow overflow-y-auto min-h-0 py-4 pr-2 space-y-4"> {/* Scrollable middle section */}
+              <div className="flex-grow overflow-y-auto min-h-0 py-4 pr-2 space-y-4">
                 <FormField control={supplierProductDialogForm.control} name="supplierId"
                   render={({ field }) => (
                     <FormItem>
@@ -635,6 +674,9 @@ export default function EditProductPage() {
                     <Button type="button" variant="outline" size="sm" onClick={() => appendPriceRange({ minQuantity: 0, maxQuantity: null, price: null, priceType: "fixed", additionalConditions: "" })}>
                       <Icons.Add className="mr-2 h-4 w-4"/> Add Price Range
                     </Button>
+                     {supplierProductDialogForm.formState.errors.priceRanges && typeof supplierProductDialogForm.formState.errors.priceRanges.message === 'string' && (
+                        <p className="text-sm font-medium text-destructive">{supplierProductDialogForm.formState.errors.priceRanges.message}</p>
+                     )}
                   </CardContent>
                 </Card>
 
@@ -654,4 +696,3 @@ export default function EditProductPage() {
     </>
   );
 }
-

@@ -63,7 +63,53 @@ const supplierProductFormSchema = z.object({
   supplierSku: z.string().min(1, "Supplier SKU is required."),
   isAvailable: z.boolean().default(true),
   notes: z.string().optional(),
-  priceRanges: z.array(priceRangeSchema).min(1, "At least one price range is required."),
+  priceRanges: z.array(priceRangeSchema)
+    .min(1, "At least one price range is required.")
+    .superRefine((ranges, ctx) => {
+      if (ranges.length <= 1) return; 
+
+      const sortedRanges = [...ranges].sort((a, b) => a.minQuantity - b.minQuantity);
+
+      for (let i = 0; i < sortedRanges.length; i++) {
+        const current = sortedRanges[i];
+        const originalIndex = ranges.indexOf(current); // Get original index for error path
+
+        // Rule 1: maxQuantity (if not null) must be greater than minQuantity
+        if (current.maxQuantity !== null && current.maxQuantity !== undefined) {
+          if (current.maxQuantity <= current.minQuantity) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message: `Max quantity (${current.maxQuantity}) must be greater than its min quantity (${current.minQuantity}).`,
+              path: [originalIndex, "maxQuantity"],
+            });
+          }
+        }
+
+        // Rule 2: Check for overlaps with the *next* range
+        if (i < sortedRanges.length - 1) {
+          const next = sortedRanges[i + 1];
+          const originalNextIndex = ranges.indexOf(next);
+
+          // If current range has defined max quantity
+          if (current.maxQuantity !== null && current.maxQuantity !== undefined) {
+            if (next.minQuantity <= current.maxQuantity) {
+              ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                message: `Range overlap: Min quantity (${next.minQuantity}) of this range cannot be less than or equal to max quantity (${current.maxQuantity}) of the previous range.`,
+                path: [originalNextIndex, "minQuantity"], 
+              });
+            }
+          } else {
+            // Current range has maxQuantity = null (i.e., "or more")
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message: "A price range with no maximum quantity (i.e., 'or more') must be the last range defined.",
+              path: [originalIndex, "maxQuantity"], 
+            });
+          }
+        }
+      }
+    }),
   isActive: z.boolean().default(true), 
 });
 
@@ -436,7 +482,7 @@ export default function CreateProductPage() {
                 <DialogTitle>{editingSupplierProductIndex !== null ? "Edit" : "Add"} Supplier Product Details</DialogTitle>
                 <DialogDescription>Manage supplier-specific SKU, pricing, and availability for this product.</DialogDescription>
               </DialogHeader>
-              <div className="flex-grow overflow-y-auto min-h-0 py-4 pr-2 space-y-4"> {/* Scrollable middle section */}
+              <div className="flex-grow overflow-y-auto min-h-0 py-4 pr-2 space-y-4"> 
                 <FormField control={supplierProductDialogForm.control} name="supplierId"
                   render={({ field }) => (
                     <FormItem>
@@ -505,4 +551,3 @@ export default function CreateProductPage() {
     </>
   );
 }
-
