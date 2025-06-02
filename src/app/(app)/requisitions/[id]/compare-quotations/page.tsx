@@ -45,7 +45,7 @@ import {
 import { useAuth } from "@/hooks/use-auth-store";
 import { useToast } from "@/hooks/use-toast";
 import { format, isValid, differenceInCalendarDays } from "date-fns";
-import type { Timestamp } from "firebase/firestore";
+import { Timestamp } from "firebase/firestore"; // Added Timestamp import
 import { Icons } from "@/components/icons";
 import { cn } from "@/lib/utils";
 import { Separator } from "@/components/ui/separator";
@@ -62,7 +62,7 @@ interface QuotationOffer extends QuotationDetail {
 }
 
 interface ProductToCompare extends RequisitionRequiredProduct {
-  requisitionProductId: string;
+  requisitionProductId: string; // This is the ID of the RequiredProduct document in subcollection
   offers: QuotationOffer[];
   alreadyPurchased: number;
   remainingToAward: number;
@@ -70,7 +70,7 @@ interface ProductToCompare extends RequisitionRequiredProduct {
 
 export interface SelectedOfferInfo {
   quotationId: string;
-  quotationDetailId: string;
+  quotationDetailId: string; // This is the ID of the QuotationDetail document
   supplierName: string;
   supplierId: string;
   productId: string;
@@ -104,18 +104,12 @@ export default function CompareQuotationsPage() {
   const { currentUser, role } = useAuth();
 
   const [requisition, setRequisition] = useState<Requisition | null>(null);
-  const [productsForComparison, setProductsForComparison] = useState<
-    ProductToCompare[]
-  >([]);
-  const [relevantQuotesWithDetails, setRelevantQuotesWithDetails] = useState<
-    Quotation[]
-  >([]);
+  const [productsForComparison, setProductsForComparison] = useState<ProductToCompare[]>([]);
+  const [relevantQuotesWithDetails, setRelevantQuotesWithDetails] = useState<Quotation[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmittingAwards, setIsSubmittingAwards] = useState(false);
 
-  const [selectedOffers, setSelectedOffers] = useState<
-    Record<string, SelectedOfferInfo | null>
-  >({});
+  const [selectedOffers, setSelectedOffers] = useState<Record<string, SelectedOfferInfo | null>>({});
 
   const [maxDeliveryDays, setMaxDeliveryDays] = useState<string>("");
   const [isCalculatingCombination, setIsCalculatingCombination] = useState(false);
@@ -124,11 +118,8 @@ export default function CompareQuotationsPage() {
   const fetchComparisonData = useCallback(async () => {
     if (!requisitionId) {
       setIsLoading(false);
-      toast({
-        title: "Error",
-        description: "Requisition ID is missing.",
-        variant: "destructive",
-      });
+      toast({ title: "Error", description: "Requisition ID is missing.", variant: "destructive" });
+      router.replace("/requisitions");
       return;
     }
     setIsLoading(true);
@@ -138,11 +129,7 @@ export default function CompareQuotationsPage() {
     try {
       const fetchedRequisition = await getRequisitionById(requisitionId);
       if (!fetchedRequisition || !fetchedRequisition.requiredProducts) {
-        toast({
-          title: "Error",
-          description: "Requisition or its products not found.",
-          variant: "destructive",
-        });
+        toast({ title: "Error", description: "Requisition or its products not found.", variant: "destructive" });
         setRequisition(null);
         setProductsForComparison([]);
         setIsLoading(false);
@@ -194,7 +181,7 @@ export default function CompareQuotationsPage() {
       toast({ title: "Error", description: "Could not load data for comparison.", variant: "destructive" });
     }
     setIsLoading(false);
-  }, [requisitionId, toast]);
+  }, [requisitionId, toast, router]);
 
   useEffect(() => {
     fetchComparisonData();
@@ -202,14 +189,30 @@ export default function CompareQuotationsPage() {
 
   const handleOfferSelection = (
     requisitionProductId: string,
-    offer: QuotationOffer | null
+    selectedQuotationDetailId: string | null // Now receives the quotationDetailId or null if clearing
   ) => {
     setSelectedOffers((prev) => {
       const updated = { ...prev };
-      if (offer) {
-        const productBeingAwarded = productsForComparison.find((p) => p.requisitionProductId === requisitionProductId);
-        if (!productBeingAwarded) return prev;
+      const productBeingAwarded = productsForComparison.find((p) => p.requisitionProductId === requisitionProductId);
+      if (!productBeingAwarded) return prev;
 
+      const currentlySelectedOfferForProduct = prev[requisitionProductId];
+
+      // If the clicked offer is the same as the one already selected, deselect it
+      if (currentlySelectedOfferForProduct && selectedQuotationDetailId === currentlySelectedOfferForProduct.quotationDetailId) {
+        updated[requisitionProductId] = null;
+        return updated;
+      }
+      
+      // If no quotationDetailId is provided (e.g. from a clear button, not used with radio) or no offer is found
+      if (!selectedQuotationDetailId) {
+          updated[requisitionProductId] = null;
+          return updated;
+      }
+
+      const offer = productBeingAwarded.offers.find(o => o.id === selectedQuotationDetailId);
+
+      if (offer) {
         const remainingToAward = productBeingAwarded.remainingToAward;
         const quantityToAwardThisTime = Math.min(remainingToAward, offer.quotedQuantity);
 
@@ -219,11 +222,10 @@ export default function CompareQuotationsPage() {
             description: "This offer has zero quoted quantity or the required quantity for this product is already met.",
             variant: "default",
           });
-          updated[requisitionProductId] = null;
+          updated[requisitionProductId] = null; 
         } else if (remainingToAward <= 0) {
-             updated[requisitionProductId] = null; // Requirement already met
-        }
-        else {
+             updated[requisitionProductId] = null; 
+        } else {
           updated[requisitionProductId] = {
             quotationId: offer.quotationId,
             quotationDetailId: offer.id,
@@ -236,7 +238,7 @@ export default function CompareQuotationsPage() {
           };
         }
       } else {
-        updated[requisitionProductId] = null;
+        updated[requisitionProductId] = null; // Offer not found, clear selection
       }
       return updated;
     });
@@ -338,27 +340,27 @@ export default function CompareQuotationsPage() {
                 return etaA - etaB;
             });
             bestOfferForProduct = fullyFulfillingOffers[0];
-        } else {
+        } else { // No single offer fulfills, find best partial
             validOffersForProduct.sort((a, b) => {
                  if (a.unitPriceQuoted !== b.unitPriceQuoted) return a.unitPriceQuoted - b.unitPriceQuoted;
                 const etaA = a.estimatedDeliveryDate?.toMillis() || Infinity;
                 const etaB = b.estimatedDeliveryDate?.toMillis() || Infinity;
                 return etaA - etaB;
             });
-            bestOfferForProduct = validOffersForProduct[0];
+            bestOfferForProduct = validOffersForProduct[0]; // Pick the cheapest available offer
         }
         
         if (bestOfferForProduct) {
             const quantityToAwardThisTime = Math.min(product.remainingToAward, bestOfferForProduct.quotedQuantity);
              if (quantityToAwardThisTime < product.remainingToAward && quantityToAwardThisTime > 0) {
-                allProductsAttemptedForFulfillment = false;
+                allProductsAttemptedForFulfillment = false; // Flag that not all items fully met by this heuristic pass
                 toast({
                     title: "Partial Fulfillment Warning",
                     description: `Best offer for ${product.productName} from ${bestOfferForProduct.supplierName} only covers ${quantityToAwardThisTime} of ${product.remainingToAward} units.`,
                     variant: "default",
                     duration: 6000
                 });
-            } else if (quantityToAwardThisTime <= 0) {
+            } else if (quantityToAwardThisTime <= 0) { // Should not happen if remainingToAward > 0 and validOffers filters correctly
                  allProductsAttemptedForFulfillment = false;
                  newSelectedOffers[product.requisitionProductId] = null;
                  continue;
@@ -373,7 +375,7 @@ export default function CompareQuotationsPage() {
                 awardedQuantity: quantityToAwardThisTime,
                 unitPrice: bestOfferForProduct.unitPriceQuoted,
             };
-        } else {
+        } else { // No suitable offer found even for partial.
             allProductsAttemptedForFulfillment = false;
             newSelectedOffers[product.requisitionProductId] = null;
         }
@@ -538,8 +540,8 @@ export default function CompareQuotationsPage() {
                   <RadioGroup
                     value={selectedOffers[product.requisitionProductId]?.quotationDetailId || ""}
                     onValueChange={(value) => {
-                      const selectedOfferDetail = product.offers.find((off) => off.id === value);
-                      handleOfferSelection(product.requisitionProductId, selectedOfferDetail || null);
+                      // The value from RadioGroup is the quotationDetailId (which is offer.id)
+                      handleOfferSelection(product.requisitionProductId, value);
                     }}
                   >
                     <div className="relative w-full overflow-auto">
@@ -573,7 +575,7 @@ export default function CompareQuotationsPage() {
                                 <TableCell className={cn("text-right font-semibold", canSelectOffer && "text-primary")}>
                                   {canSelectOffer ? potentialAwardQty : "-"}
                                 </TableCell>
-                                <TableCell className="text-right">${(Number(potentialAwardQty) * Number(offer.unitPriceQuoted)).toFixed(2)}</TableCell>
+                                <TableCell className="text-right">${(Number(canSelectOffer ? potentialAwardQty : 0) * Number(offer.unitPriceQuoted)).toFixed(2)}</TableCell>
                                 <TableCell>{formatTimestampDate(offer.estimatedDeliveryDate)}</TableCell>
                                 <TableCell className="text-xs max-w-[150px] truncate" title={offer.conditions || undefined}>{offer.conditions || "N/A"}</TableCell>
                                 <TableCell className="text-center">
