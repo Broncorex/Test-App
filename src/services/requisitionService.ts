@@ -186,7 +186,6 @@ export const processAndFinalizeAwards = async (
   });
   console.log(`[RequisitionService] Built requiredProductsMap with ${requiredProductsMap.size} entries from pre-fetched data.`);
 
-
   try {
     await runTransaction(db, async (transaction) => {
       console.log(`[RequisitionService] Transaction started for requisitionId: ${requisitionId}`);
@@ -206,9 +205,9 @@ export const processAndFinalizeAwards = async (
       
       // Corrected collection name to "cotizaciones" and added orderBy
       const allQuotationsForRequisitionQuery = query(
-        collection(db, "cotizaciones"), // Corrected from "quotes"
+        collection(db, "cotizaciones"), 
         where("requisitionId", "==", requisitionId),
-        orderBy("createdAt") // Added orderBy
+        orderBy("createdAt") 
       );
       console.log(`[RequisitionService] Reading all quotations for requisition ${requisitionId}`);
       const allQuotationsSnap = await transaction.get(allQuotationsForRequisitionQuery);
@@ -223,22 +222,26 @@ export const processAndFinalizeAwards = async (
 
       if (initialRequiredProductsList.length === 0 && selectedAwards.length > 0) {
           console.warn(`[RequisitionService] Requisition ${requisitionId} has no initial required products, but awards are being processed. This might be an error in requisition data.`);
-          allRequirementsMet = false; // Cannot meet requirements if none were defined.
+          allRequirementsMet = false; 
       } else if (initialRequiredProductsList.length === 0 && selectedAwards.length === 0) {
            console.log(`[RequisitionService] Requisition ${requisitionId} has no initial required products and no awards. Considering requirements met (vacuously).`);
            allRequirementsMet = true;
       } else {
           for (const initialRP of initialRequiredProductsList) {
+              if (!initialRP.productId) {
+                  console.warn(`[RequisitionService] Skipping required product item with missing productId: ${initialRP.id}`);
+                  continue;
+              }
               let currentProjectedQty = initialRP.data.purchasedQuantity || 0;
               const awardForThisProduct = selectedAwards.find(sa => sa.productId === initialRP.productId);
               if (awardForThisProduct) {
-              currentProjectedQty += awardForThisProduct.awardedQuantity;
+                currentProjectedQty += awardForThisProduct.awardedQuantity;
               }
               projectedPurchases.set(initialRP.productId, currentProjectedQty);
 
               if (currentProjectedQty < initialRP.data.requiredQuantity) {
-              allRequirementsMet = false;
-              console.log(`[RequisitionService] Product ${initialRP.productId} not fully met. Required: ${initialRP.data.requiredQuantity}, Projected: ${currentProjectedQty}`);
+                allRequirementsMet = false;
+                console.log(`[RequisitionService] Product ${initialRP.productId} not fully met. Required: ${initialRP.data.requiredQuantity}, Projected: ${currentProjectedQty}`);
               }
           }
       }
@@ -263,9 +266,13 @@ export const processAndFinalizeAwards = async (
       transaction.update(requisitionRef, { status: newRequisitionStatus, updatedAt: now });
 
       for (const award of selectedAwards) {
+        if (!award.productId) {
+            console.warn(`[RequisitionService] Award item is missing productId. Skipping write for this award:`, award);
+            continue;
+        }
         const reqProductEntry = requiredProductsMap.get(award.productId);
-        if (!reqProductEntry) {
-          console.warn(`[RequisitionService] During write phase: Required product with ProductID ${award.productId} not found in pre-fetched map for requisition ${requisitionId}. Skipping update for this item.`);
+        if (!reqProductEntry || !reqProductEntry.id) {
+          console.warn(`[RequisitionService] During write phase: Required product with ProductID ${award.productId} not found in pre-fetched map or missing its own ID. Skipping update for this item. ReqProductEntry:`, reqProductEntry);
           continue;
         }
 
@@ -289,7 +296,7 @@ export const processAndFinalizeAwards = async (
       });
 
       console.log(`[RequisitionService] All writes for requisition ${requisitionId} staged successfully.`);
-    }); // End of runTransaction
+    }); 
 
     console.log(`[RequisitionService] Transaction for requisitionId ${requisitionId} committed successfully.`);
     return { success: true, message: "Awards processed successfully and statuses updated." };
