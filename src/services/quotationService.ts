@@ -19,21 +19,21 @@ import type {
   QuotationDetail,
   QuotationStatus,
   QuotationAdditionalCost,
-  RequiredProduct, // Ensure this is imported if used as a type for productDetailsToRequest
+  RequiredProduct, 
 } from "@/types";
 import { getRequisitionById } from "./requisitionService";
 import { getSupplierById } from "./supplierService";
 import { getUserById } from "./userService";
 import { getProductById } from "./productService";
 
-const quotationsCollection = collection(db, "cotizaciones"); // Using "cotizaciones" as per PRD
+const quotationsCollection = collection(db, "cotizaciones"); 
 
 export interface CreateQuotationRequestData {
   requisitionId: string;
   supplierId: string;
   responseDeadline: Timestamp;
   notes: string;
-  productDetailsToRequest: Array<{ // This structure must match what the frontend sends
+  productDetailsToRequest: Array<{ 
     productId: string;
     productName: string;
     requiredQuantity: number;
@@ -85,7 +85,7 @@ export const createQuotation = async (data: CreateQuotationRequestData, userId: 
   const now = Timestamp.now();
 
   const requisition = await getRequisitionById(data.requisitionId);
-  if (!requisition) { // Removed check for requiredProducts length here as it's now specific to productDetailsToRequest
+  if (!requisition) { 
     throw new Error("Requisition not found or is invalid.");
   }
   if (["PO in Progress", "Completed", "Canceled"].includes(requisition.status)) {
@@ -118,6 +118,7 @@ export const createQuotation = async (data: CreateQuotationRequestData, userId: 
     createdAt: now,
     updatedAt: now,
     createdBy: userId,
+    // productsSubtotal, totalQuotation, etc., will be set upon reception
   };
   batch.set(quotationRef, quotationData);
 
@@ -130,23 +131,28 @@ export const createQuotation = async (data: CreateQuotationRequestData, userId: 
     }
 
     const detailRef = doc(quotationDetailsCollectionRef);
-    const detailData: Omit<QuotationDetail, "id"> = {
+    // Initial detail only includes requested info. Quoted values come later.
+    const detailData: Omit<QuotationDetail, "id" | "quotedQuantity" | "unitPriceQuoted" | "conditions" | "estimatedDeliveryDate" | "notes"> & 
+                      Partial<Pick<QuotationDetail, "quotedQuantity" | "unitPriceQuoted" | "conditions" | "estimatedDeliveryDate" | "notes">> = {
       productId: requestedProduct.productId,
       productName: requestedProduct.productName, 
       requiredQuantity: requestedProduct.requiredQuantity,
-      quotedQuantity: 0, 
-      unitPriceQuoted: 0,
-      conditions: "", 
-      estimatedDeliveryDate: data.responseDeadline, 
-      notes: "", 
+      // these are set when supplier responds
+      // quotedQuantity: 0, 
+      // unitPriceQuoted: 0,
+      // conditions: "", 
+      // estimatedDeliveryDate: data.responseDeadline, 
+      // notes: "", 
     };
     batch.set(detailRef, detailData);
   }
 
   await batch.commit();
 
+  // Update requisition status if it was "Pending Quotation"
   if (requisition.status === "Pending Quotation") {
     const requisitionDocRef = doc(db, "requisitions", data.requisitionId);
+    // Using updateDoc directly as it's a single update after batch.
     await updateDoc(requisitionDocRef, { status: "Quoted", updatedAt: Timestamp.now() });
   }
 
@@ -181,6 +187,12 @@ export const getQuotationById = async (id: string): Promise<Quotation | null> =>
   const quotationDetails: QuotationDetail[] = detailsSnap.docs.map(docSnap => ({
     id: docSnap.id,
     ...docSnap.data(),
+    // Ensure all fields have defaults if not present (especially for newly created details)
+    quotedQuantity: docSnap.data().quotedQuantity ?? 0,
+    unitPriceQuoted: docSnap.data().unitPriceQuoted ?? 0,
+    conditions: docSnap.data().conditions ?? "",
+    estimatedDeliveryDate: docSnap.data().estimatedDeliveryDate ?? Timestamp.now(), // Or a more sensible default like responseDeadline
+    notes: docSnap.data().notes ?? "",
   } as QuotationDetail));
 
   return {
@@ -234,6 +246,8 @@ export const getAllQuotations = async (filters: QuotationFilters = {}): Promise<
       ...data,
       supplierName,
       generatedByUserName,
+      // quotationDetails are not typically fetched in list view for performance.
+      // They are fetched in getQuotationById.
     } as Quotation;
   });
 
@@ -243,17 +257,18 @@ export const getAllQuotations = async (filters: QuotationFilters = {}): Promise<
 
 export const updateQuotation = async (id: string, data: Partial<Omit<Quotation, "id" | "createdBy" | "createdAt" | "quotationDetails">>): Promise<void> => {
   const quotationRef = doc(db, "cotizaciones", id);
-  const { createdBy, createdAt, quotationDetails, ...updateData } = data as any;
+  // Remove fields that shouldn't be directly updatable this way
+  const { createdBy, createdAt, quotationDetails, supplierName, generatedByUserName, ...updateData } = data as any;
 
   if (updateData.productsSubtotal !== undefined && updateData.additionalCosts !== undefined) {
     updateData.totalQuotation = calculateTotalQuotation(updateData.productsSubtotal, updateData.additionalCosts);
   } else if (updateData.productsSubtotal !== undefined) {
-     const currentQuotation = await getQuotationById(id);
+     const currentQuotation = await getQuotationById(id); // Fetch full quote to get existing additional costs
      if (currentQuotation) {
         updateData.totalQuotation = calculateTotalQuotation(updateData.productsSubtotal, currentQuotation.additionalCosts);
      }
   } else if (updateData.additionalCosts !== undefined) {
-    const currentQuotation = await getQuotationById(id);
+    const currentQuotation = await getQuotationById(id); // Fetch full quote for productsSubtotal
      if (currentQuotation && currentQuotation.productsSubtotal !== undefined) {
         updateData.totalQuotation = calculateTotalQuotation(currentQuotation.productsSubtotal, updateData.additionalCosts);
      }
@@ -280,7 +295,7 @@ export const receiveQuotation = async (id: string, data: UpdateReceivedQuotation
   }
   
   const calculatedSubtotal = data.details.reduce((sum, item) => sum + (Number(item.quotedQuantity) * Number(item.unitPriceQuoted)), 0);
-  if (Math.abs(calculatedSubtotal - data.productsSubtotal) > 0.001) { // Compare with tolerance for floating point
+  if (Math.abs(calculatedSubtotal - data.productsSubtotal) > 0.001) { 
     console.warn(`Provided productsSubtotal ${data.productsSubtotal} does not match calculated ${calculatedSubtotal}. Using calculated value.`);
   }
 
@@ -299,10 +314,17 @@ export const receiveQuotation = async (id: string, data: UpdateReceivedQuotation
   batch.update(quotationRef, mainUpdateData);
 
   const quotationDetailsCollectionRef = collection(quotationRef, "quotationDetails");
+  
+  // Fetch existing details to update them or create new ones if they don't match
+  // This is safer than deleting all and re-adding if IDs are important or if only some details change.
+  // However, if the structure from `data.details` is always the full set, deleting and re-adding is simpler.
+  // For simplicity and based on current UI flow (dialog likely re-populates all details):
   const existingDetailsSnap = await getDocs(quotationDetailsCollectionRef);
   existingDetailsSnap.docs.forEach(doc => batch.delete(doc.ref)); 
 
   for (const detail of data.details) {
+      // For `receiveQuotation`, we assume new detail IDs are generated.
+      // If we needed to preserve existing detail IDs, we would query for existing ones by productId.
       const detailRef = doc(quotationDetailsCollectionRef); 
       const detailData: Omit<QuotationDetail, "id"> = {
           productId: detail.productId,
@@ -320,14 +342,18 @@ export const receiveQuotation = async (id: string, data: UpdateReceivedQuotation
   await batch.commit();
 };
 
-export const updateQuotationStatus = async (id: string, newStatus: QuotationStatus, userId: string): Promise<void> => {
+export const updateQuotationStatus = async (id: string, newStatus: QuotationStatus, userId?: string): Promise<void> => {
     const quotationRef = doc(db, "cotizaciones", id);
     const quotationSnap = await getDoc(quotationRef);
     if (!quotationSnap.exists()) {
         throw new Error("Quotation not found.");
     }
+    // Add more complex status transition logic here if needed.
+    // For example, ensure it's not moving from "Awarded" back to "Sent" without proper checks.
     await updateDoc(quotationRef, {
         status: newStatus,
         updatedAt: Timestamp.now(),
+        // ...(userId && { updatedBy: userId }) // Optionally track who updated the status
     });
 };
+
