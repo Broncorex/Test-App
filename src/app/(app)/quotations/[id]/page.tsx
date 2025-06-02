@@ -32,6 +32,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
 import { Label as ShadLabel } from "@/components/ui/label";
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 
 
 const receivedQuotationItemSchema = z.object({
@@ -281,6 +282,8 @@ export default function QuotationDetailPage() {
   const canAward = canManage && (quotation.status === "Received" || quotation.status === "Partially Awarded");
   const canReject = canManage && (quotation.status === "Received" || quotation.status === "Partially Awarded");
 
+  const totalAdditionalCostsValue = quotation.additionalCosts?.reduce((sum, cost) => sum + Number(cost.amount), 0) || 0;
+
 
   return (
     <>
@@ -340,8 +343,33 @@ export default function QuotationDetailPage() {
             
             <Separator />
             <div className="flex justify-between"><span className="text-muted-foreground">Products Subtotal:</span><span className="font-medium">${Number(quotation.productsSubtotal || 0).toFixed(2)}</span></div>
-            <div className="flex justify-between"><span className="text-muted-foreground">Additional Costs:</span><span className="font-medium">${quotation.additionalCosts?.reduce((sum, cost) => sum + Number(cost.amount), 0).toFixed(2) || '0.00'}</span></div>
-            <div className="flex justify-between text-md font-semibold"><span className="text-muted-foreground">Total Quotation:</span><span>${Number(quotation.totalQuotation || 0).toFixed(2)}</span></div>
+            
+            {(quotation.additionalCosts && quotation.additionalCosts.length > 0) || totalAdditionalCostsValue > 0 ? (
+              <Accordion type="single" collapsible className="w-full -my-2">
+                <AccordionItem value="additional-costs" className="border-b-0">
+                  <AccordionTrigger className="py-2 hover:no-underline">
+                    <div className="flex justify-between w-full">
+                      <span className="text-muted-foreground">Additional Costs:</span>
+                      <span className="font-medium">${totalAdditionalCostsValue.toFixed(2)}</span>
+                    </div>
+                  </AccordionTrigger>
+                  <AccordionContent className="pt-1 pb-2 pl-2 text-xs">
+                    <ul className="space-y-0.5">
+                      {quotation.additionalCosts?.map((cost, index) => (
+                        <li key={index} className="flex justify-between items-center">
+                          <span>{cost.description} ({cost.type})</span>
+                          <span className="font-medium">${Number(cost.amount).toFixed(2)}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </AccordionContent>
+                </AccordionItem>
+              </Accordion>
+            ) : (
+              <div className="flex justify-between"><span className="text-muted-foreground">Additional Costs:</span><span className="font-medium">$0.00</span></div>
+            )}
+
+            <div className="flex justify-between text-md font-semibold pt-1"><span className="text-muted-foreground">Total Quotation:</span><span>${Number(quotation.totalQuotation || 0).toFixed(2)}</span></div>
             <Separator />
             
             <div><span className="text-muted-foreground">Shipping Conditions:</span><p className="font-medium whitespace-pre-wrap">{quotation.shippingConditions || "N/A"}</p></div>
