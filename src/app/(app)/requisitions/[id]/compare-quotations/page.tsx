@@ -1,7 +1,7 @@
 
 "use client";
 
-import { useParams, useRouter, useSearchParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { useEffect, useState, useCallback, useMemo } from "react";
 import { PageHeader } from "@/components/shared/page-header";
@@ -13,9 +13,9 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Label } from "@/components/ui/label";
-import type { Quotation, QuotationStatus, QuotationDetail, Requisition, RequiredProduct as RequisitionRequiredProduct } from "@/types";
-import { getAllQuotations, getQuotationById, updateQuotationStatus } from "@/services/quotationService";
-import { getRequisitionById, processAndFinalizeAwards } from "@/services/requisitionService"; // Added processAndFinalizeAwards
+import type { Quotation, QuotationStatus, QuotationDetail, Requisition, RequiredProduct as RequisitionRequiredProduct, QuotationAdditionalCost } from "@/types";
+import { getAllQuotations, getQuotationById } from "@/services/quotationService";
+import { getRequisitionById, processAndFinalizeAwards } from "@/services/requisitionService";
 import { useAuth } from "@/hooks/use-auth-store";
 import { useToast } from "@/hooks/use-toast";
 import { format, isValid } from "date-fns";
@@ -24,15 +24,18 @@ import { Icons } from "@/components/icons";
 import { cn } from "@/lib/utils";
 import { Separator } from "@/components/ui/separator";
 
+
 interface QuotationOffer extends QuotationDetail {
   quotationId: string;
   supplierName: string;
   supplierId: string;
   overallQuotationStatus: QuotationStatus;
+  quotationTotal: number; // Original total of the quotation this offer came from
+  quotationAdditionalCosts?: QuotationAdditionalCost[]; // Original additional costs
 }
 
 interface ProductToCompare extends RequisitionRequiredProduct {
-  requisitionProductId: string; // This is the 'id' from the subcollection item
+  requisitionProductId: string; 
   offers: QuotationOffer[];
   alreadyPurchased: number;
   remainingToAward: number;
@@ -40,7 +43,7 @@ interface ProductToCompare extends RequisitionRequiredProduct {
 
 export interface SelectedOfferInfo {
   quotationId: string;
-  quotationDetailId: string; // This is QuotationDetail.id
+  quotationDetailId: string; 
   supplierName: string;
   supplierId: string;
   productId: string;
@@ -65,10 +68,9 @@ const formatTimestampDate = (timestamp?: Timestamp | null): string => {
 export default function CompareQuotationsPage() {
   const params = useParams();
   const router = useRouter();
-  const searchParams = useSearchParams();
-
+  
   const requisitionId = params.id as string;
-  const currentQuoteIdFromParams = searchParams.get("currentQuoteId");
+  const currentQuoteIdFromParams = useSearchParams().get("currentQuoteId");
 
   console.log("DEBUG: CompareQuotationsPage rendered for requisitionId (params.id):", requisitionId);
   const { toast } = useToast();
@@ -76,11 +78,11 @@ export default function CompareQuotationsPage() {
 
   const [requisition, setRequisition] = useState<Requisition | null>(null);
   const [productsForComparison, setProductsForComparison] = useState<ProductToCompare[]>([]);
+  const [relevantQuotesWithDetails, setRelevantQuotesWithDetails] = useState<Quotation[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmittingAwards, setIsSubmittingAwards] = useState(false);
 
-
-  const [selectedOffers, setSelectedOffers] = useState<Record<string, SelectedOfferInfo | null>>({}); // Key: requisitionProductId (RequiredProduct.id)
+  const [selectedOffers, setSelectedOffers] = useState<Record<string, SelectedOfferInfo | null>>({}); // Key: requisitionProductId
 
 
   const fetchComparisonData = useCallback(async () => {
@@ -91,6 +93,7 @@ export default function CompareQuotationsPage() {
     }
     setIsLoading(true);
     setSelectedOffers({});
+    setRelevantQuotesWithDetails([]);
 
     try {
       const fetchedRequisition = await getRequisitionById(requisitionId);
@@ -105,30 +108,30 @@ export default function CompareQuotationsPage() {
 
       const allQuotesForRequisition = await getAllQuotations({ requisitionId });
       
-      const relevantQuotesWithDetails: Quotation[] = [];
+      const detailedRelevantQuotes: Quotation[] = [];
       for (const quoteHeader of allQuotesForRequisition) {
-        // Consider quotes that are "Received", "Partially Awarded", or "Awarded" for comparison and potential re-awarding.
         if (["Received", "Partially Awarded", "Awarded"].includes(quoteHeader.status)) {
-          const detailedQuote = await getQuotationById(quoteHeader.id); // Fetches details
+          const detailedQuote = await getQuotationById(quoteHeader.id); 
           if (detailedQuote) {
-            relevantQuotesWithDetails.push(detailedQuote);
+            detailedRelevantQuotes.push(detailedQuote);
           }
         }
       }
+      setRelevantQuotesWithDetails(detailedRelevantQuotes);
       
       const productsToCompareMap = new Map<string, ProductToCompare>();
 
       fetchedRequisition.requiredProducts.forEach(reqProduct => {
-        productsToCompareMap.set(reqProduct.productId, { // Use productID as a common key
+        productsToCompareMap.set(reqProduct.productId, { 
           ...reqProduct,
-          requisitionProductId: reqProduct.id, // Store the specific ID from the subcollection
+          requisitionProductId: reqProduct.id, 
           offers: [],
           alreadyPurchased: reqProduct.purchasedQuantity || 0,
           remainingToAward: reqProduct.requiredQuantity - (reqProduct.purchasedQuantity || 0)
         });
       });
 
-      relevantQuotesWithDetails.forEach(quote => {
+      detailedRelevantQuotes.forEach(quote => {
         quote.quotationDetails?.forEach(detail => {
           const productEntry = productsToCompareMap.get(detail.productId);
           if (productEntry) {
@@ -138,6 +141,8 @@ export default function CompareQuotationsPage() {
               supplierName: quote.supplierName || "Unknown Supplier",
               supplierId: quote.supplierId,
               overallQuotationStatus: quote.status,
+              quotationTotal: quote.totalQuotation || 0,
+              quotationAdditionalCosts: quote.additionalCosts || [],
             });
           }
         });
@@ -166,13 +171,16 @@ export default function CompareQuotationsPage() {
         const remainingToAward = productBeingAwarded.requiredQuantity - productBeingAwarded.alreadyPurchased;
         const quantityToAwardThisTime = Math.min(remainingToAward, offer.quotedQuantity);
         
-        if (quantityToAwardThisTime <= 0) {
-            toast({ title: "Cannot Select", description: "Required quantity already met or offer has zero quantity.", variant: "default"});
+        if (quantityToAwardThisTime <= 0 && remainingToAward > 0) { 
+            toast({ title: "Cannot Select", description: "This offer has zero quantity or required quantity already met by other means.", variant: "default"});
             updated[requisitionProductId] = null; 
-        } else {
+        } else if (quantityToAwardThisTime <= 0 && remainingToAward <= 0) {
+             updated[requisitionProductId] = null; // Requirement met, clear selection
+        }
+        else {
             updated[requisitionProductId] = {
                 quotationId: offer.quotationId,
-                quotationDetailId: offer.id,
+                quotationDetailId: offer.id, 
                 supplierName: offer.supplierName,
                 supplierId: offer.supplierId,
                 productId: offer.productId,
@@ -182,18 +190,50 @@ export default function CompareQuotationsPage() {
             };
         }
       } else {
-        updated[requisitionProductId] = null; // Clear selection for this product
+        updated[requisitionProductId] = null; 
       }
       return updated;
     });
   };
 
-  const totalSelectedAwardCost = useMemo(() => {
-    return Object.values(selectedOffers).reduce((sum, offer) => {
-      if (offer) return sum + (offer.awardedQuantity * offer.unitPrice);
-      return sum;
-    }, 0);
-  }, [selectedOffers]);
+  const awardSummaryDetails = useMemo(() => {
+    let productsSubtotal = 0;
+    const awardedItems: SelectedOfferInfo[] = [];
+    const uniqueAwardedQuotationInfo: Record<string, { supplierName: string, additionalCosts: QuotationAdditionalCost[], totalOriginalQuote: number }> = {};
+
+    Object.values(selectedOffers).forEach(offer => {
+      if (offer) {
+        productsSubtotal += offer.awardedQuantity * offer.unitPrice;
+        awardedItems.push(offer);
+        if (!uniqueAwardedQuotationInfo[offer.quotationId]) {
+          const originalQuote = relevantQuotesWithDetails.find(q => q.id === offer.quotationId);
+          uniqueAwardedQuotationInfo[offer.quotationId] = {
+            supplierName: offer.supplierName,
+            additionalCosts: originalQuote?.additionalCosts || [],
+            totalOriginalQuote: originalQuote?.totalQuotation || 0,
+          };
+        }
+      }
+    });
+
+    let totalAdditionalCosts = 0;
+    Object.values(uniqueAwardedQuotationInfo).forEach(info => {
+      info.additionalCosts.forEach(cost => {
+        totalAdditionalCosts += Number(cost.amount);
+      });
+    });
+    
+    const grandTotal = productsSubtotal + totalAdditionalCosts;
+
+    return {
+      awardedItems,
+      productsSubtotal,
+      uniqueAwardedQuotationInfo,
+      totalAdditionalCosts,
+      grandTotal,
+    };
+  }, [selectedOffers, relevantQuotesWithDetails]);
+
 
   const handleFinalizeAwards = async () => {
     const awardsToProcess = Object.values(selectedOffers).filter(offer => offer !== null) as SelectedOfferInfo[];
@@ -212,10 +252,7 @@ export default function CompareQuotationsPage() {
         const result = await processAndFinalizeAwards(requisitionId, awardsToProcess, currentUser.uid);
         if (result.success) {
             toast({ title: "Awards Finalized Successfully!", description: "Requisition and quotation statuses have been updated.", variant: "default"});
-            // Refresh data to show updated statuses and purchased quantities
             fetchComparisonData(); 
-            // Optionally, navigate away or disable further awards on this page
-            // router.push(`/requisitions/${requisitionId}`); 
         } else {
             toast({ title: "Finalization Failed", description: result.message || "Could not process awards.", variant: "destructive" });
         }
@@ -301,20 +338,21 @@ export default function CompareQuotationsPage() {
                               <TableHead>Supplier</TableHead>
                               <TableHead className="text-right">Quoted Qty</TableHead>
                               <TableHead className="text-right">Unit Price</TableHead>
-                              <TableHead className="text-right">Offer Total</TableHead>
+                              <TableHead className="text-right">Potential Award Qty</TableHead>
+                              <TableHead className="text-right">Offer Line Total</TableHead>
                               <TableHead>Delivery ETA</TableHead>
-                              <TableHead>Conditions</TableHead>
+                              <TableHead className="max-w-[100px]">Conditions</TableHead>
                               <TableHead className="text-center">Quote Details</TableHead>
                             </TableRow>
                           </TableHeader>
                           <TableBody>
                             {product.offers.map((offer) => {
                               const isSelected = selectedOffers[product.requisitionProductId]?.quotationDetailId === offer.id;
-                              const quantityActuallyAwarded = isSelected ? selectedOffers[product.requisitionProductId]!.awardedQuantity : 0;
-                              const canSelectOffer = remainingToAwardForProduct > 0 && offer.quotedQuantity > 0;
+                              const potentialAwardQty = Math.min(remainingToAwardForProduct, offer.quotedQuantity);
+                              const canSelectOffer = remainingToAwardForProduct > 0 && offer.quotedQuantity > 0 && potentialAwardQty > 0;
 
                               return (
-                                <TableRow key={offer.id} className={cn(isSelected && "bg-primary/10")}>
+                                <TableRow key={offer.id} className={cn(isSelected && "bg-primary/10", currentQuoteIdFromParams === offer.quotationId && !isSelected && "bg-blue-50")}>
                                   <TableCell>
                                     <RadioGroupItem 
                                       value={offer.id} 
@@ -325,7 +363,8 @@ export default function CompareQuotationsPage() {
                                   <TableCell className="font-medium">{offer.supplierName}</TableCell>
                                   <TableCell className="text-right">{offer.quotedQuantity}</TableCell>
                                   <TableCell className="text-right">${Number(offer.unitPriceQuoted).toFixed(2)}</TableCell>
-                                  <TableCell className="text-right font-semibold">${(Number(offer.quotedQuantity) * Number(offer.unitPriceQuoted)).toFixed(2)}</TableCell>
+                                  <TableCell className="text-right font-semibold text-primary">{canSelectOffer ? potentialAwardQty : "-"}</TableCell>
+                                  <TableCell className="text-right">${(Number(potentialAwardQty) * Number(offer.unitPriceQuoted)).toFixed(2)}</TableCell>
                                   <TableCell>{formatTimestampDate(offer.estimatedDeliveryDate)}</TableCell>
                                   <TableCell className="text-xs max-w-[150px] truncate" title={offer.conditions}>{offer.conditions || "N/A"}</TableCell>
                                   <TableCell className="text-center">
@@ -350,7 +389,7 @@ export default function CompareQuotationsPage() {
             );
           })}
 
-          {Object.values(selectedOffers).some(s => s !== null) && (
+          {awardSummaryDetails.awardedItems.length > 0 && (
             <Card className="mt-6 shadow-lg">
               <CardHeader>
                 <CardTitle className="font-headline">Award Summary</CardTitle>
@@ -369,30 +408,48 @@ export default function CompareQuotationsPage() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {Object.entries(selectedOffers).map(([reqProdId, selection]) => {
-                        if (!selection) return null;
-                        return (
-                          <TableRow key={reqProdId}>
-                            <TableCell>{selection.productName}</TableCell>
-                            <TableCell>{selection.supplierName}</TableCell>
-                            <TableCell className="text-right">{selection.awardedQuantity}</TableCell>
-                            <TableCell className="text-right">${selection.unitPrice.toFixed(2)}</TableCell>
-                            <TableCell className="text-right font-semibold">${(selection.awardedQuantity * selection.unitPrice).toFixed(2)}</TableCell>
-                          </TableRow>
-                        );
-                      })}
+                      {awardSummaryDetails.awardedItems.map((selection) => (
+                        <TableRow key={`${selection.productId}-${selection.supplierId}`}>
+                          <TableCell>{selection.productName}</TableCell>
+                          <TableCell>{selection.supplierName}</TableCell>
+                          <TableCell className="text-right">{selection.awardedQuantity}</TableCell>
+                          <TableCell className="text-right">${selection.unitPrice.toFixed(2)}</TableCell>
+                          <TableCell className="text-right font-semibold">${(selection.awardedQuantity * selection.unitPrice).toFixed(2)}</TableCell>
+                        </TableRow>
+                      ))}
                     </TableBody>
                   </Table>
                 </div>
+                <Separator className="my-4" />
+                <div className="space-y-2 text-sm">
+                    <div className="flex justify-between">
+                        <span>Products Subtotal:</span>
+                        <span className="font-medium">${awardSummaryDetails.productsSubtotal.toFixed(2)}</span>
+                    </div>
+                    {Object.entries(awardSummaryDetails.uniqueAwardedQuotationInfo).map(([quoteId, info]) => 
+                        info.additionalCosts.length > 0 && (
+                            <React.Fragment key={quoteId}>
+                                <p className="font-medium mt-1 text-muted-foreground">{info.supplierName} - Additional Costs:</p>
+                                {info.additionalCosts.map((cost, index) => (
+                                    <div key={`${quoteId}-${index}`} className="flex justify-between pl-2">
+                                    <span>{cost.description} ({cost.type}):</span>
+                                    <span className="font-medium">${Number(cost.amount).toFixed(2)}</span>
+                                    </div>
+                                ))}
+                            </React.Fragment>
+                        )
+                    )}
+                </div>
+                <Separator className="my-4" />
                 <div className="mt-4 text-right">
-                  <p className="text-lg font-bold">Total Estimated Cost of Award: ${totalSelectedAwardCost.toFixed(2)}</p>
+                  <p className="text-lg font-bold">Total Estimated Cost of Award: ${awardSummaryDetails.grandTotal.toFixed(2)}</p>
                 </div>
               </CardContent>
               <CardFooter className="flex justify-end">
                 <Button 
                   size="lg" 
                   onClick={handleFinalizeAwards} 
-                  disabled={Object.values(selectedOffers).every(offer => offer === null) || isSubmittingAwards || isLoading}
+                  disabled={awardSummaryDetails.awardedItems.length === 0 || isSubmittingAwards || isLoading}
                 >
                   {isSubmittingAwards ? <Icons.Logo className="mr-2 h-5 w-5 animate-spin" /> : <Icons.DollarSign className="mr-2 h-5 w-5" />}
                   {isSubmittingAwards ? "Processing..." : "Confirm & Finalize Awards"}
@@ -405,3 +462,4 @@ export default function CompareQuotationsPage() {
     </>
   );
 }
+
