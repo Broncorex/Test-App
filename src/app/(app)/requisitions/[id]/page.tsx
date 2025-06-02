@@ -18,7 +18,7 @@ import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Icons } from "@/components/icons";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogClose } from "@/components/ui/dialog";
-import { Form, FormControl, FormField, FormItem, FormMessage as ShadFormMessage, FormLabel as ShadFormLabel } from "@/components/ui/form";
+import { Form, FormControl, FormField, FormItem, FormMessage as ShadFormMessage, FormLabel as ShadFormLabelFromHookForm } from "@/components/ui/form"; // Renamed alias to avoid confusion
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Calendar } from "@/components/ui/calendar";
@@ -33,7 +33,7 @@ import { getSupplierProduct } from "@/services/supplierProductService";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
-import { Label } from "@/components/ui/label";
+import { Label } from "@/components/ui/label"; // Standard Label for non-form contexts
 import { Separator } from "@/components/ui/separator";
 
 
@@ -434,7 +434,7 @@ export default function RequisitionDetailPage() {
            {canManageStatus && (
             <CardFooter className="border-t pt-4">
                 <div className="w-full space-y-2">
-                    <ShadFormLabel htmlFor="status-update" className="font-semibold">Update Status:</ShadFormLabel>
+                    <Label htmlFor="status-update" className="font-semibold">Update Status:</Label>
                     <div className="flex gap-2">
                     <Select value={selectedStatus} onValueChange={(value) => setSelectedStatus(value as RequisitionStatus)}>
                         <SelectTrigger id="status-update" className="flex-1">
@@ -525,7 +525,7 @@ export default function RequisitionDetailPage() {
                   render={() => (
                     <FormItem>
                       <div className="mb-2">
-                        <ShadFormLabel className="text-base font-semibold">Suppliers to Quote *</ShadFormLabel>
+                        <ShadFormLabelFromHookForm className="text-base font-semibold">Suppliers to Quote *</ShadFormLabelFromHookForm>
                         <p className="text-sm text-muted-foreground">
                           Select suppliers, then expand to choose products for each. Applicable price ranges are shown.
                         </p>
@@ -567,9 +567,9 @@ export default function RequisitionDetailPage() {
                                     }}
                                     onClick={(e) => e.stopPropagation()} 
                                   />
-                                  <ShadFormLabel htmlFor={`supplier-checkbox-${supplier.id}`} className={cn("font-semibold text-md", !hasAnyQuotableProduct && "text-muted-foreground")}>
+                                  <ShadFormLabelFromHookForm htmlFor={`supplier-checkbox-${supplier.id}`} className={cn("font-semibold text-md", !hasAnyQuotableProduct && "text-muted-foreground")}>
                                     {supplier.name}
-                                  </ShadFormLabel>
+                                  </ShadFormLabelFromHookForm>
                                 </div>
                                 {hasAnyQuotableProduct && (
                                   <Button type="button" variant="ghost" size="sm" className="p-1 h-auto">
@@ -599,7 +599,9 @@ export default function RequisitionDetailPage() {
 
                                         let applicablePriceRange: PriceRange | null = null;
                                         if (link && link.priceRanges) {
-                                          for (const range of link.priceRanges) {
+                                          // Sort ranges by minQuantity to ensure correct selection for overlapping/adjacent ranges
+                                          const sortedRanges = [...link.priceRanges].sort((a,b) => a.minQuantity - b.minQuantity);
+                                          for (const range of sortedRanges) {
                                             const meetsMin = reqProduct.requiredQuantity >= range.minQuantity;
                                             const meetsMax = range.maxQuantity === null || reqProduct.requiredQuantity <= range.maxQuantity;
                                             if (meetsMin && meetsMax) {
@@ -628,9 +630,9 @@ export default function RequisitionDetailPage() {
                                                     />
                                                   </FormControl>
                                                   <div className="flex-1">
-                                                    <ShadFormLabel className="font-normal text-sm">
+                                                    <ShadFormLabelFromHookForm className="font-normal text-sm">
                                                       {reqProduct.productName} (Req. Qty: {reqProduct.requiredQuantity})
-                                                    </ShadFormLabel>
+                                                    </ShadFormLabelFromHookForm>
                                                     {!canQuoteThisProduct && (
                                                       <p className="text-xs text-destructive">This supplier does not offer this product or it's unavailable.</p>
                                                     )}
@@ -695,7 +697,7 @@ export default function RequisitionDetailPage() {
                   name="responseDeadline"
                   render={({ field }) => (
                     <FormItem className="flex flex-col">
-                      <ShadFormLabel>Response Deadline *</ShadFormLabel>
+                      <ShadFormLabelFromHookForm>Response Deadline *</ShadFormLabelFromHookForm>
                       <Popover>
                         <PopoverTrigger asChild>
                           <FormControl>
@@ -718,7 +720,7 @@ export default function RequisitionDetailPage() {
                   name="notes"
                   render={({ field }) => (
                     <FormItem>
-                      <ShadFormLabel>Notes to Suppliers (Optional)</ShadFormLabel>
+                      <ShadFormLabelFromHookForm>Notes to Suppliers (Optional)</ShadFormLabelFromHookForm>
                       <FormControl><Textarea placeholder="General instructions for all selected suppliers." {...field} /></FormControl>
                       <ShadFormMessage />
                     </FormItem>
