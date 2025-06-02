@@ -20,12 +20,13 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useToast } from "@/hooks/use-toast";
-import type { Product, Category, Supplier } from "@/types";
+import type { Product, Category, Supplier, ProveedorProducto } from "@/types"; // Added ProveedorProducto
 import { Skeleton } from "@/components/ui/skeleton";
 import { useAuth } from "@/hooks/use-auth-store";
 import { getAllProducts, toggleProductActiveStatus, type ProductFilters } from "@/services/productService";
 import { getAllCategories } from "@/services/categoryService";
 import { getAllSuppliers } from "@/services/supplierService";
+import { getAllSupplierProductsByProduct } from "@/services/supplierProductService"; // Added
 import {
   AlertDialog,
   AlertDialogAction,
@@ -56,6 +57,7 @@ import {
 } from "@/components/ui/select";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Timestamp } from "firebase/firestore";
+import { Separator } from "@/components/ui/separator"; // Added
 
 export default function ProductsPage() {
   const [products, setProducts] = useState<Product[]>([]);
@@ -70,6 +72,8 @@ export default function ProductsPage() {
 
   const [isViewDialogOpen, setIsViewDialogOpen] = useState(false);
   const [viewingProduct, setViewingProduct] = useState<Product | null>(null);
+  const [viewingSupplierProducts, setViewingSupplierProducts] = useState<ProveedorProducto[]>([]); // New state
+  const [isLoadingSupplierProducts, setIsLoadingSupplierProducts] = useState(false); // New state
 
   const { toast } = useToast();
   const { role } = useAuth();
@@ -132,9 +136,20 @@ export default function ProductsPage() {
     return suppliers.find(sup => sup.id === supplierId)?.name || "Unknown";
   };
 
-  const handleViewDetails = (product: Product) => {
+  const handleViewDetails = async (product: Product) => {
     setViewingProduct(product);
     setIsViewDialogOpen(true);
+    setViewingSupplierProducts([]); // Clear previous
+    setIsLoadingSupplierProducts(true);
+    try {
+      // Fetch all (active and inactive) supplier-product links
+      const supProds = await getAllSupplierProductsByProduct(product.id, true); 
+      setViewingSupplierProducts(supProds);
+    } catch (error) {
+      console.error("Error fetching supplier products for view dialog:", error);
+      toast({ title: "Error", description: "Could not load supplier pricing details.", variant: "destructive" });
+    }
+    setIsLoadingSupplierProducts(false);
   };
 
   const formatTimestamp = (timestamp: Timestamp | string | null | undefined): string => {
@@ -324,7 +339,7 @@ export default function ProductsPage() {
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-4">
                   <div><Label className="text-xs font-semibold text-muted-foreground">Categories</Label><p className="text-sm">{getCategoryNames(viewingProduct.categoryIds)}</p></div>
-                  <div><Label className="text-xs font-semibold text-muted-foreground">Supplier</Label><p className="text-sm">{getSupplierName(viewingProduct.supplierId)}</p></div>
+                  <div><Label className="text-xs font-semibold text-muted-foreground">Primary Supplier</Label><p className="text-sm">{getSupplierName(viewingProduct.supplierId)}</p></div>
                   
                   <div><Label className="text-xs font-semibold text-muted-foreground">Cost Price</Label><p className="text-sm">${viewingProduct.costPrice.toFixed(2)}</p></div>
                   <div><Label className="text-xs font-semibold text-muted-foreground">Base Price</Label><p className="text-sm">${viewingProduct.basePrice.toFixed(2)}</p></div>
@@ -364,6 +379,66 @@ export default function ProductsPage() {
                   <div><Label className="text-xs font-semibold text-muted-foreground">Last Updated</Label><p className="text-sm">{formatTimestamp(viewingProduct.updatedAt)}</p></div>
                    <div><Label className="text-xs font-semibold text-muted-foreground">Created By (UID)</Label><p className="text-sm">{viewingProduct.createdBy || "N/A"}</p></div>
                 </div>
+
+                <Separator className="my-4" />
+                <div>
+                  <h3 className="text-lg font-semibold mb-3 text-foreground">Additional Supplier Pricing</h3>
+                  {isLoadingSupplierProducts ? (
+                    <div className="space-y-2">
+                      <Skeleton className="h-20 w-full rounded-md" />
+                      <Skeleton className="h-20 w-full rounded-md" />
+                    </div>
+                  ) : viewingSupplierProducts.length > 0 ? (
+                    <div className="space-y-3">
+                      {viewingSupplierProducts.map((sp) => {
+                        const supplierDetails = suppliers.find(s => s.id === sp.supplierId);
+                        return (
+                          <Card key={sp.id} className="p-3 bg-muted/20 shadow-sm border">
+                            <div className="flex justify-between items-start mb-1">
+                              <div>
+                                <p className="font-semibold text-md text-primary">
+                                  {supplierDetails?.name || sp.supplierId}
+                                </p>
+                                <p className="text-xs text-muted-foreground">Supplier SKU: {sp.supplierSku}</p>
+                              </div>
+                              <div className="text-right">
+                                {!sp.isActive && <Badge variant="outline" className="ml-2 text-xs mb-1">Link Inactive</Badge>}
+                                <Badge variant={sp.isAvailable ? "default" : "secondary"} className={sp.isAvailable ? "bg-green-100 text-green-700 border-green-300" : "bg-red-100 text-red-700 border-red-300"}>
+                                  {sp.isAvailable ? "Available" : "Unavailable"}
+                                </Badge>
+                              </div>
+                            </div>
+                            {sp.notes && <p className="text-xs mt-1 mb-2 italic">Notes: {sp.notes}</p>}
+                            <div className="mt-2">
+                              <p className="text-xs font-medium text-muted-foreground mb-1">Price Ranges:</p>
+                              {sp.priceRanges.length > 0 ? (
+                                <ul className="list-none pl-0 space-y-0.5">
+                                  {sp.priceRanges.map((pr, index) => (
+                                    <li key={index} className="text-xs flex justify-between border-b border-dashed border-border/50 py-0.5">
+                                      <span>
+                                        Qty: {pr.minQuantity}
+                                        {pr.maxQuantity ? `-${pr.maxQuantity}` : '+'}
+                                        {pr.additionalConditions && <span className="text-muted-foreground text-[11px]"> ({pr.additionalConditions})</span>}
+                                      </span>
+                                      <span className="font-medium">
+                                        {pr.priceType === 'fixed' && pr.price !== null ? `$${pr.price.toFixed(2)}` : pr.priceType}
+                                      </span>
+                                    </li>
+                                  ))}
+                                </ul>
+                              ) : (
+                                <p className="text-xs text-muted-foreground">No price ranges defined.</p>
+                              )}
+                            </div>
+                            <p className="text-xs text-muted-foreground mt-2">Last Price Update: {formatTimestamp(sp.lastPriceUpdate)}</p>
+                          </Card>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <p className="text-sm text-muted-foreground">No additional supplier pricing linked for this product.</p>
+                  )}
+                </div>
               </div>
             </ScrollArea>
             <DialogFooter>
@@ -377,3 +452,4 @@ export default function ProductsPage() {
     </>
   );
 }
+
