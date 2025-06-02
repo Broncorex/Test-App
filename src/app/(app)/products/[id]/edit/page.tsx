@@ -2,7 +2,7 @@
 "use client";
 
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useForm } from "react-hook-form";
+import { useForm, useFieldArray, Controller } from "react-hook-form";
 import * as z from "zod";
 import { useRouter, useParams } from "next/navigation";
 import { useState, useEffect, useCallback, useMemo } from "react";
@@ -31,19 +31,50 @@ import {
 import { Checkbox } from "@/components/ui/checkbox";
 import { PageHeader } from "@/components/shared/page-header";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogClose } from "@/components/ui/dialog";
 import { useAuth } from "@/hooks/use-auth-store.tsx";
 import { Icons } from "@/components/icons";
 import { useToast } from "@/hooks/use-toast";
 import { getProductById, updateProduct, calculateSellingPrice, type UpdateProductData } from "@/services/productService";
 import { getAllCategories } from "@/services/categoryService";
 import { getAllSuppliers } from "@/services/supplierService";
-import type { Product, Category, Supplier } from "@/types";
+import { 
+  getAllSupplierProductsByProduct, 
+  createSupplierProduct, 
+  updateSupplierProduct,
+  toggleSupplierProductActiveStatus, // Assuming soft delete (deactivate)
+  type CreateSupplierProductData,
+  type UpdateSupplierProductData
+} from "@/services/supplierProductService";
+import type { Product, Category, Supplier, ProveedorProducto, PriceRange } from "@/types";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { storage } from "@/lib/firebase";
 import { Progress } from "@/components/ui/progress";
+import { Separator } from "@/components/ui/separator";
 
 const dimensionUnits = ["cm", "m", "in", "mm", "ft"];
+
+const priceRangeSchema = z.object({
+  id: z.string().optional(), // For identifying existing price ranges if needed, not directly part of ProveedorProducto.PriceRange
+  minQuantity: z.coerce.number().min(0, "Min quantity must be non-negative."),
+  maxQuantity: z.coerce.number().nullable().optional(),
+  price: z.coerce.number().min(0, "Price must be non-negative.").nullable().optional(),
+  priceType: z.enum(["fixed", "negotiable"], { required_error: "Price type is required."}),
+  additionalConditions: z.string().optional(),
+});
+
+const supplierProductFormSchema = z.object({
+  id: z.string().optional(), // ID of the ProveedorProducto document if editing
+  supplierId: z.string().min(1, "Supplier is required."),
+  supplierName: z.string().optional(), // For display purposes
+  supplierSku: z.string().min(1, "Supplier SKU is required."),
+  isAvailable: z.boolean().default(true),
+  notes: z.string().optional(),
+  priceRanges: z.array(priceRangeSchema).min(1, "At least one price range is required."),
+  isActive: z.boolean().default(true), // To handle soft deletes
+});
 
 const productFormSchema = z.object({
   name: z.string().min(2, "Name must be at least 2 characters."),
@@ -59,16 +90,19 @@ const productFormSchema = z.object({
   imageUrl: z.string().url("A valid image URL is required.").min(1, "Image URL is required."),
   tags: z.string().min(1, "At least one tag is required (comma-separated)."),
   lowStockThreshold: z.coerce.number().int().min(0, "Low stock threshold must be a non-negative integer."),
-  supplierId: z.string().min(1, "Primary supplier is required."),
+  supplierId: z.string().min(1, "Primary supplier is required."), // Primary supplier
   barcode: z.string().min(1, "Barcode is required."),
   weight: z.coerce.number().min(0.001, "Weight must be positive."),
   dimensions_length: z.coerce.number().min(0.01, "Length must be positive."),
   dimensions_width: z.coerce.number().min(0.01, "Width must be positive."),
   dimensions_height: z.coerce.number().min(0.01, "Height must be positive."),
   dimensions_unit: z.string().optional(),
+  supplierSpecificInfo: z.array(supplierProductFormSchema).optional(),
 });
 
 type ProductFormData = z.infer<typeof productFormSchema>;
+type SupplierProductFormData = z.infer<typeof supplierProductFormSchema>;
+type PriceRangeFormData = z.infer<typeof priceRangeSchema>;
 
 const formatDateForInput = (timestamp: Timestamp | null | undefined): string => {
   if (!timestamp) return "";
@@ -76,21 +110,14 @@ const formatDateForInput = (timestamp: Timestamp | null | undefined): string => 
 };
 
 const getDimensionValue = (nestedVal: number | undefined, flatValStr: string | undefined): number => {
-    if (typeof nestedVal === 'number' && !isNaN(nestedVal)) {
-        return nestedVal;
-    }
+    if (typeof nestedVal === 'number' && !isNaN(nestedVal)) return nestedVal;
     if (typeof flatValStr === 'string') {
         const num = parseFloat(flatValStr);
-        if (!isNaN(num)) {
-            return num;
-        }
+        if (!isNaN(num)) return num;
     }
-    if (typeof flatValStr === 'number' && !isNaN(flatValStr)) {
-        return flatValStr;
-    }
+    if (typeof flatValStr === 'number' && !isNaN(flatValStr)) return flatValStr;
     return 0; 
 };
-
 
 export default function EditProductPage() {
   const router = useRouter();
@@ -104,6 +131,7 @@ export default function EditProductPage() {
   const [product, setProduct] = useState<Product | null>(null);
   const [categories, setCategories] = useState<Category[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
+  const [fetchedSupplierProducts, setFetchedSupplierProducts] = useState<ProveedorProducto[]>([]);
   const [isLoadingDeps, setIsLoadingDeps] = useState(true);
 
   const [imageFile, setImageFile] = useState<File | null>(null);
@@ -112,11 +140,42 @@ export default function EditProductPage() {
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [isUploading, setIsUploading] = useState(false);
 
-  const form = useForm<ProductFormData>({
-    resolver: zodResolver(productFormSchema),
+  // Supplier Product Dialog State
+  const [isSupplierProductDialogOpen, setIsSupplierProductDialogOpen] = useState(false);
+  const [editingSupplierProductIndex, setEditingSupplierProductIndex] = useState<number | null>(null);
+  
+  // Temp form for dialog to avoid RHF conflicts if nested directly
+  const supplierProductDialogForm = useForm<SupplierProductFormData>({
+    resolver: zodResolver(supplierProductFormSchema),
+    defaultValues: {
+      supplierId: "",
+      supplierSku: "",
+      isAvailable: true,
+      notes: "",
+      priceRanges: [{ minQuantity: 0, maxQuantity: null, price: null, priceType: "fixed", additionalConditions: "" }],
+      isActive: true,
+    }
+  });
+  const { fields: priceRangeFields, append: appendPriceRange, remove: removePriceRange } = useFieldArray({
+    control: supplierProductDialogForm.control,
+    name: "priceRanges",
   });
 
-  const { watch, reset, setValue, setError, clearErrors } = form;
+
+  const form = useForm<ProductFormData>({
+    resolver: zodResolver(productFormSchema),
+    defaultValues: {
+      supplierSpecificInfo: [],
+    }
+  });
+
+  const { fields: supplierSpecificInfoFields, append: appendSupplierSpecificInfo, remove: removeSupplierSpecificInfo, update: updateSupplierSpecificInfo } = useFieldArray({
+    control: form.control,
+    name: "supplierSpecificInfo"
+  });
+
+
+  const { watch, reset, setValue, setError, clearErrors, getValues } = form;
   const watchedBasePrice = watch("basePrice");
   const watchedDiscountPercentage = watch("discountPercentage");
   const watchedDiscountAmount = watch("discountAmount");
@@ -134,43 +193,56 @@ export default function EditProductPage() {
     setIsLoadingData(true);
     setIsLoadingDeps(true);
     try {
-      const [fetchedProduct, fetchedCategories, fetchedSuppliers] = await Promise.all([
+      const [fetchedProd, fetchedCats, fetchedSupps, fetchedSupProds] = await Promise.all([
         getProductById(productId),
         getAllCategories({ filterActive: true, orderBySortOrder: true }),
         getAllSuppliers({ filterActive: true }),
+        getAllSupplierProductsByProduct(productId, false), // Fetch active and inactive
       ]);
 
-      setCategories(fetchedCategories);
-      setSuppliers(fetchedSuppliers);
+      setCategories(fetchedCats);
+      setSuppliers(fetchedSupps);
+      setFetchedSupplierProducts(fetchedSupProds);
       setIsLoadingDeps(false);
 
-      if (fetchedProduct) {
-        setProduct(fetchedProduct);
-        setCurrentImageUrl(fetchedProduct.imageUrl);
-        
-        const flatProductData = fetchedProduct as any;
+      if (fetchedProd) {
+        setProduct(fetchedProd);
+        setCurrentImageUrl(fetchedProd.imageUrl);
+        const flatProductData = fetchedProd as any;
+
+        const supplierSpecificInfoData: SupplierProductFormData[] = fetchedSupProds.map(sp => ({
+          id: sp.id,
+          supplierId: sp.supplierId,
+          supplierName: fetchedSupps.find(s => s.id === sp.supplierId)?.name || 'Unknown Supplier',
+          supplierSku: sp.supplierSku,
+          isAvailable: sp.isAvailable,
+          notes: sp.notes,
+          priceRanges: sp.priceRanges.map(pr => ({ ...pr })),
+          isActive: sp.isActive,
+        }));
 
         reset({
-          name: fetchedProduct.name,
-          description: fetchedProduct.description,
-          basePrice: fetchedProduct.basePrice,
-          discountPercentage: fetchedProduct.discountPercentage || 0,
-          discountAmount: fetchedProduct.discountAmount || 0,
-          unitOfMeasure: fetchedProduct.unitOfMeasure || "",
-          categoryIds: fetchedProduct.categoryIds || [],
-          isAvailableForSale: fetchedProduct.isAvailableForSale,
-          promotionStartDate: formatDateForInput(fetchedProduct.promotionStartDate),
-          promotionEndDate: formatDateForInput(fetchedProduct.promotionEndDate),
-          imageUrl: fetchedProduct.imageUrl,
-          tags: (fetchedProduct.tags || []).join(", "),
-          lowStockThreshold: fetchedProduct.lowStockThreshold,
-          supplierId: fetchedProduct.supplierId,
-          barcode: fetchedProduct.barcode,
-          weight: fetchedProduct.weight,
-          dimensions_length: getDimensionValue(fetchedProduct.dimensions?.length, flatProductData.dimensions_length),
-          dimensions_width: getDimensionValue(fetchedProduct.dimensions?.width, flatProductData.dimensions_width),
-          dimensions_height: getDimensionValue(fetchedProduct.dimensions?.height, flatProductData.dimensions_height),
-          dimensions_unit: fetchedProduct.dimensions?.dimensionUnit || flatProductData.dimensions_unit || "cm",
+          name: fetchedProd.name,
+          description: fetchedProd.description,
+          basePrice: fetchedProd.basePrice,
+          discountPercentage: fetchedProd.discountPercentage || 0,
+          discountAmount: fetchedProd.discountAmount || 0,
+          unitOfMeasure: fetchedProd.unitOfMeasure || "",
+          categoryIds: fetchedProd.categoryIds || [],
+          isAvailableForSale: fetchedProd.isAvailableForSale,
+          promotionStartDate: formatDateForInput(fetchedProd.promotionStartDate),
+          promotionEndDate: formatDateForInput(fetchedProd.promotionEndDate),
+          imageUrl: fetchedProd.imageUrl,
+          tags: (fetchedProd.tags || []).join(", "),
+          lowStockThreshold: fetchedProd.lowStockThreshold,
+          supplierId: fetchedProd.supplierId,
+          barcode: fetchedProd.barcode,
+          weight: fetchedProd.weight,
+          dimensions_length: getDimensionValue(fetchedProd.dimensions?.length, flatProductData.dimensions_length),
+          dimensions_width: getDimensionValue(fetchedProd.dimensions?.width, flatProductData.dimensions_width),
+          dimensions_height: getDimensionValue(fetchedProd.dimensions?.height, flatProductData.dimensions_height),
+          dimensions_unit: fetchedProd.dimensions?.dimensionUnit || flatProductData.dimensions_unit || "cm",
+          supplierSpecificInfo: supplierSpecificInfoData,
         });
       } else {
         toast({ title: "Error", description: "Product not found.", variant: "destructive" });
@@ -192,20 +264,59 @@ export default function EditProductPage() {
     if (file) {
       setImageFile(file);
       const reader = new FileReader();
-      reader.onloadend = () => {
-        setImagePreview(reader.result as string);
-      };
+      reader.onloadend = () => {setImagePreview(reader.result as string);};
       reader.readAsDataURL(file);
       clearErrors("imageUrl");
       setValue("imageUrl", ""); 
     } else {
       setImageFile(null);
       setImagePreview(null);
-      if (product) {
-        setValue("imageUrl", product.imageUrl);
-      }
+      if (product) setValue("imageUrl", product.imageUrl);
     }
   };
+  
+  const handleOpenSupplierProductDialog = (index: number | null = null) => {
+    if (index !== null && supplierSpecificInfoFields[index]) {
+      setEditingSupplierProductIndex(index);
+      const currentData = getValues(`supplierSpecificInfo.${index}`);
+      supplierProductDialogForm.reset({
+        ...currentData,
+        priceRanges: currentData.priceRanges && currentData.priceRanges.length > 0 
+          ? currentData.priceRanges.map(pr => ({...pr})) 
+          : [{ minQuantity: 0, maxQuantity: null, price: null, priceType: "fixed", additionalConditions: "" }]
+      });
+    } else {
+      setEditingSupplierProductIndex(null);
+      supplierProductDialogForm.reset({
+        supplierId: "", supplierSku: "", isAvailable: true, notes: "", isActive: true,
+        priceRanges: [{ minQuantity: 0, maxQuantity: null, price: null, priceType: "fixed", additionalConditions: "" }]
+      });
+    }
+    setIsSupplierProductDialogOpen(true);
+  };
+
+  const handleSaveSupplierProduct = (data: SupplierProductFormData) => {
+    const supplierName = suppliers.find(s => s.id === data.supplierId)?.name;
+    const dataWithSupplierName = { ...data, supplierName };
+
+    if (editingSupplierProductIndex !== null) {
+      updateSupplierSpecificInfo(editingSupplierProductIndex, dataWithSupplierName);
+    } else {
+      appendSupplierSpecificInfo(dataWithSupplierName);
+    }
+    setIsSupplierProductDialogOpen(false);
+    setEditingSupplierProductIndex(null);
+  };
+  
+  const handleRemoveSupplierSpecificInfo = (index: number) => {
+    const item = getValues(`supplierSpecificInfo.${index}`);
+    if (item.id) { // If it's an existing item, mark for deactivation
+      updateSupplierSpecificInfo(index, { ...item, isActive: false });
+    } else { // If it's a new item not yet saved, remove directly
+      removeSupplierSpecificInfo(index);
+    }
+  };
+
 
   async function onSubmit(values: ProductFormData) {
     if (!currentUser?.uid || !product) {
@@ -220,101 +331,92 @@ export default function EditProductPage() {
       setUploadProgress(0);
       const newImageStorageRef = ref(storage, `products_images/${Date.now()}_${imageFile.name}`);
       const uploadTask = uploadBytesResumable(newImageStorageRef, imageFile);
-
       try {
         await new Promise<void>((resolve, reject) => {
-          uploadTask.on(
-            "state_changed",
-            (snapshot) => {
-              const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
-              setUploadProgress(progress);
-            },
+          uploadTask.on("state_changed", (snapshot) => setUploadProgress((snapshot.bytesTransferred / snapshot.totalBytes) * 100),
             (error: StorageError) => {
               console.error("New image upload error:", error);
               toast({ title: "Image Upload Failed", description: error.message, variant: "destructive" });
-              setIsUploading(false);
-              setUploadProgress(null);
-              reject(error);
+              setIsUploading(false); setUploadProgress(null); reject(error);
             },
             async () => {
               finalImageUrl = await getDownloadURL(uploadTask.snapshot.ref);
               setValue("imageUrl", finalImageUrl);
-
               if (currentImageUrl && currentImageUrl !== finalImageUrl && !currentImageUrl.startsWith("https://placehold.co")) {
-                try {
-                  const oldImageRef = ref(storage, currentImageUrl);
-                  await deleteObject(oldImageRef);
-                } catch (deleteError: any) {
-                  console.warn("Failed to delete old product image:", deleteError.message);
-                }
+                try { await deleteObject(ref(storage, currentImageUrl)); } 
+                catch (deleteError: any) { console.warn("Failed to delete old product image:", deleteError.message); }
               }
               setCurrentImageUrl(finalImageUrl);
-              setIsUploading(false);
-              setUploadProgress(null);
-              setImageFile(null);
-              setImagePreview(null);
-              resolve();
-            }
-          );
+              setIsUploading(false); setUploadProgress(null); setImageFile(null); setImagePreview(null); resolve();
+            });
         });
-      } catch (error) {
-        setIsSubmitting(false);
-        return;
-      }
+      } catch (error) { setIsSubmitting(false); return; }
     }
 
     if (!finalImageUrl || finalImageUrl.trim() === "") {
-        setError("imageUrl", {
-            type: "manual",
-            message: "Product image is required. Please upload or ensure an image URL is present."
-        });
-        setIsSubmitting(false);
-        setIsUploading(false);
-        return;
+        setError("imageUrl", { type: "manual", message: "Product image is required." });
+        setIsSubmitting(false); setIsUploading(false); return;
     }
 
     try {
       const productData: UpdateProductData = {
-        name: values.name,
-        description: values.description,
-        basePrice: values.basePrice,
-        discountPercentage: values.discountPercentage,
-        discountAmount: values.discountAmount,
-        unitOfMeasure: values.unitOfMeasure,
-        categoryIds: values.categoryIds,
+        name: values.name, description: values.description, basePrice: values.basePrice,
+        discountPercentage: values.discountPercentage, discountAmount: values.discountAmount,
+        unitOfMeasure: values.unitOfMeasure, categoryIds: values.categoryIds,
         isAvailableForSale: values.isAvailableForSale,
         promotionStartDate: values.promotionStartDate ? Timestamp.fromDate(new Date(values.promotionStartDate)) : null,
         promotionEndDate: values.promotionEndDate ? Timestamp.fromDate(new Date(values.promotionEndDate)) : null,
-        imageUrl: finalImageUrl,
-        tags: values.tags.split(",").map(tag => tag.trim()).filter(tag => tag.length > 0),
-        lowStockThreshold: values.lowStockThreshold,
-        supplierId: values.supplierId,
-        barcode: values.barcode,
-        weight: values.weight,
-        dimensions: {
-          length: values.dimensions_length,
-          width: values.dimensions_width,
-          height: values.dimensions_height,
-          dimensionUnit: values.dimensions_unit,
+        imageUrl: finalImageUrl, tags: values.tags.split(",").map(tag => tag.trim()).filter(tag => tag.length > 0),
+        lowStockThreshold: values.lowStockThreshold, supplierId: values.supplierId, barcode: values.barcode,
+        weight: values.weight, dimensions: {
+          length: values.dimensions_length, width: values.dimensions_width,
+          height: values.dimensions_height, dimensionUnit: values.dimensions_unit,
         }
       };
-
       await updateProduct(productId, productData);
-      toast({
-        title: "Product Updated!",
-        description: `${values.name} has been successfully updated.`,
-      });
+
+      // Handle supplierSpecificInfo
+      if (values.supplierSpecificInfo) {
+        for (const item of values.supplierSpecificInfo) {
+          const serviceData = {
+            supplierId: item.supplierId,
+            productId: productId, // Current product's ID
+            supplierSku: item.supplierSku,
+            priceRanges: item.priceRanges.map(pr => ({...pr, price: pr.price === null ? null : Number(pr.price), maxQuantity: pr.maxQuantity === null ? null : Number(pr.maxQuantity) })),
+            isAvailable: item.isAvailable,
+            notes: item.notes || "",
+          };
+
+          if (item.id) { // Existing item
+            if (item.isActive === false) { // Marked for deactivation
+               const existing = fetchedSupplierProducts.find(fsp => fsp.id === item.id);
+               if(existing && existing.isActive) { // Only deactivate if it was active
+                await toggleSupplierProductActiveStatus(item.id, true); // true means currentIsActive is true, so it will be set to false
+               }
+            } else { // Update active item
+              await updateSupplierProduct(item.id, serviceData as UpdateSupplierProductData);
+            }
+          } else if (item.isActive !== false) { // New item, not marked for deactivation
+            await createSupplierProduct(serviceData as CreateSupplierProductData, currentUser.uid);
+          }
+        }
+      }
+      // Handle deletions of items that were in fetchedSupplierProducts but not in values.supplierSpecificInfo
+      for (const fetchedItem of fetchedSupplierProducts) {
+        const stillExistsInForm = values.supplierSpecificInfo?.find(formItem => formItem.id === fetchedItem.id);
+        if (!stillExistsInForm && fetchedItem.isActive) { // If it was active and now it's gone from form or marked inactive
+          await toggleSupplierProductActiveStatus(fetchedItem.id, true); 
+        }
+      }
+
+
+      toast({ title: "Product Updated!", description: `${values.name} has been successfully updated.` });
       router.push("/products");
     } catch (error: any) {
       console.error("Failed to update product:", error);
-      toast({
-        title: "Update Failed",
-        description: error.message || "Could not update the product. Please try again.",
-        variant: "destructive",
-      });
+      toast({ title: "Update Failed", description: error.message || "Could not update the product.", variant: "destructive" });
     } finally {
-      setIsSubmitting(false);
-      setIsUploading(false);
+      setIsSubmitting(false); setIsUploading(false);
     }
   }
 
@@ -324,9 +426,7 @@ export default function EditProductPage() {
         <PageHeader title="Edit Product" description="Loading product details..." />
         <Card className="w-full max-w-3xl mx-auto">
           <CardHeader><Skeleton className="h-8 w-1/2" /></CardHeader>
-          <CardContent className="space-y-6">
-            {Array.from({ length: 10 }).map((_, i) => <Skeleton key={i} className="h-10 w-full" />)}
-          </CardContent>
+          <CardContent className="space-y-6">{Array.from({ length: 10 }).map((_, i) => <Skeleton key={i} className="h-10 w-full" />)}</CardContent>
           <CardFooter><Skeleton className="h-10 w-24 ml-auto" /></CardFooter>
         </Card>
       </div>
@@ -335,198 +435,204 @@ export default function EditProductPage() {
 
   return (
     <>
-      <PageHeader
-        title={`Edit Product: ${product.name}`}
-        description="Update the product's information. Cost price is updated via receipts."
-      />
+      <PageHeader title={`Edit Product: ${product.name}`} description="Update product details. Cost price is updated via receipts." />
       <Card className="w-full max-w-3xl mx-auto shadow-lg">
         <Form {...form}>
           <form onSubmit={form.handleSubmit(onSubmit)}>
             <CardHeader>
               <CardTitle className="font-headline">Product Information (SKU: {product.sku})</CardTitle>
-              <CardDescription>Fields marked with * are required. Selling price is calculated automatically. Cost price is read-only.</CardDescription>
+              <CardDescription>Fields marked with * are required. Selling price is calculated. Cost price is read-only.</CardDescription>
             </CardHeader>
             <CardContent className="space-y-6">
-              <FormField control={form.control} name="name" render={({ field }) => (
-                <FormItem><FormLabel>Product Name *</FormLabel><FormControl><Input {...field} /></FormControl><FormMessage /></FormItem>
-              )} />
+              {/* Main Product Fields ... (existing fields) */}
+              <FormField control={form.control} name="name" render={({ field }) => (<FormItem><FormLabel>Product Name *</FormLabel><FormControl><Input {...field} /></FormControl><FormMessage /></FormItem>)} />
               <FormItem><FormLabel>SKU (Read-only)</FormLabel><FormControl><Input value={product.sku} readOnly disabled /></FormControl></FormItem>
-              <FormField control={form.control} name="description" render={({ field }) => (
-                <FormItem><FormLabel>Description *</FormLabel><FormControl><Textarea {...field} /></FormControl><FormMessage /></FormItem>
-              )} />
-              <FormField control={form.control} name="barcode" render={({ field }) => (
-                <FormItem><FormLabel>Barcode *</FormLabel><FormControl><Input {...field} /></FormControl><FormMessage /></FormItem>
-              )} />
+              <FormField control={form.control} name="description" render={({ field }) => (<FormItem><FormLabel>Description *</FormLabel><FormControl><Textarea {...field} /></FormControl><FormMessage /></FormItem>)} />
+              <FormField control={form.control} name="barcode" render={({ field }) => (<FormItem><FormLabel>Barcode *</FormLabel><FormControl><Input {...field} /></FormControl><FormMessage /></FormItem>)} />
 
                <FormField control={form.control} name="categoryIds" render={() => (
                 <FormItem>
                   <FormLabel>Categories *</FormLabel>
-                  {isLoadingDeps ? <p>Loading categories...</p> : categories.length === 0 ? <p>No active categories available.</p> : (
+                  {isLoadingDeps ? <p>Loading categories...</p> : categories.length === 0 ? <p>No active categories.</p> : (
                   <ScrollArea className="h-40 rounded-md border p-2">
                     {categories.map((category) => (
                       <FormField key={category.id} control={form.control} name="categoryIds"
                         render={({ field }) => (
                           <FormItem className="flex flex-row items-center space-x-3 space-y-0 py-1">
-                            <FormControl>
-                              <Checkbox
-                                checked={field.value?.includes(category.id)}
-                                onCheckedChange={(checked) => {
-                                  const currentCategoryIds = field.value || [];
-                                  return checked
-                                    ? field.onChange([...currentCategoryIds, category.id])
-                                    : field.onChange(currentCategoryIds.filter(id => id !== category.id));
-                                }}
-                              />
-                            </FormControl>
+                            <FormControl><Checkbox checked={field.value?.includes(category.id)} onCheckedChange={(checked) => { const current = field.value || []; return checked ? field.onChange([...current, category.id]) : field.onChange(current.filter(id => id !== category.id)); }} /></FormControl>
                             <FormLabel className="font-normal">{category.name}</FormLabel>
                           </FormItem>
-                        )}
-                      />
-                    ))}
-                  </ScrollArea>
-                  )}
-                  <FormMessage />
-                </FormItem>
-              )} />
+                        )} /> ))}
+                  </ScrollArea> )} <FormMessage />
+                </FormItem> )} />
               
-              <FormField control={form.control} name="supplierId" render={({ field }) => (
-                <FormItem><FormLabel>Primary Supplier *</FormLabel>
+              <FormField control={form.control} name="supplierId" render={({ field }) => (<FormItem><FormLabel>Primary Supplier *</FormLabel>
                   <Select onValueChange={field.onChange} value={field.value} disabled={isLoadingDeps}>
-                    <FormControl><SelectTrigger><SelectValue placeholder={isLoadingDeps ? "Loading..." : "Select a supplier"} /></SelectTrigger></FormControl>
-                    <SelectContent>
-                      {suppliers.map(s => <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>)}
-                    </SelectContent>
-                  </Select><FormMessage />
-                </FormItem>
-              )} />
+                    <FormControl><SelectTrigger><SelectValue placeholder={isLoadingDeps ? "Loading..." : "Select supplier"} /></SelectTrigger></FormControl>
+                    <SelectContent>{suppliers.map(s => <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>)}</SelectContent>
+                  </Select><FormMessage /></FormItem> )} />
 
-              <FormItem>
-                <FormLabel>Cost Price (Read-only)</FormLabel>
-                <FormControl>
-                  <Input type="number" value={product.costPrice} readOnly disabled className="text-muted-foreground" />
-                </FormControl>
-                <p className="text-xs text-muted-foreground">Updated automatically via stock receipts.</p>
-              </FormItem>
-              <FormField control={form.control} name="basePrice" render={({ field }) => (
-                <FormItem><FormLabel>Base Price *</FormLabel><FormControl><Input type="number" step="0.01" {...field} /></FormControl><FormMessage /></FormItem>
-              )} />
-              
+              <FormItem><FormLabel>Cost Price (Read-only)</FormLabel><FormControl><Input type="number" value={product.costPrice} readOnly disabled className="text-muted-foreground" /></FormControl><p className="text-xs text-muted-foreground">Updated via stock receipts.</p></FormItem>
+              <FormField control={form.control} name="basePrice" render={({ field }) => (<FormItem><FormLabel>Base Price *</FormLabel><FormControl><Input type="number" step="0.01" {...field} /></FormControl><FormMessage /></FormItem>)} />
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <FormField control={form.control} name="discountPercentage" render={({ field }) => (
-                  <FormItem><FormLabel>Discount % (0-100)</FormLabel><FormControl><Input type="number" step="0.1" {...field} /></FormControl><FormMessage /></FormItem>
-                )} />
-                <FormField control={form.control} name="discountAmount" render={({ field }) => (
-                  <FormItem><FormLabel>Discount Amount</FormLabel><FormControl><Input type="number" step="0.01" {...field} /></FormControl><FormMessage /></FormItem>
-                )} />
+                <FormField control={form.control} name="discountPercentage" render={({ field }) => (<FormItem><FormLabel>Discount %</FormLabel><FormControl><Input type="number" step="0.1" {...field} /></FormControl><FormMessage /></FormItem>)} />
+                <FormField control={form.control} name="discountAmount" render={({ field }) => (<FormItem><FormLabel>Discount Amount</FormLabel><FormControl><Input type="number" step="0.01" {...field} /></FormControl><FormMessage /></FormItem>)} />
               </div>
-              <FormItem>
-                <FormLabel>Calculated Selling Price</FormLabel>
-                <Input type="text" value={`$${calculatedSellingPrice.toFixed(2)}`} readOnly disabled className="font-semibold"/>
-              </FormItem>
-
-               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <FormField control={form.control} name="lowStockThreshold" render={({ field }) => (
-                  <FormItem><FormLabel>Low Stock Threshold *</FormLabel><FormControl><Input type="number" {...field} /></FormControl><FormMessage /></FormItem>
-                )} />
-                 <FormField control={form.control} name="unitOfMeasure" render={({ field }) => (
-                  <FormItem><FormLabel>Unit of Measure (e.g., pcs, kg)</FormLabel><FormControl><Input {...field} /></FormControl><FormMessage /></FormItem>
-                )} />
+              <FormItem><FormLabel>Calculated Selling Price</FormLabel><Input type="text" value={`$${calculatedSellingPrice.toFixed(2)}`} readOnly disabled className="font-semibold"/></FormItem>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <FormField control={form.control} name="lowStockThreshold" render={({ field }) => (<FormItem><FormLabel>Low Stock Threshold *</FormLabel><FormControl><Input type="number" {...field} /></FormControl><FormMessage /></FormItem>)} />
+                <FormField control={form.control} name="unitOfMeasure" render={({ field }) => (<FormItem><FormLabel>Unit of Measure</FormLabel><FormControl><Input {...field} /></FormControl><FormMessage /></FormItem>)} />
               </div>
-              <FormField control={form.control} name="weight" render={({ field }) => (
-                <FormItem><FormLabel>Weight (e.g., in kg) *</FormLabel><FormControl><Input type="number" step="0.001" {...field} /></FormControl><FormMessage /></FormItem>
-              )} />
+              <FormField control={form.control} name="weight" render={({ field }) => (<FormItem><FormLabel>Weight (kg) *</FormLabel><FormControl><Input type="number" step="0.001" {...field} /></FormControl><FormMessage /></FormItem>)} />
               <FormLabel>Dimensions *</FormLabel>
               <div className="grid grid-cols-1 md:grid-cols-4 gap-4 p-4 border rounded-md items-end">
-                <FormField control={form.control} name="dimensions_length" render={({ field }) => (
-                  <FormItem><FormLabel>Length</FormLabel><FormControl><Input type="number" step="0.01" {...field} /></FormControl><FormMessage /></FormItem>
-                )} />
-                <FormField control={form.control} name="dimensions_width" render={({ field }) => (
-                  <FormItem><FormLabel>Width</FormLabel><FormControl><Input type="number" step="0.01" {...field} /></FormControl><FormMessage /></FormItem>
-                )} />
-                <FormField control={form.control} name="dimensions_height" render={({ field }) => (
-                  <FormItem><FormLabel>Height</FormLabel><FormControl><Input type="number" step="0.01" {...field} /></FormControl><FormMessage /></FormItem>
-                )} />
-                <FormField control={form.control} name="dimensions_unit" render={({ field }) => (
-                  <FormItem><FormLabel>Unit</FormLabel>
-                    <Select onValueChange={field.onChange} value={field.value}>
-                      <FormControl><SelectTrigger><SelectValue placeholder="Unit" /></SelectTrigger></FormControl>
-                      <SelectContent>
-                        {dimensionUnits.map(unit => <SelectItem key={unit} value={unit}>{unit}</SelectItem>)}
-                      </SelectContent>
-                    </Select>
-                    <FormMessage />
-                  </FormItem>
-                )} />
+                <FormField control={form.control} name="dimensions_length" render={({ field }) => (<FormItem><FormLabel>Length</FormLabel><FormControl><Input type="number" step="0.01" {...field} /></FormControl><FormMessage /></FormItem>)} />
+                <FormField control={form.control} name="dimensions_width" render={({ field }) => (<FormItem><FormLabel>Width</FormLabel><FormControl><Input type="number" step="0.01" {...field} /></FormControl><FormMessage /></FormItem>)} />
+                <FormField control={form.control} name="dimensions_height" render={({ field }) => (<FormItem><FormLabel>Height</FormLabel><FormControl><Input type="number" step="0.01" {...field} /></FormControl><FormMessage /></FormItem>)} />
+                <FormField control={form.control} name="dimensions_unit" render={({ field }) => (<FormItem><FormLabel>Unit</FormLabel><Select onValueChange={field.onChange} value={field.value}><FormControl><SelectTrigger><SelectValue placeholder="Unit" /></SelectTrigger></FormControl><SelectContent>{dimensionUnits.map(unit => <SelectItem key={unit} value={unit}>{unit}</SelectItem>)}</SelectContent></Select><FormMessage /></FormItem>)} />
               </div>
-              
               <FormItem>
                 <FormLabel>Product Image *</FormLabel>
-                {(imagePreview || currentImageUrl) && (
-                  <div className="mt-2 relative w-48 h-48 border rounded-md overflow-hidden" data-ai-hint="product photo">
-                    <Image 
-                        src={imagePreview || currentImageUrl || "https://placehold.co/400x400.png?text=No+Image"}
-                        alt={product?.name || "Product Image"} 
-                        layout="fill" 
-                        objectFit="cover" 
-                        onError={(e) => { 
-                           const target = e.target as HTMLImageElement;
-                           if (target.src === currentImageUrl) {
-                               setCurrentImageUrl("https://placehold.co/400x400.png?text=Error+Loading");
-                           } else if (target.src === imagePreview) {
-                               setImagePreview("https://placehold.co/400x400.png?text=Preview+Error");
-                           } else {
-                               target.src = "https://placehold.co/400x400.png?text=Image+Error";
-                           }
-                        }}
-                    />
-                  </div>
-                )}
-                <FormControl>
-                  <Input type="file" accept="image/png, image/jpeg, image/gif" onChange={handleImageChange} className="mt-2 file:text-primary file:font-semibold hover:file:bg-primary/10"/>
-                </FormControl>
-                {isUploading && uploadProgress !== null && (
-                  <div className="mt-2">
-                    <Progress value={uploadProgress} className="w-full" />
-                    <p className="text-sm text-muted-foreground text-center mt-1">Uploading: {uploadProgress.toFixed(0)}%</p>
-                  </div>
-                )}
-                 <FormField
-                    control={form.control}
-                    name="imageUrl"
-                    render={() => <FormMessage />} 
-                  />
-                <p className="text-xs text-muted-foreground mt-1">Upload a new PNG, JPG, or GIF image to replace the current one.</p>
+                {(imagePreview || currentImageUrl) && (<div className="mt-2 relative w-48 h-48 border rounded-md overflow-hidden" data-ai-hint="product photo"><Image src={imagePreview || currentImageUrl || "https://placehold.co/400x400.png?text=No+Image"} alt={product?.name || "Product Image"} layout="fill" objectFit="cover" onError={(e) => { const t = e.target as HTMLImageElement; if (t.src === currentImageUrl) setCurrentImageUrl("https://placehold.co/400x400.png?text=Error"); else if (t.src === imagePreview) setImagePreview("https://placehold.co/400x400.png?text=Preview+Error"); else t.src = "https://placehold.co/400x400.png?text=Image+Error";}}/></div>)}
+                <FormControl><Input type="file" accept="image/png, image/jpeg, image/gif" onChange={handleImageChange} className="mt-2 file:text-primary file:font-semibold hover:file:bg-primary/10"/></FormControl>
+                {isUploading && uploadProgress !== null && (<div className="mt-2"><Progress value={uploadProgress} className="w-full" /><p className="text-sm text-muted-foreground text-center mt-1">Uploading: {uploadProgress.toFixed(0)}%</p></div>)}
+                <FormField control={form.control} name="imageUrl" render={() => <FormMessage />} />
+                <p className="text-xs text-muted-foreground mt-1">Upload new PNG, JPG, or GIF to replace.</p>
               </FormItem>
-
-              <FormField control={form.control} name="tags" render={({ field }) => (
-                <FormItem><FormLabel>Tags (comma-separated) *</FormLabel><FormControl><Input {...field} /></FormControl><FormMessage /></FormItem>
-              )} />
+              <FormField control={form.control} name="tags" render={({ field }) => (<FormItem><FormLabel>Tags (comma-separated) *</FormLabel><FormControl><Input {...field} /></FormControl><FormMessage /></FormItem>)} />
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <FormField control={form.control} name="promotionStartDate" render={({ field }) => (
-                  <FormItem><FormLabel>Promotion Start Date</FormLabel><FormControl><Input type="date" {...field} value={field.value || ""} /></FormControl><FormMessage /></FormItem>
-                )} />
-                <FormField control={form.control} name="promotionEndDate" render={({ field }) => (
-                  <FormItem><FormLabel>Promotion End Date</FormLabel><FormControl><Input type="date" {...field} value={field.value || ""} /></FormControl><FormMessage /></FormItem>
-                )} />
+                <FormField control={form.control} name="promotionStartDate" render={({ field }) => (<FormItem><FormLabel>Promo Start</FormLabel><FormControl><Input type="date" {...field} value={field.value || ""} /></FormControl><FormMessage /></FormItem>)} />
+                <FormField control={form.control} name="promotionEndDate" render={({ field }) => (<FormItem><FormLabel>Promo End</FormLabel><FormControl><Input type="date" {...field} value={field.value || ""} /></FormControl><FormMessage /></FormItem>)} />
               </div>
-               <FormField control={form.control} name="isAvailableForSale" render={({ field }) => (
-                <FormItem className="flex flex-row items-center space-x-3 space-y-0">
-                  <FormControl><Checkbox checked={field.value} onCheckedChange={field.onChange} /></FormControl>
-                  <FormLabel className="font-normal">Available for Sale</FormLabel>
-                </FormItem>
-              )} />
+              <FormField control={form.control} name="isAvailableForSale" render={({ field }) => (<FormItem className="flex flex-row items-center space-x-3 space-y-0"><FormControl><Checkbox checked={field.value} onCheckedChange={field.onChange} /></FormControl><FormLabel className="font-normal">Available for Sale</FormLabel></FormItem>)} />
+            
+              {/* Supplier Specific Info Section */}
+              <Accordion type="single" collapsible className="w-full">
+                <AccordionItem value="supplier-info">
+                  <AccordionTrigger className="text-lg font-semibold">Supplier Pricing & Availability</AccordionTrigger>
+                  <AccordionContent className="pt-4 space-y-4">
+                    {supplierSpecificInfoFields.filter(field => field.isActive !== false).map((field, index) => (
+                      <Card key={field.id} className="p-4">
+                        <CardHeader className="p-0 pb-2 flex flex-row justify-between items-center">
+                           <CardTitle className="text-md">
+                            {suppliers.find(s => s.id === field.supplierId)?.name || `Supplier SKU: ${field.supplierSku}` }
+                           </CardTitle>
+                           <div className="space-x-2">
+                            <Button type="button" variant="outline" size="sm" onClick={() => handleOpenSupplierProductDialog(index)}>
+                              <Icons.Edit className="mr-1 h-3 w-3" /> Edit
+                            </Button>
+                            <Button type="button" variant="destructive" size="sm" onClick={() => handleRemoveSupplierSpecificInfo(index)}>
+                              <Icons.Delete className="mr-1 h-3 w-3" /> Remove
+                            </Button>
+                           </div>
+                        </CardHeader>
+                        <CardContent className="p-0 text-sm">
+                           <p>SKU: {field.supplierSku}</p>
+                           <p>Available: {field.isAvailable ? 'Yes' : 'No'}</p>
+                           {field.notes && <p>Notes: {field.notes}</p>}
+                           <p>Price Ranges: {field.priceRanges?.length || 0}</p>
+                        </CardContent>
+                      </Card>
+                    ))}
+                     {supplierSpecificInfoFields.filter(field => field.isActive !== false).length === 0 && (
+                        <p className="text-muted-foreground text-sm">No additional supplier pricing linked for this product.</p>
+                     )}
+                    <Button type="button" variant="outline" onClick={() => handleOpenSupplierProductDialog()} className="mt-2">
+                      <Icons.Add className="mr-2 h-4 w-4" /> Add Supplier Pricing
+                    </Button>
+                  </AccordionContent>
+                </AccordionItem>
+              </Accordion>
 
             </CardContent>
             <CardFooter className="flex justify-end gap-2">
               <Button type="button" variant="outline" onClick={() => router.back()}>Cancel</Button>
               <Button type="submit" disabled={isSubmitting || isLoadingDeps || isUploading}>
                 {isSubmitting || isUploading ? <Icons.Logo className="mr-2 h-4 w-4 animate-spin" /> : <Icons.Edit />}
-                 {isUploading ? "Uploading..." : (isSubmitting ? "Saving..." : "Save Changes")}
+                {isUploading ? "Uploading..." : (isSubmitting ? "Saving..." : "Save Changes")}
               </Button>
             </CardFooter>
           </form>
         </Form>
       </Card>
+
+      {/* Dialog for Adding/Editing Supplier Specific Product Info */}
+      <Dialog open={isSupplierProductDialogOpen} onOpenChange={setIsSupplierProductDialogOpen}>
+        <DialogContent className="sm:max-w-2xl">
+          <Form {...supplierProductDialogForm}>
+            <form onSubmit={supplierProductDialogForm.handleSubmit(handleSaveSupplierProduct)}>
+              <DialogHeader>
+                <DialogTitle>{editingSupplierProductIndex !== null ? "Edit" : "Add"} Supplier Product Details</DialogTitle>
+                <DialogDescription>Manage supplier-specific SKU, pricing, and availability for this product.</DialogDescription>
+              </DialogHeader>
+              <ScrollArea className="max-h-[60vh] p-1 pr-4">
+                <div className="space-y-4 py-4">
+                  <FormField control={supplierProductDialogForm.control} name="supplierId"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Supplier *</FormLabel>
+                        <Select onValueChange={field.onChange} value={field.value} disabled={isLoadingDeps}>
+                          <FormControl><SelectTrigger><SelectValue placeholder={isLoadingDeps ? "Loading suppliers..." : "Select supplier"} /></SelectTrigger></FormControl>
+                          <SelectContent>{suppliers.map(s => <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>)}</SelectContent>
+                        </Select>
+                        <FormMessage />
+                      </FormItem>
+                    )} />
+                  <FormField control={supplierProductDialogForm.control} name="supplierSku"
+                    render={({ field }) => (<FormItem><FormLabel>Supplier SKU *</FormLabel><FormControl><Input {...field} /></FormControl><FormMessage /></FormItem>)} />
+                  <FormField control={supplierProductDialogForm.control} name="isAvailable"
+                    render={({ field }) => (<FormItem className="flex flex-row items-center space-x-3 space-y-0"><FormControl><Checkbox checked={field.value} onCheckedChange={field.onChange} /></FormControl><FormLabel className="font-normal">Is Available from this Supplier</FormLabel></FormItem>)} />
+                  
+                  <Card>
+                    <CardHeader className="p-2"><CardTitle className="text-md">Price Ranges</CardTitle></CardHeader>
+                    <CardContent className="p-2 space-y-3">
+                      {priceRangeFields.map((item, index) => (
+                        <div key={item.id} className="p-3 border rounded-md space-y-2 relative">
+                           {priceRangeFields.length > 1 && (
+                            <Button type="button" variant="ghost" size="icon" className="absolute top-1 right-1 h-6 w-6" onClick={()={() => removePriceRange(index)}}>
+                                <Icons.Delete className="h-4 w-4 text-destructive"/>
+                            </Button>
+                           )}
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                            <FormField control={supplierProductDialogForm.control} name={`priceRanges.${index}.minQuantity`}
+                              render={({ field }) => (<FormItem><FormLabel>Min Qty*</FormLabel><FormControl><Input type="number" {...field} /></FormControl><FormMessage /></FormItem>)} />
+                            <FormField control={supplierProductDialogForm.control} name={`priceRanges.${index}.maxQuantity`}
+                              render={({ field }) => (<FormItem><FormLabel>Max Qty</FormLabel><FormControl><Input type="number" placeholder="None for 'or more'" {...field} value={field.value === null ? '' : field.value} onChange={e => field.onChange(e.target.value === '' ? null : Number(e.target.value))} /></FormControl><FormMessage /></FormItem>)} />
+                          </div>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                             <FormField control={supplierProductDialogForm.control} name={`priceRanges.${index}.priceType`}
+                                render={({ field }) => (<FormItem><FormLabel>Price Type*</FormLabel>
+                                    <Select onValueChange={field.onChange} value={field.value}>
+                                    <FormControl><SelectTrigger><SelectValue placeholder="Select type" /></SelectTrigger></FormControl>
+                                    <SelectContent><SelectItem value="fixed">Fixed</SelectItem><SelectItem value="negotiable">Negotiable</SelectItem></SelectContent>
+                                    </Select><FormMessage /></FormItem> )}/>
+                            <FormField control={supplierProductDialogForm.control} name={`priceRanges.${index}.price`}
+                              render={({ field }) => (<FormItem><FormLabel>Price</FormLabel><FormControl><Input type="number" step="0.01" placeholder="If fixed" {...field} value={field.value === null ? '' : field.value} onChange={e => field.onChange(e.target.value === '' ? null : Number(e.target.value))} /></FormControl><FormMessage /></FormItem>)} />
+                          </div>
+                           <FormField control={supplierProductDialogForm.control} name={`priceRanges.${index}.additionalConditions`}
+                              render={({ field }) => (<FormItem><FormLabel>Conditions</FormLabel><FormControl><Textarea placeholder="e.g., Valid until DD/MM/YYYY" {...field} /></FormControl><FormMessage /></FormItem>)} />
+                        </div>
+                      ))}
+                      <Button type="button" variant="outline" size="sm" onClick={() => appendPriceRange({ minQuantity: 0, maxQuantity: null, price: null, priceType: "fixed", additionalConditions: "" })}>
+                        <Icons.Add className="mr-2 h-4 w-4"/> Add Price Range
+                      </Button>
+                    </CardContent>
+                  </Card>
+
+                  <FormField control={supplierProductDialogForm.control} name="notes"
+                    render={({ field }) => (<FormItem><FormLabel>Notes</FormLabel><FormControl><Textarea {...field} /></FormControl><FormMessage /></FormItem>)} />
+                </div>
+              </ScrollArea>
+              <DialogFooter className="pt-4">
+                <DialogClose asChild><Button type="button" variant="outline">Cancel</Button></DialogClose>
+                <Button type="submit" disabled={supplierProductDialogForm.formState.isSubmitting}>
+                  {supplierProductDialogForm.formState.isSubmitting ? <Icons.Logo className="animate-spin"/> : "Save Supplier Details"}
+                </Button>
+              </DialogFooter>
+            </form>
+          </Form>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }
