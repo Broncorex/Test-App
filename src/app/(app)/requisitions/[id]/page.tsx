@@ -37,7 +37,7 @@ import * as z from "zod";
 import { getAllSuppliers } from "@/services/supplierService";
 import { createQuotation, type CreateQuotationRequestData } from "@/services/quotationService";
 import { getSupplierProduct } from "@/services/supplierProductService";
-import { getAllPurchaseOrders, getPurchaseOrderById } from "@/services/purchaseOrderService"; // Added
+import { getAllPurchaseOrders, getPurchaseOrderById } from "@/services/purchaseOrderService";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { Label } from "@/components/ui/label";
@@ -51,6 +51,14 @@ const quotedProductSchema = z.object({
   productName: z.string(),
   originalRequiredQuantity: z.number(),
   quotedQuantity: z.coerce.number().min(1, "Quoted quantity must be at least 1."),
+}).superRefine((data, ctx) => {
+  if (data.quotedQuantity < data.originalRequiredQuantity) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `Quoted quantity (${data.quotedQuantity}) cannot be less than the original required quantity (${data.originalRequiredQuantity}).`,
+      path: ["quotedQuantity"],
+    });
+  }
 });
 type QuotedProductFormData = z.infer<typeof quotedProductSchema>;
 
@@ -66,7 +74,7 @@ const quotationRequestFormSchema = z.object({
     .min(1, "At least one supplier must be selected for quotation.")
     .superRefine((suppliers, ctx) => {
       suppliers.forEach((supplierItem, index) => {
-        if (!supplierItem.productsToQuote || supplierItem.productsToQuote.length === 0) {
+        if (supplierItem.productsToQuote === undefined || supplierItem.productsToQuote.length === 0) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
             message: `Supplier "${supplierItem.supplierName}" must have at least one product selected to be included in the quote request.`,
@@ -146,10 +154,6 @@ export default function RequisitionDetailPage() {
         return range;
       }
     }
-    // If no range explicitly contains the quantity, check if it's below the lowest tier.
-    // If so, no current range applies strictly, but the lowest tier is the "next available".
-    // If it's above the highest tier (and that tier has a maxQuantity), then the highest tier might apply if it has no max or is the last defined.
-    // This logic can be expanded if needed. For now, exact or within-range match.
     return null;
   }, []);
   
@@ -219,13 +223,12 @@ export default function RequisitionDetailPage() {
           notes: fetchedRequisition.notes || "",
         });
 
-        // Fetch and calculate pending ordered quantities
         const allPOsForRequisition = await getAllPurchaseOrders({ originRequisitionId: fetchedRequisition.id });
         const pendingPOs = allPOsForRequisition.filter(po => po.status === "Pending");
         const pendingQuantitiesMap: Record<string, number> = {};
 
         for (const pendingPOHeader of pendingPOs) {
-          const fullPendingPO = await getPurchaseOrderById(pendingPOHeader.id); // This fetches details
+          const fullPendingPO = await getPurchaseOrderById(pendingPOHeader.id); 
           if (fullPendingPO && fullPendingPO.details) {
             fullPendingPO.details.forEach(detail => {
               pendingQuantitiesMap[detail.productId] = (pendingQuantitiesMap[detail.productId] || 0) + detail.orderedQuantity;
@@ -717,7 +720,7 @@ export default function RequisitionDetailPage() {
                       {isLoadingSuppliers ? <p>Loading suppliers...</p> :
                         availableSuppliers.length === 0 ? <p>No active suppliers found.</p> :
                           <ScrollArea className="h-[calc(100vh-28rem)] md:h-72 rounded-md border p-1">
-                            {availableSuppliers.map((supplier, supplierFormIndex) => {
+                            {availableSuppliers.map((supplier, supplierFormIndexInAvailableList) => {
                               const isSupplierSelectedForQuoting = suppliersToQuoteFields.some(sField => sField.supplierId === supplier.id);
                                const actualSupplierFormIndex = suppliersToQuoteFields.findIndex(sField => sField.supplierId === supplier.id);
 
@@ -727,7 +730,7 @@ export default function RequisitionDetailPage() {
                                   supplier={supplier}
                                   requisitionRequiredProducts={requisition.requiredProducts || []}
                                   supplierAnalysisData={supplierAnalysisData}
-                                  formInstance={quoteRequestForm}
+                                  formInstance={quoteRequestForm} 
                                   supplierFormIndex={actualSupplierFormIndex} 
                                   isSupplierSelected={isSupplierSelectedForQuoting}
                                   onToggleSupplier={toggleSupplierForQuoting}
