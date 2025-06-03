@@ -28,7 +28,10 @@ import type {
 import { getSupplierById } from "./supplierService";
 import { getUserById } from "./userService"; 
 import { getProductById } from "./productService"; 
-import { handleRequisitionUpdateForPOCancellation } from "./requisitionService"; // Import new function
+import { 
+    updateRequisitionQuantitiesPostConfirmation, 
+    handleRequisitionUpdateForPOCancellation 
+} from "./requisitionService";
 
 const purchaseOrdersCollection = collection(db, "purchaseOrders");
 
@@ -169,7 +172,7 @@ export interface PurchaseOrderFilters {
   status?: PurchaseOrderStatus;
   orderDateFrom?: Timestamp;
   orderDateTo?: Timestamp;
-  originRequisitionId?: string; // Added for fetching specific POs for a requisition
+  originRequisitionId?: string;
 }
 
 export const getAllPurchaseOrders = async (filters: PurchaseOrderFilters = {}): Promise<PurchaseOrder[]> => {
@@ -208,13 +211,12 @@ export const getAllPurchaseOrders = async (filters: PurchaseOrderFilters = {}): 
       const user = await getUserById(data.creationUserId);
       creationUserName = user?.displayName;
     }
-    // Details are not fetched for list view for performance.
     return {
       id: docSnap.id,
       ...data,
       supplierName,
       creationUserName,
-    } as PurchaseOrder; // Cast as PurchaseOrder (details will be undefined for list)
+    } as PurchaseOrder;
   });
 
   return Promise.all(purchaseOrdersPromises);
@@ -226,28 +228,48 @@ export const updatePurchaseOrderStatus = async (
   userId: string 
 ): Promise<void> => {
   const poRef = doc(db, "purchaseOrders", poId);
-  let originalPO: PurchaseOrder | null = null;
+  const poSnap = await getDoc(poRef); // Get current PO data before update
 
-  // Fetch original PO if we're potentially moving from Pending to Canceled
-  if (newStatus === "Canceled") {
-    originalPO = await getPurchaseOrderById(poId); // This fetches details too
-    if (!originalPO) {
-      throw new Error(`Purchase Order ${poId} not found during status update.`);
+  if (!poSnap.exists()) {
+    throw new Error(`Purchase Order ${poId} not found during status update.`);
+  }
+  const currentPOData = poSnap.data() as PurchaseOrder;
+  const originalStatus = currentPOData.status;
+
+  let poDetailsForRequisitionUpdate: PurchaseOrderDetail[] | undefined;
+
+  // Fetch details if needed for requisition updates
+  if (
+    newStatus === "ConfirmedBySupplier" ||
+    newStatus === "RejectedBySupplier" ||
+    (newStatus === "Canceled" && (originalStatus === "Pending" || originalStatus === "SentToSupplier"))
+  ) {
+    poDetailsForRequisitionUpdate = await getPODetails(poId);
+    if (!poDetailsForRequisitionUpdate) {
+        throw new Error(`Details for PO ${poId} could not be fetched for requisition update.`);
     }
   }
-  
+
   const updateData: Partial<PurchaseOrder> = {
     status: newStatus,
     updatedAt: Timestamp.now(),
   };
-  if (newStatus === "Completed" || newStatus === "Canceled") {
+
+  if (newStatus === "Completed" || newStatus === "Canceled" || newStatus === "RejectedBySupplier") {
     updateData.completionDate = Timestamp.now();
   }
   
   await updateDoc(poRef, updateData);
 
-  // After successfully updating PO status, if it was a Pending PO that got Canceled, update requisition
-  if (originalPO && originalPO.status === "Pending" && newStatus === "Canceled" && originalPO.details) {
-    await handleRequisitionUpdateForPOCancellation(originalPO.originRequisitionId, originalPO.details, userId);
+  // After successfully updating PO status, update requisition based on new status
+  if (newStatus === "ConfirmedBySupplier" && poDetailsForRequisitionUpdate) {
+    await updateRequisitionQuantitiesPostConfirmation(currentPOData.originRequisitionId, poDetailsForRequisitionUpdate, userId);
+  } else if (
+      (newStatus === "Canceled" && (originalStatus === "Pending" || originalStatus === "SentToSupplier") && poDetailsForRequisitionUpdate) ||
+      (newStatus === "RejectedBySupplier" && poDetailsForRequisitionUpdate)
+    ) {
+    await handleRequisitionUpdateForPOCancellation(currentPOData.originRequisitionId, poDetailsForRequisitionUpdate, userId);
   }
 };
+
+    

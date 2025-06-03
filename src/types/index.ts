@@ -140,7 +140,7 @@ export interface RequiredProduct {
   productName: string;
   requiredQuantity: number;
   purchasedQuantity: number;
-  pendingPOQuantity?: number; // Added this field
+  pendingPOQuantity?: number;
   notes: string;
 }
 
@@ -228,7 +228,15 @@ export interface Quotation {
 }
 
 // --- Purchase Order Types ---
-export const PURCHASE_ORDER_STATUSES = ["Pending", "Sent", "Partially Received", "Completed", "Canceled"] as const;
+export const PURCHASE_ORDER_STATUSES = [
+  "Pending",
+  "SentToSupplier",
+  "ConfirmedBySupplier",
+  "RejectedBySupplier",
+  "Partially Received",
+  "Completed",
+  "Canceled"
+] as const;
 export type PurchaseOrderStatus = typeof PURCHASE_ORDER_STATUSES[number];
 
 export interface PurchaseOrderDetail {
@@ -264,3 +272,5 @@ export interface PurchaseOrder {
   // Subcollection 'details' will hold PurchaseOrderDetail items
   details?: PurchaseOrderDetail[]; // Populated after fetching subcollection
 }
+
+    

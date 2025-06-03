@@ -58,7 +58,7 @@ export default function PurchaseOrdersPage() {
     if (!canManage || !appUser) return;
     setIsLoadingData(true);
     try {
-      const fetchedSuppliersData = await getAllSuppliers(true); // Fetch active suppliers
+      const fetchedSuppliersData = await getAllSuppliers(true); 
       setSuppliers(fetchedSuppliersData);
 
       const poFilters: PurchaseOrderFilters = {
@@ -98,7 +98,9 @@ export default function PurchaseOrdersPage() {
     if (!status) return "secondary";
     switch (status) {
       case "Pending": return "outline";
-      case "Sent": return "default";
+      case "SentToSupplier": return "default";
+      case "ConfirmedBySupplier": return "default";
+      case "RejectedBySupplier": return "destructive";
       case "Partially Received": return "default";
       case "Completed": return "default";
       case "Canceled": return "destructive";
@@ -108,7 +110,8 @@ export default function PurchaseOrdersPage() {
   const getStatusBadgeClass = (status?: PurchaseOrderStatus) => {
     if (!status) return "";
     switch (status) {
-      case "Sent": return "bg-blue-500 hover:bg-blue-600 text-white";
+      case "SentToSupplier": return "bg-blue-500 hover:bg-blue-600 text-white";
+      case "ConfirmedBySupplier": return "bg-teal-500 hover:bg-teal-600 text-white";
       case "Partially Received": return "bg-yellow-400 hover:bg-yellow-500 text-black";
       case "Completed": return "bg-green-500 hover:bg-green-600 text-white";
       default: return "";
@@ -120,8 +123,6 @@ export default function PurchaseOrdersPage() {
       <PageHeader
         title="Purchase Order Management"
         description="Track and manage purchase orders sent to suppliers."
-        // Add New PO button can be added here later if direct PO creation is needed.
-        // For now, POs are created from Requisitions.
       />
       <Card className="shadow-lg">
         <CardHeader>
@@ -240,4 +241,5 @@ export default function PurchaseOrdersPage() {
     </>
   );
 }
+
     

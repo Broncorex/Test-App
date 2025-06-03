@@ -10,7 +10,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth-store";
 import { getPurchaseOrderById, updatePurchaseOrderStatus } from "@/services/purchaseOrderService";
-import { updateRequisitionStateAfterPOSent } from "@/services/requisitionService";
+// updateRequisitionStateAfterPOSent is no longer directly called here, but via updatePurchaseOrderStatus
 import type { PurchaseOrder, PurchaseOrderStatus, PurchaseOrderDetail, QuotationAdditionalCost } from "@/types";
 import { Timestamp } from "firebase/firestore";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -55,38 +55,16 @@ export default function PurchaseOrderDetailPage() {
     fetchPOData();
   }, [fetchPOData]);
 
-  const handleMarkAsSent = async () => {
-    if (!purchaseOrder || !currentUser || purchaseOrder.status !== "Pending") return;
+  const handleStatusChange = async (newStatus: PurchaseOrderStatus) => {
+    if (!purchaseOrder || !currentUser || purchaseOrder.status === newStatus) return;
     setIsUpdating(true);
     try {
-      await updatePurchaseOrderStatus(purchaseOrderId, "Sent", currentUser.uid);
-      // After PO is marked Sent, update the requisition's purchased quantities
-      const requisitionUpdateResult = await updateRequisitionStateAfterPOSent(purchaseOrderId, currentUser.uid);
-      if (requisitionUpdateResult.success) {
-        toast({ title: "Purchase Order Sent", description: "PO marked as Sent and Requisition updated." });
-      } else {
-        toast({ title: "PO Sent, Requisition Update Issue", description: requisitionUpdateResult.message || "PO marked as Sent, but there was an issue updating the Requisition.", variant: "default" });
-      }
-      fetchPOData(); // Refresh PO data
+      await updatePurchaseOrderStatus(purchaseOrderId, newStatus, currentUser.uid);
+      toast({ title: `PO Status Updated to ${newStatus}`, description: `Purchase Order status successfully changed.` });
+      fetchPOData(); 
     } catch (error: any) {
-      console.error("Error marking PO as Sent:", error);
-      toast({ title: "Update Failed", description: error.message || "Could not mark PO as Sent.", variant: "destructive" });
-    }
-    setIsUpdating(false);
-  };
-
-  const handleCancelPO = async () => {
-    if (!purchaseOrder || !currentUser || !["Pending", "Sent"].includes(purchaseOrder.status)) return;
-    setIsUpdating(true);
-    try {
-      await updatePurchaseOrderStatus(purchaseOrderId, "Canceled", currentUser.uid);
-      // Note: Canceling a PO might require logic to revert purchased quantities on the requisition.
-      // This is more complex and can be added later if needed. For now, it just cancels the PO.
-      toast({ title: "Purchase Order Canceled", description: "The PO has been canceled." });
-      fetchPOData(); // Refresh PO data
-    } catch (error: any) {
-      console.error("Error canceling PO:", error);
-      toast({ title: "Update Failed", description: error.message || "Could not cancel PO.", variant: "destructive" });
+      console.error(`Error changing PO status to ${newStatus}:`, error);
+      toast({ title: "Update Failed", description: error.message || `Could not change PO status to ${newStatus}.`, variant: "destructive" });
     }
     setIsUpdating(false);
   };
@@ -108,17 +86,21 @@ export default function PurchaseOrderDetailPage() {
     if (!status) return "secondary";
     switch (status) {
       case "Pending": return "outline";
-      case "Sent": return "default";
-      case "Partially Received": return "default";
-      case "Completed": return "default";
+      case "SentToSupplier": return "default"; // Blue
+      case "ConfirmedBySupplier": return "default"; // Green
+      case "RejectedBySupplier": return "destructive";
+      case "Partially Received": return "default"; // Yellow
+      case "Completed": return "default"; // Green
       case "Canceled": return "destructive";
       default: return "secondary";
     }
   };
-   const getStatusBadgeClass = (status?: PurchaseOrderStatus) => {
+
+  const getStatusBadgeClass = (status?: PurchaseOrderStatus) => {
     if (!status) return "";
     switch (status) {
-      case "Sent": return "bg-blue-500 hover:bg-blue-600 text-white";
+      case "SentToSupplier": return "bg-blue-500 hover:bg-blue-600 text-white";
+      case "ConfirmedBySupplier": return "bg-teal-500 hover:bg-teal-600 text-white";
       case "Partially Received": return "bg-yellow-400 hover:bg-yellow-500 text-black";
       case "Completed": return "bg-green-500 hover:bg-green-600 text-white";
       default: return "";
@@ -145,9 +127,10 @@ export default function PurchaseOrderDetailPage() {
   }
 
   const canManagePO = role === 'admin' || role === 'superadmin';
-  const canMarkSent = canManagePO && purchaseOrder.status === "Pending";
-  const canCancel = canManagePO && (purchaseOrder.status === "Pending" || purchaseOrder.status === "Sent");
-
+  const canSendToSupplier = canManagePO && purchaseOrder.status === "Pending";
+  const canRecordSupplierResponse = canManagePO && purchaseOrder.status === "SentToSupplier";
+  const canCancel = canManagePO && ["Pending", "SentToSupplier", "ConfirmedBySupplier"].includes(purchaseOrder.status);
+  const canRecordReceipt = canManagePO && ["ConfirmedBySupplier", "Partially Received"].includes(purchaseOrder.status);
 
   return (
     <>
@@ -156,10 +139,27 @@ export default function PurchaseOrderDetailPage() {
         description={`Supplier: ${purchaseOrder.supplierName || purchaseOrder.supplierId}`}
         actions={
           <div className="flex gap-2 flex-wrap">
-            {canMarkSent && (
-              <Button onClick={handleMarkAsSent} disabled={isUpdating}>
+            {canSendToSupplier && (
+              <Button onClick={() => handleStatusChange("SentToSupplier")} disabled={isUpdating}>
                 {isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.Send className="mr-2 h-4 w-4" />}
-                Mark as Sent
+                Send to Supplier
+              </Button>
+            )}
+            {canRecordSupplierResponse && (
+              <>
+                <Button onClick={() => handleStatusChange("ConfirmedBySupplier")} disabled={isUpdating} variant="default" className="bg-teal-500 hover:bg-teal-600">
+                  {isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.Check className="mr-2 h-4 w-4" />}
+                  Record Supplier Confirmation
+                </Button>
+                <Button onClick={() => handleStatusChange("RejectedBySupplier")} disabled={isUpdating} variant="destructive">
+                  {isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.X className="mr-2 h-4 w-4" />}
+                  Record Supplier Rejection
+                </Button>
+              </>
+            )}
+            {canRecordReceipt && (
+              <Button onClick={() => toast({ title: "Feature Coming Soon", description: "Detailed stock receipt registration will be available soon."})} disabled={isUpdating} variant="outline">
+                <Icons.Package className="mr-2 h-4 w-4" /> Record Receipt
               </Button>
             )}
             {canCancel && (
@@ -174,18 +174,17 @@ export default function PurchaseOrderDetailPage() {
                   <AlertDialogHeader>
                     <AlertDialogTitle>Are you sure you want to cancel this Purchase Order?</AlertDialogTitle>
                     <AlertDialogDescription>
-                      This action cannot be undone. Canceling the PO will mark it as 'Canceled'.
-                      It will not automatically revert received quantities if any.
+                      This action will mark the PO as 'Canceled'. 
+                      {purchaseOrder.status === "Pending" || purchaseOrder.status === "SentToSupplier" ? " Pending quantities on the requisition will be adjusted." : " Quantities on the requisition may need manual review if already confirmed by supplier."}
                     </AlertDialogDescription>
                   </AlertDialogHeader>
                   <AlertDialogFooter>
                     <AlertDialogCancel>Keep PO</AlertDialogCancel>
-                    <AlertDialogAction onClick={handleCancelPO} className="bg-destructive hover:bg-destructive/90">Confirm Cancellation</AlertDialogAction>
+                    <AlertDialogAction onClick={() => handleStatusChange("Canceled")} className="bg-destructive hover:bg-destructive/90">Confirm Cancellation</AlertDialogAction>
                   </AlertDialogFooter>
                 </AlertDialogContent>
               </AlertDialog>
             )}
-            {/* Record Receipt button will be added in a future stage */}
             <Button onClick={() => router.back()} variant="outline">Back</Button>
           </div>
         }
@@ -287,4 +286,5 @@ export default function PurchaseOrderDetailPage() {
     </>
   );
 }
+
     
