@@ -76,9 +76,9 @@ interface QuotationOffer extends QuotationDetail {
 interface ProductToCompare extends RequisitionRequiredProduct {
   requisitionProductId: string;
   offers: QuotationOffer[];
-  alreadyPurchased: number; // This is product.purchasedQuantity
-  pendingPOQuantity: number; // This is product.pendingPOQuantity
-  remainingToAward: number; // This will be net remaining: required - (purchased + pendingPO)
+  alreadyPurchased: number; 
+  pendingPOQuantity: number; 
+  remainingToAward: number; 
 }
 
 export interface SelectedOfferInfo {
@@ -432,7 +432,7 @@ export default function CompareQuotationsPage() {
         if (result.createdPurchaseOrderIds && result.createdPurchaseOrderIds.length > 0) {
             router.push('/purchase-orders');
         } else {
-            fetchComparisonData(); // Refresh if no POs created but status might have changed
+            fetchComparisonData(); 
         }
       } else {
         toast({ title: "Finalization Failed", description: result.message || "Could not process awards or create POs.", variant: "destructive" });
@@ -464,7 +464,7 @@ export default function CompareQuotationsPage() {
       const selectedAward = selectedOffers[product.requisitionProductId];
       const awardedQtyForThisProduct = selectedAward ? selectedAward.awardedQuantity : 0;
       
-      if (awardedQtyForThisProduct === 0) continue; // Only check for over-ordering if we are awarding something new
+      if (awardedQtyForThisProduct === 0) continue; 
 
       const potentialTotalCommittedQuantity = awardedQtyForThisProduct + (product.pendingPOQuantity || 0) + product.alreadyPurchased;
 
@@ -703,18 +703,22 @@ export default function CompareQuotationsPage() {
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Confirm Over-Ordering</AlertDialogTitle>
-            <AlertDialogDescription>
-              You are about to create Purchase Orders that may result in ordering more than originally requisitioned (considering existing pending POs and already purchased quantities) for the following items:
-              <ul className="list-disc pl-5 mt-2 space-y-1 text-sm">
-                {overOrderDetails.map(detail => (
-                  <li key={detail.productName}>
-                    <strong>{detail.productName}</strong>: Original Req: {detail.originalReq}, Potential Total Committed: {detail.potentialTotal} (Over by {detail.overBy})
-                  </li>
-                ))}
-              </ul>
-              This action will proceed to create Purchase Order(s) with the selected quantities. Are you sure you want to continue?
-            </AlertDialogDescription>
           </AlertDialogHeader>
+          <div className="text-sm text-muted-foreground">
+            <p>
+              You are about to create Purchase Orders that may result in ordering more than originally requisitioned (considering existing pending POs and already purchased quantities) for the following items:
+            </p>
+            <ul className="list-disc pl-6 mt-2 space-y-1">
+              {overOrderDetails.map(detail => (
+                <li key={detail.productName}>
+                  <strong>{detail.productName}</strong>: Original Req: {detail.originalReq}, Potential Total Committed: {detail.potentialTotal} (Over by {detail.overBy})
+                </li>
+              ))}
+            </ul>
+            <p className="mt-2">
+              This action will proceed to create Purchase Order(s) with the selected quantities. Are you sure you want to continue?
+            </p>
+          </div>
           <AlertDialogFooter>
             <AlertDialogCancel onClick={() => { setIsOverOrderConfirmOpen(false); setOverOrderDetails([]); }}>Cancel</AlertDialogCancel>
             <AlertDialogAction onClick={proceedWithFinalizingAwards}>
