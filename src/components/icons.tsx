@@ -11,8 +11,8 @@ import {
   LogOut,
   LogIn,
   UserPlus as LucideUserPlus,
-  ChevronDown,        // Ya lo tienes
-  ChevronUp,          // <--- AÑADIR ESTA IMPORTACIÓN
+  ChevronDown,
+  ChevronUp,
   Menu,
   Package,
   FilePlus2,
@@ -42,6 +42,7 @@ import {
   UsersRound,
   LayoutList,
   Calendar as LucideCalendar,
+  Check, // Added Check icon import
 } from 'lucide-react';
 
 export const StockPilotLogo = (props: SVGProps<SVGSVGElement>) => (
@@ -71,7 +72,7 @@ export const Icons = {
   RegisterStock: PackagePlus,
   VisualizeStock: BarChart3,
   Products: Boxes,
-  Warehouses: Building, // Warehouse fue cambiado por Building, asegúrate que sea consistente.
+  Warehouses: Building,
   Suppliers: UsersRound,
   Categories: LayoutList,
   Users: Users,
@@ -80,7 +81,7 @@ export const Icons = {
   Login: LogIn,
   UserPlus: LucideUserPlus,
   ChevronDown: ChevronDown,
-  ChevronUp: ChevronUp,      // <--- AÑADIR ESTA LÍNEA
+  ChevronUp: ChevronUp,
   Menu: Menu,
   Logo: StockPilotLogo,
   Package: Package,
@@ -107,7 +108,9 @@ export const Icons = {
   MoreHorizontal: MoreHorizontal,
   List: List,
   Grid: Grid,
-  LayoutList: LayoutList, // Tienes LayoutList dos veces, lo cual es redundante pero no dañino.
+  LayoutList: LayoutList,
   ClipboardList: ClipboardList,
   Calendar: LucideCalendar,
+  Check: Check, // Added Check icon mapping
+  X: X, // Assuming X is also from lucide-react and might be used elsewhere
 };
