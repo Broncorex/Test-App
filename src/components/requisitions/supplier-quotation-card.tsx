@@ -1,5 +1,6 @@
+
 import React, { useCallback, useMemo } from 'react';
-import { Control, useFieldArray, useWatch } from 'react-hook-form';
+import { Control, useFieldArray, useWatch, type UseFormReturn } from 'react-hook-form';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { FormField, FormControl, FormItem, FormLabel as ShadFormLabelFromHookForm, FormMessage as ShadFormMessage } from "@/components/ui/form";
@@ -9,29 +10,8 @@ import { Icons } from "@/components/icons";
 import { cn } from "@/lib/utils";
 import type { Requisition, Supplier, ProveedorProducto, PriceRange, RequiredProduct as RequisitionRequiredProductType } from "@/types";
 import { Button } from '@/components/ui/button';
+import type { QuotationRequestFormData } from '@/app/(app)/requisitions/[id]/page';
 
-// --- Tipos para la validación del formulario (copiados de RequisitionDetailPage) ---
-const quotedProductSchema = {
-    productId: '', // Not used for zod, but for type inference
-    productName: '',
-    originalRequiredQuantity: 0,
-    quotedQuantity: 0,
-};
-type QuotedProductFormData = typeof quotedProductSchema; // Simplified type for internal use
-
-const supplierQuoteDetailSchema = {
-    supplierId: '',
-    supplierName: '',
-    productsToQuote: [] as QuotedProductFormData[],
-};
-type SupplierQuoteDetailFormData = typeof supplierQuoteDetailSchema;
-
-interface QuotationRequestFormData {
-    suppliersToQuote: SupplierQuoteDetailFormData[];
-    responseDeadline: Date;
-    notes?: string;
-}
-// --- Fin Tipos ---
 
 interface AnalyzedPriceRange {
     currentRange: PriceRange | null;
@@ -49,8 +29,8 @@ interface SupplierQuotationCardProps {
         canQuoteProduct: boolean;
         link: ProveedorProducto | null;
     }>>;
-    formControl: Control<QuotationRequestFormData>;
-    supplierFormIndex: number; // El índice de este proveedor en el array 'suppliersToQuote' de RHF
+    formInstance: UseFormReturn<QuotationRequestFormData>;
+    supplierFormIndex: number;
     isSupplierSelected: boolean;
     onToggleSupplier: (supplier: Supplier, isChecked: boolean) => void;
     isExpanded: boolean;
@@ -64,7 +44,7 @@ export const SupplierQuotationCard: React.FC<SupplierQuotationCardProps> = ({
     supplier,
     requisitionRequiredProducts,
     supplierAnalysisData,
-    formControl,
+    formInstance, 
     supplierFormIndex,
     isSupplierSelected,
     onToggleSupplier,
@@ -76,11 +56,10 @@ export const SupplierQuotationCard: React.FC<SupplierQuotationCardProps> = ({
 }) => {
 
     const { fields: productsToQuoteFields, append: appendProduct, remove: removeProduct } = useFieldArray({
-        control: formControl,
+        control: formInstance.control,
         name: `suppliersToQuote.${supplierFormIndex}.productsToQuote`,
     });
 
-    // Determine if supplier has any quotable products from the requisition
     const hasAnyQuotableProduct = useMemo(() => {
         return requisitionRequiredProducts.some(
             rp => supplierAnalysisData[supplier.id]?.[rp.productId]?.canQuoteProduct
@@ -92,11 +71,14 @@ export const SupplierQuotationCard: React.FC<SupplierQuotationCardProps> = ({
         reqProduct: RequisitionRequiredProductType,
         isChecked: boolean
     ) => {
-        const productQuoteIndex = productsToQuoteFields.findIndex(p => p.productId === reqProduct.productId);
+        const currentProductsToQuote = formInstance.getValues(`suppliersToQuote.${supplierFormIndex}.productsToQuote`) || [];
+        const productQuoteIndex = currentProductsToQuote.findIndex(p => p.productId === reqProduct.productId);
+
+        let updatedProductsToQuote = [...currentProductsToQuote];
 
         if (isChecked) {
             if (productQuoteIndex === -1) {
-                appendProduct({
+                updatedProductsToQuote.push({
                     productId: reqProduct.productId,
                     productName: reqProduct.productName,
                     originalRequiredQuantity: reqProduct.requiredQuantity,
@@ -105,14 +87,17 @@ export const SupplierQuotationCard: React.FC<SupplierQuotationCardProps> = ({
             }
         } else {
             if (productQuoteIndex !== -1) {
-                removeProduct(productQuoteIndex);
+                updatedProductsToQuote.splice(productQuoteIndex, 1);
             }
         }
-        // Force validation on the specific nested array and the main suppliers array
-        // This ensures superRefine logic is re-evaluated immediately
-        formControl.trigger(`suppliersToQuote.${supplierFormIndex}.productsToQuote`);
-        formControl.trigger(`suppliersToQuote`);
-    }, [appendProduct, removeProduct, productsToQuoteFields, supplierFormIndex, formControl]);
+        
+        formInstance.setValue(
+            `suppliersToQuote.${supplierFormIndex}.productsToQuote`, 
+            updatedProductsToQuote.length > 0 ? updatedProductsToQuote : undefined,
+            { shouldValidate: true }
+        );
+        formInstance.trigger(`suppliersToQuote`);
+    }, [formInstance, supplierFormIndex]);
 
 
     return (
@@ -129,13 +114,13 @@ export const SupplierQuotationCard: React.FC<SupplierQuotationCardProps> = ({
                     <Checkbox
                         id={`supplier-checkbox-${supplier.id}`}
                         checked={isSupplierSelected}
-                        disabled={!hasAnyQuotableProduct && !isSupplierSelected} // Disable if no quotable products, unless already selected (to allow unselecting)
+                        disabled={!hasAnyQuotableProduct && !isSupplierSelected}
                         onCheckedChange={(checked) => {
                             onToggleSupplier(supplier, !!checked);
                             if (checked && !isExpanded && hasAnyQuotableProduct) {
                                 onToggleExpand(supplier.id);
                             } else if (!checked) {
-                                onToggleExpand(supplier.id);
+                                onToggleExpand(supplier.id); // Collapse if unselected
                             }
                         }}
                         onClick={(e) => e.stopPropagation()}
@@ -153,7 +138,7 @@ export const SupplierQuotationCard: React.FC<SupplierQuotationCardProps> = ({
 
             {!hasAnyQuotableProduct && (
                 <CardContent className="p-2 pt-0 text-xs text-muted-foreground">
-                    Este proveedor no tiene enlaces de productos activos para los artículos en esta solicitud.
+                    This supplier does not have active product links for items in this requisition.
                 </CardContent>
             )}
 
@@ -167,27 +152,25 @@ export const SupplierQuotationCard: React.FC<SupplierQuotationCardProps> = ({
                             <Skeleton className="h-24 w-full" />
                         </div>
                     ) : requisitionRequiredProducts.length === 0 ? (
-                        <p className="text-xs text-muted-foreground">No hay productos en esta solicitud para cotizar.</p>
+                        <p className="text-xs text-muted-foreground">No products in this requisition to quote.</p>
                     ) : (
                         <div className="space-y-3">
-                            <p className="text-xs font-medium text-muted-foreground">Selecciona productos y establece cantidades para {supplier.name}:</p>
+                            <p className="text-xs font-medium text-muted-foreground">Select products and set quantities for {supplier.name}:</p>
                             {requisitionRequiredProducts.map((reqProduct) => {
                                 const productAnalysis = supplierAnalysisData[supplier.id]?.[reqProduct.productId];
                                 const link = productAnalysis?.link || null;
                                 const canQuoteThisProduct = productAnalysis?.canQuoteProduct || false;
                                 const priceAnalysis = productAnalysis?.priceAnalysis || {};
 
-                                const productIsSelectedForThisSupplier = productsToQuoteFields.some(p => p.productId === reqProduct.productId);
-                                const currentProductQuoteIndex = productsToQuoteFields.findIndex(p => p.productId === reqProduct.productId);
+                                const currentProductsArray = formInstance.getValues(`suppliersToQuote.${supplierFormIndex}.productsToQuote`) || [];
+                                const currentProductQuoteIndex = currentProductsArray.findIndex(p => p.productId === reqProduct.productId);
+                                const productIsSelectedForThisSupplier = currentProductQuoteIndex !== -1;
 
-                                // Use useWatch for the specific field to avoid re-rendering the whole form
-                                const watchedQuotedQuantity = useWatch({
-                                    control: formControl,
-                                    name: `suppliersToQuote.${supplierFormIndex}.productsToQuote.${currentProductQuoteIndex}.quotedQuantity`,
-                                    defaultValue: reqProduct.requiredQuantity, // Provide a default if it's not yet in the form state
-                                });
-
-                                const numericWatchedQty = Number(watchedQuotedQuantity);
+                                const currentQuotedQuantityValue = productIsSelectedForThisSupplier 
+                                    ? formInstance.getValues(`suppliersToQuote.${supplierFormIndex}.productsToQuote.${currentProductQuoteIndex}.quotedQuantity`) 
+                                    : reqProduct.requiredQuantity;
+                                
+                                const numericWatchedQty = Number(currentQuotedQuantityValue);
                                 const applicableRangeForWatchedQty = getApplicablePriceRange(numericWatchedQty, link?.priceRanges);
 
                                 return (
@@ -203,10 +186,10 @@ export const SupplierQuotationCard: React.FC<SupplierQuotationCardProps> = ({
                                             />
                                             <div className="flex-1 space-y-1">
                                                 <ShadFormLabelFromHookForm htmlFor={`supplier-${supplier.id}-product-${reqProduct.productId}`} className="font-normal text-sm cursor-pointer">
-                                                    {reqProduct.productName} (Req. Original: {reqProduct.requiredQuantity})
+                                                    {reqProduct.productName} (Original Req: {reqProduct.requiredQuantity})
                                                 </ShadFormLabelFromHookForm>
                                                 {!canQuoteThisProduct && (
-                                                    <p className="text-xs text-destructive">Este proveedor no ofrece este producto o no está disponible.</p>
+                                                    <p className="text-xs text-destructive">This supplier does not offer this product or it's unavailable.</p>
                                                 )}
                                             </div>
                                         </div>
@@ -214,11 +197,11 @@ export const SupplierQuotationCard: React.FC<SupplierQuotationCardProps> = ({
                                         {productIsSelectedForThisSupplier && canQuoteThisProduct && currentProductQuoteIndex !== -1 && (
                                             <div className="mt-2 pl-8 space-y-2">
                                                 <FormField
-                                                    control={formControl}
+                                                    control={formInstance.control}
                                                     name={`suppliersToQuote.${supplierFormIndex}.productsToQuote.${currentProductQuoteIndex}.quotedQuantity`}
                                                     render={({ field }) => (
                                                         <FormItem>
-                                                            <ShadFormLabelFromHookForm className="text-xs">Cantidad Cotizada*</ShadFormLabelFromHookForm>
+                                                            <ShadFormLabelFromHookForm className="text-xs">Quoted Quantity*</ShadFormLabelFromHookForm>
                                                             <FormControl>
                                                                 <Input type="number" {...field} className="h-8 text-sm" />
                                                             </FormControl>
@@ -230,26 +213,26 @@ export const SupplierQuotationCard: React.FC<SupplierQuotationCardProps> = ({
                                                     <div className="mt-1 text-xs">
                                                         {priceAnalysis.currentPricePerUnit !== null && priceAnalysis.currentRange && (
                                                             <p>
-                                                                Precio Original Req.: <span className="font-semibold">${priceAnalysis.currentPricePerUnit.toFixed(2)}/unidad</span>
-                                                                (Cant: {priceAnalysis.currentRange.minQuantity}
+                                                                Price for Original Req. Qty ({reqProduct.requiredQuantity}): <span className="font-semibold">${priceAnalysis.currentPricePerUnit.toFixed(2)}/unit</span>
+                                                                (Range: {priceAnalysis.currentRange.minQuantity}
                                                                 {priceAnalysis.currentRange.maxQuantity ? `-${priceAnalysis.currentRange.maxQuantity}` : '+'})
                                                             </p>
                                                         )}
                                                         {priceAnalysis.nextBetterRange && priceAnalysis.quantityToReachNextBetter !== null && priceAnalysis.nextBetterRange.price !== null && (
                                                             <p className="text-green-600 font-medium">
-                                                                Sugerencia: Pide {priceAnalysis.nextBetterRange.minQuantity} (añade {priceAnalysis.quantityToReachNextBetter}) por ${priceAnalysis.nextBetterRange.price.toFixed(2)}/unidad.
+                                                                Tip: Order {priceAnalysis.nextBetterRange.minQuantity} (add {priceAnalysis.quantityToReachNextBetter}) for ${priceAnalysis.nextBetterRange.price.toFixed(2)}/unit.
                                                             </p>
                                                         )}
                                                         {priceAnalysis.alternativeNextRange && !priceAnalysis.currentRange && priceAnalysis.alternativeNextRange.price !== null && (
                                                             <p className="text-blue-600">
-                                                                Nota: Primer precio disponible es ${priceAnalysis.alternativeNextRange.price.toFixed(2)}/unidad para {priceAnalysis.alternativeNextRange.minQuantity} unidades.
+                                                                Note: First available price is ${priceAnalysis.alternativeNextRange.price.toFixed(2)}/unit for {priceAnalysis.alternativeNextRange.minQuantity} units.
                                                             </p>
                                                         )}
                                                     </div>
                                                 )}
                                                 {link?.priceRanges && link.priceRanges.length > 0 && (
                                                     <div className="mt-3 space-y-1">
-                                                        <p className="text-xs font-medium text-muted-foreground">Niveles de precios disponibles para este proveedor:</p>
+                                                        <p className="text-xs font-medium text-muted-foreground">Available Price Tiers for this Supplier:</p>
                                                         <ul className="list-none pl-0 text-xs">
                                                             {link.priceRanges.map((range, rangeIdx) => {
                                                                 const isRangeActive = applicableRangeForWatchedQty &&
@@ -263,12 +246,12 @@ export const SupplierQuotationCard: React.FC<SupplierQuotationCardProps> = ({
                                                                         className={cn(
                                                                             "py-0.5 px-1.5 rounded-sm my-0.5",
                                                                             isRangeActive
-                                                                                ? "bg-primary/20 text-primary-foreground font-semibold ring-1 ring-primary"
+                                                                                ? "bg-primary/20 text-primary font-semibold ring-1 ring-primary" 
                                                                                 : "bg-muted/50"
                                                                         )}
                                                                     >
-                                                                        Cant: {range.minQuantity}{range.maxQuantity ? `-${range.maxQuantity}` : '+'}
-                                                                        {range.priceType === 'fixed' && range.price !== null ? ` - $${Number(range.price).toFixed(2)}/unidad` : ` - ${range.priceType}`}
+                                                                        Qty: {range.minQuantity}{range.maxQuantity ? `-${range.maxQuantity}` : '+'}
+                                                                        {range.priceType === 'fixed' && range.price !== null ? ` - $${Number(range.price).toFixed(2)}/unit` : ` - ${range.priceType}`}
                                                                         {range.additionalConditions && <span className="text-muted-foreground text-[10px]"> ({range.additionalConditions})</span>}
                                                                     </li>
                                                                 );
@@ -281,12 +264,17 @@ export const SupplierQuotationCard: React.FC<SupplierQuotationCardProps> = ({
                                     </div>
                                 );
                             })}
-                            {formControl.formState.errors.suppliersToQuote?.[supplierFormIndex]?.productsToQuote && (
+                            {formInstance.formState.errors.suppliersToQuote?.[supplierFormIndex]?.productsToQuote && (
                                 <ShadFormMessage className="mt-1 text-xs">
-                                    {typeof formControl.formState.errors.suppliersToQuote?.[supplierFormIndex]?.productsToQuote?.message === 'string'
-                                        ? formControl.formState.errors.suppliersToQuote?.[supplierFormIndex]?.productsToQuote?.message
-                                        : "Error con la selección de productos para este proveedor."
+                                    {typeof formInstance.formState.errors.suppliersToQuote?.[supplierFormIndex]?.productsToQuote?.message === 'string'
+                                        ? formInstance.formState.errors.suppliersToQuote?.[supplierFormIndex]?.productsToQuote?.message
+                                        : "Error with product selection for this supplier."
                                     }
+                                </ShadFormMessage>
+                            )}
+                             {(formInstance.formState.errors.suppliersToQuote?.[supplierFormIndex]?.productsToQuote as any)?.root?.message && (
+                                <ShadFormMessage className="mt-1 text-xs">
+                                {(formInstance.formState.errors.suppliersToQuote?.[supplierFormIndex]?.productsToQuote as any)?.root?.message}
                                 </ShadFormMessage>
                             )}
                         </div>

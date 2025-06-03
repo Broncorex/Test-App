@@ -1,3 +1,4 @@
+
 "use client";
 
 import { useParams, useRouter } from "next/navigation";
@@ -30,19 +31,18 @@ import { Textarea } from "@/components/ui/textarea";
 import { Calendar } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { format, isValid } from "date-fns";
-import { useForm, useFieldArray, Controller } from "react-hook-form";
+import { useForm, useFieldArray, Controller, type UseFormReturn } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
 import { getAllSuppliers } from "@/services/supplierService";
 import { createQuotation, type CreateQuotationRequestData } from "@/services/quotationService";
 import { getSupplierProduct } from "@/services/supplierProductService";
-// import { Checkbox } from "@/components/ui/checkbox"; // Moved to SupplierQuotationCard
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import Link from "next/link";
-import { SupplierQuotationCard } from "@/components/requisitions/supplier-quotation-card"; // Import the new component
+import { SupplierQuotationCard } from "@/components/requisitions/supplier-quotation-card";
 
 
 const quotedProductSchema = z.object({
@@ -56,7 +56,7 @@ type QuotedProductFormData = z.infer<typeof quotedProductSchema>;
 const supplierQuoteDetailSchema = z.object({
   supplierId: z.string(),
   supplierName: z.string(),
-  productsToQuote: z.array(quotedProductSchema).default([]), // Ensure default to empty array
+  productsToQuote: z.array(quotedProductSchema).optional(),
 });
 type SupplierQuoteDetailFormData = z.infer<typeof supplierQuoteDetailSchema>;
 
@@ -65,7 +65,6 @@ const quotationRequestFormSchema = z.object({
     .min(1, "At least one supplier must be selected for quotation.")
     .superRefine((suppliers, ctx) => {
       suppliers.forEach((supplierItem, index) => {
-        // Ensure productsToQuote is an array and not empty
         if (!supplierItem.productsToQuote || supplierItem.productsToQuote.length === 0) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
@@ -78,7 +77,7 @@ const quotationRequestFormSchema = z.object({
   responseDeadline: z.date({ required_error: "Response deadline is required." }),
   notes: z.string().optional(),
 });
-type QuotationRequestFormData = z.infer<typeof quotationRequestFormSchema>;
+export type QuotationRequestFormData = z.infer<typeof quotationRequestFormSchema>;
 
 
 interface AnalyzedPriceRange {
@@ -116,6 +115,22 @@ export default function RequisitionDetailPage() {
   const [isLoadingAllSupplierLinks, setIsLoadingAllSupplierLinks] = useState(false);
   const [expandedSupplierProducts, setExpandedSupplierProducts] = useState<Record<string, boolean>>({});
 
+  const getApplicablePriceRange = useCallback((quantity: number, priceRangesParam?: PriceRange[]): PriceRange | null => {
+    if (!priceRangesParam || priceRangesParam.length === 0 || isNaN(quantity) || quantity <= 0) {
+      return null;
+    }
+    const sortedRanges = [...priceRangesParam]
+      .filter(range => range.price !== null && range.priceType === 'fixed')
+      .sort((a, b) => a.minQuantity - b.minQuantity);
+
+    for (const range of sortedRanges) {
+      if (quantity >= range.minQuantity && (range.maxQuantity === null || quantity <= range.maxQuantity)) {
+        return range;
+      }
+    }
+    return null;
+  }, []);
+  
   const memoizedAnalyzePriceRanges = useCallback((originalRequiredQuantity: number, priceRangesParam?: PriceRange[]): AnalyzedPriceRange => {
     const result: AnalyzedPriceRange = {
       currentRange: null,
@@ -155,22 +170,6 @@ export default function RequisitionDetailPage() {
       }
     }
     return result;
-  }, []);
-
-  const getApplicablePriceRange = useCallback((quantity: number, priceRangesParam?: PriceRange[]): PriceRange | null => {
-    if (!priceRangesParam || priceRangesParam.length === 0 || isNaN(quantity) || quantity <= 0) {
-      return null;
-    }
-    const sortedRanges = [...priceRangesParam]
-      .filter(range => range.price !== null && range.priceType === 'fixed')
-      .sort((a, b) => a.minQuantity - b.minQuantity);
-
-    for (const range of sortedRanges) {
-      if (quantity >= range.minQuantity && (range.maxQuantity === null || quantity <= range.maxQuantity)) {
-        return range;
-      }
-    }
-    return null;
   }, []);
 
 
@@ -301,7 +300,7 @@ export default function RequisitionDetailPage() {
         appendSupplierToQuote({
           supplierId: supplier.id,
           supplierName: supplier.name,
-          productsToQuote: [],
+          productsToQuote: undefined,
         });
       }
     } else {
@@ -309,7 +308,6 @@ export default function RequisitionDetailPage() {
         removeSupplierFromQuote(supplierFieldArrayIndex);
       }
     }
-    // Trigger validation for the main suppliersToQuote array
     quoteRequestForm.trigger(`suppliersToQuote`);
   }, [appendSupplierToQuote, removeSupplierFromQuote, suppliersToQuoteFields, quoteRequestForm]);
 
@@ -688,7 +686,7 @@ export default function RequisitionDetailPage() {
                       {isLoadingSuppliers ? <p>Loading suppliers...</p> :
                         availableSuppliers.length === 0 ? <p>No active suppliers found.</p> :
                           <ScrollArea className="h-[calc(100vh-28rem)] md:h-72 rounded-md border p-1">
-                            {availableSuppliers.map((supplier) => {
+                            {availableSuppliers.map((supplier, supplierIndex) => {
                               const actualSupplierFormIndex = suppliersToQuoteFields.findIndex(sField => sField.supplierId === supplier.id);
                               const isSupplierSelectedForQuoting = actualSupplierFormIndex !== -1;
 
@@ -698,7 +696,7 @@ export default function RequisitionDetailPage() {
                                   supplier={supplier}
                                   requisitionRequiredProducts={requisition.requiredProducts || []}
                                   supplierAnalysisData={supplierAnalysisData}
-                                  formControl={quoteRequestForm.control}
+                                  formInstance={quoteRequestForm} 
                                   supplierFormIndex={actualSupplierFormIndex}
                                   isSupplierSelected={isSupplierSelectedForQuoting}
                                   onToggleSupplier={toggleSupplierForQuoting}
