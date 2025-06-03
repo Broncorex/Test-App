@@ -51,6 +51,16 @@ import { cn } from "@/lib/utils";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 
 interface QuotationOffer extends QuotationDetail {
@@ -66,8 +76,9 @@ interface QuotationOffer extends QuotationDetail {
 interface ProductToCompare extends RequisitionRequiredProduct {
   requisitionProductId: string;
   offers: QuotationOffer[];
-  alreadyPurchased: number;
-  remainingToAward: number;
+  alreadyPurchased: number; // This is product.purchasedQuantity
+  pendingPOQuantity: number; // This is product.pendingPOQuantity
+  remainingToAward: number; // This will be net remaining: required - (purchased + pendingPO)
 }
 
 export interface SelectedOfferInfo {
@@ -79,7 +90,7 @@ export interface SelectedOfferInfo {
   productName: string;
   awardedQuantity: number;
   unitPrice: number;
-  estimatedDeliveryDate: Timestamp; // Added to store the ETA
+  estimatedDeliveryDate: Timestamp;
 }
 
 const formatTimestampDate = (timestamp?: Timestamp | null): string => {
@@ -116,6 +127,9 @@ export default function CompareQuotationsPage() {
   const [maxDeliveryDays, setMaxDeliveryDays] = useState<string>("");
   const [isCalculatingCombination, setIsCalculatingCombination] = useState(false);
 
+  const [isOverOrderConfirmOpen, setIsOverOrderConfirmOpen] = useState(false);
+  const [overOrderDetails, setOverOrderDetails] = useState<{ productName: string; overBy: number; originalReq: number; potentialTotal: number }[]>([]);
+
 
   const fetchComparisonData = useCallback(async () => {
     if (!requisitionId) {
@@ -151,12 +165,15 @@ export default function CompareQuotationsPage() {
 
       const productsToCompareMap = new Map<string, ProductToCompare>();
       fetchedRequisition.requiredProducts.forEach((reqProduct) => {
+        const alreadyPurchased = reqProduct.purchasedQuantity || 0;
+        const pendingPO = reqProduct.pendingPOQuantity || 0;
         productsToCompareMap.set(reqProduct.productId, {
           ...reqProduct,
           requisitionProductId: reqProduct.id,
           offers: [],
-          alreadyPurchased: reqProduct.purchasedQuantity || 0,
-          remainingToAward: reqProduct.requiredQuantity - (reqProduct.purchasedQuantity || 0),
+          alreadyPurchased: alreadyPurchased,
+          pendingPOQuantity: pendingPO,
+          remainingToAward: Math.max(0, reqProduct.requiredQuantity - (alreadyPurchased + pendingPO)),
         });
       });
 
@@ -197,7 +214,7 @@ export default function CompareQuotationsPage() {
       const productBeingAwarded = productsForComparison.find((p) => p.requisitionProductId === requisitionProductId);
       if (!productBeingAwarded) return prevSelectedOffers;
 
-      if (clickedOfferDetailId === null) { // Clearing selection for this product
+      if (clickedOfferDetailId === null) { 
         updated[requisitionProductId] = null;
         return updated;
       }
@@ -223,7 +240,7 @@ export default function CompareQuotationsPage() {
           productName: offer.productName,
           awardedQuantity: offer.quotedQuantity, 
           unitPrice: offer.unitPriceQuoted,
-          estimatedDeliveryDate: offer.estimatedDeliveryDate || Timestamp.fromDate(new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)), // Store ETA
+          estimatedDeliveryDate: offer.estimatedDeliveryDate || Timestamp.fromDate(new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)), 
         };
       } else {
         updated[requisitionProductId] = null;
@@ -352,7 +369,7 @@ export default function CompareQuotationsPage() {
                 productName: bestOfferForProduct.productName,
                 awardedQuantity: quantityToOrderFromOffer,
                 unitPrice: bestOfferForProduct.unitPriceQuoted,
-                estimatedDeliveryDate: bestOfferForProduct.estimatedDeliveryDate || Timestamp.fromDate(new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)), // Store ETA
+                estimatedDeliveryDate: bestOfferForProduct.estimatedDeliveryDate || Timestamp.fromDate(new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)),
             };
         } else {
              if (product.remainingToAward > 0) allProductsAttemptedForFulfillment = false;
@@ -373,7 +390,8 @@ export default function CompareQuotationsPage() {
         for (const product of productsForComparison) {
             const selectedAward = newSelectedOffers[product.requisitionProductId];
             const totalAwardedForProduct = selectedAward ? selectedAward.awardedQuantity : 0;
-            if (totalAwardedForProduct < product.requiredQuantity) {
+            const totalCommitted = totalAwardedForProduct + (product.pendingPOQuantity || 0) + product.alreadyPurchased;
+            if (totalCommitted < product.requiredQuantity) {
                 allOriginalRequirementsMetOrExceeded = false;
                 break;
             }
@@ -381,13 +399,13 @@ export default function CompareQuotationsPage() {
         if (allOriginalRequirementsMetOrExceeded) {
              toast({
                 title: "Optimal Combination Calculated",
-                description: "Selections updated. Original requisition quantities appear to be met or exceeded by this combination.",
+                description: "Selections updated. Original requisition quantities appear to be met or exceeded by this combination (including existing commitments).",
                 variant: "default",
             });
         } else {
             toast({
                 title: "Optimal Combination Calculated (May Be Partial)",
-                description: "Selections updated. Some original requisition quantities might not be fully covered. Please review.",
+                description: "Selections updated. Some original requisition quantities might not be fully covered even with new selections. Please review.",
                 variant: "default",
                 duration: 7000,
             });
@@ -396,60 +414,14 @@ export default function CompareQuotationsPage() {
     setIsCalculatingCombination(false);
   };
 
-  const handleFinalizeAwards = async () => {
+  const proceedWithFinalizingAwards = async () => {
+    setIsOverOrderConfirmOpen(false); 
+    setOverOrderDetails([]);
     const awardsToProcess = Object.values(selectedOffers).filter((offer) => offer !== null) as SelectedOfferInfo[];
-    if (awardsToProcess.length === 0 && productsForComparison.some(p => p.remainingToAward > 0)) {
-      toast({ title: "No Selections", description: "Please select at least one offer to award or ensure all requirements are met.", variant: "default" });
-      return;
-    }
-    if (!currentUser || (role !== "admin" && role !== "superadmin")) {
-      toast({ title: "Permission Denied", description: "You cannot perform this action.", variant: "destructive" });
-      return;
-    }
-
-    const unmetProducts: string[] = [];
-    let willOverOrder = false;
-    for (const product of productsForComparison) {
-        const selectedAward = selectedOffers[product.requisitionProductId];
-        const awardedQtyForThisProduct = selectedAward ? selectedAward.awardedQuantity : 0;
-
-        if (awardedQtyForThisProduct < product.remainingToAward && product.remainingToAward > 0) {
-             unmetProducts.push(`${product.productName} (needs ${product.remainingToAward - awardedQtyForThisProduct} more)`);
-        }
-        if (awardedQtyForThisProduct > product.remainingToAward && product.remainingToAward > 0) {
-            willOverOrder = true;
-        }
-    }
-
-    let confirmationDescription = "Purchase Orders will be created with 'Pending' status.";
-    if (unmetProducts.length > 0) {
-        confirmationDescription += ` The following products are not fully covered by current selections: ${unmetProducts.join(', ')}. Requisition status may reflect partial processing.`;
-    }
-    if (willOverOrder && unmetProducts.length === 0) {
-        confirmationDescription += " Some items will be ordered in quantities greater than the remaining requisition requirement.";
-    } else if (willOverOrder) {
-        confirmationDescription += " Additionally, some items will be ordered in quantities greater than the remaining requisition requirement.";
-    }
-
-    if (unmetProducts.length === 0 && !willOverOrder && awardsToProcess.length > 0) {
-         toast({
-            title: "Award Confirmation",
-            description: "All selected product requirements appear to be met by this award. " + confirmationDescription,
-            variant: "default",
-            duration: 8000,
-        });
-    } else if (awardsToProcess.length > 0) {
-        toast({
-            title: "Award Confirmation Notice",
-            description: confirmationDescription,
-            variant: "default",
-            duration: 10000,
-        });
-    }
-
+    
     setIsSubmittingAwards(true);
     try {
-      const result = await processAndFinalizeAwards(requisitionId, awardsToProcess, relevantQuotesWithDetails, currentUser.uid);
+      const result = await processAndFinalizeAwards(requisitionId, awardsToProcess, relevantQuotesWithDetails, currentUser!.uid);
       if (result.success) {
         toast({
           title: "Awards Processed & POs Created!",
@@ -460,7 +432,7 @@ export default function CompareQuotationsPage() {
         if (result.createdPurchaseOrderIds && result.createdPurchaseOrderIds.length > 0) {
             router.push('/purchase-orders');
         } else {
-            fetchComparisonData();
+            fetchComparisonData(); // Refresh if no POs created but status might have changed
         }
       } else {
         toast({ title: "Finalization Failed", description: result.message || "Could not process awards or create POs.", variant: "destructive" });
@@ -471,6 +443,47 @@ export default function CompareQuotationsPage() {
     } finally {
       setIsSubmittingAwards(false);
     }
+  };
+
+  const handleFinalizeAwards = async () => {
+    const awardsToProcess = Object.values(selectedOffers).filter((offer) => offer !== null) as SelectedOfferInfo[];
+    
+    const netRemainingNeededForAnyProduct = productsForComparison.some(p => p.remainingToAward > 0);
+    if (awardsToProcess.length === 0 && netRemainingNeededForAnyProduct) {
+      toast({ title: "No Selections", description: "Please select offers for items that still need to be ordered, or ensure all requirements are met.", variant: "default" });
+      return;
+    }
+    
+    if (!currentUser || (role !== "admin" && role !== "superadmin")) {
+      toast({ title: "Permission Denied", description: "You cannot perform this action.", variant: "destructive" });
+      return;
+    }
+
+    const currentOverOrderItems: { productName: string; overBy: number; originalReq: number; potentialTotal: number }[] = [];
+    for (const product of productsForComparison) {
+      const selectedAward = selectedOffers[product.requisitionProductId];
+      const awardedQtyForThisProduct = selectedAward ? selectedAward.awardedQuantity : 0;
+      
+      if (awardedQtyForThisProduct === 0) continue; // Only check for over-ordering if we are awarding something new
+
+      const potentialTotalCommittedQuantity = awardedQtyForThisProduct + (product.pendingPOQuantity || 0) + product.alreadyPurchased;
+
+      if (potentialTotalCommittedQuantity > product.requiredQuantity) {
+        currentOverOrderItems.push({
+          productName: product.productName,
+          overBy: potentialTotalCommittedQuantity - product.requiredQuantity,
+          originalReq: product.requiredQuantity,
+          potentialTotal: potentialTotalCommittedQuantity,
+        });
+      }
+    }
+
+    if (currentOverOrderItems.length > 0) {
+      setOverOrderDetails(currentOverOrderItems);
+      setIsOverOrderConfirmOpen(true);
+      return; 
+    }
+    await proceedWithFinalizingAwards();
   };
 
   if (isLoading) {
@@ -525,98 +538,101 @@ export default function CompareQuotationsPage() {
         <Card><CardHeader><CardTitle>No Quotation Offers Found</CardTitle></CardHeader><CardContent><p>No relevant quotation offers found for products in this requisition.</p></CardContent></Card>
       ) : (
         <div className="space-y-6">
-          {productsForComparison.map((product) => (
-            <Card key={product.requisitionProductId} className="shadow-md">
-              <CardHeader>
-                <div className="flex justify-between items-start">
-                  <div>
-                    <CardTitle className="font-headline text-xl">{product.productName}</CardTitle>
-                    <CardDescription>
-                      Required: {product.requiredQuantity} | Already Ordered: {product.alreadyPurchased} |
-                      <span className={cn("font-semibold", product.remainingToAward <= 0 ? "text-green-600" : "text-orange-600")}>
-                        {""} Remaining for Req: {product.remainingToAward > 0 ? product.remainingToAward : 0}
-                      </span>
-                    </CardDescription>
-                  </div>
-                  {product.remainingToAward <= 0 && (<Badge variant="default" className="bg-green-500 text-white">Original Req. Met</Badge>)}
-                </div>
-              </CardHeader>
-              <CardContent>
-                {product.offers.length > 0 ? (
-                  <RadioGroup
-                    value={selectedOffers[product.requisitionProductId]?.quotationDetailId || ""}
-                    onValueChange={(value) => {
-                      handleOfferSelection(product.requisitionProductId, value);
-                    }}
-                  >
-                    <div className="relative w-full overflow-auto">
-                      <Table>
-                        <TableHeader>
-                          <TableRow>
-                            <TableHead className="w-10"></TableHead>
-                            <TableHead>Supplier</TableHead>
-                            <TableHead className="text-right">Offered Qty</TableHead>
-                            <TableHead className="text-right">Unit Price</TableHead>
-                            <TableHead className="text-right">Line Total (for Offered Qty)</TableHead>
-                            <TableHead>Delivery ETA</TableHead>
-                            <TableHead className="max-w-[100px]">Conditions</TableHead>
-                            <TableHead className="text-center">Quote</TableHead>
-                          </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                          {product.offers.map((offer) => {
-                            const isSelected = selectedOffers[product.requisitionProductId]?.quotationDetailId === offer.id;
-                            const offeredQty = offer.quotedQuantity;
-                            const canSelectOffer = offeredQty > 0;
-                            return (
-                              <TableRow key={offer.id} className={cn(isSelected && "bg-primary/10", currentQuoteIdFromParams === offer.quotationId && !isSelected && "bg-blue-50")}>
-                                <TableCell>
-                                  <RadioGroupItem value={offer.id} id={`${product.requisitionProductId}-${offer.id}`} disabled={!canSelectOffer}/>
-                                </TableCell>
-                                <TableCell className="font-medium">{offer.supplierName}</TableCell>
-                                <TableCell className="text-right">{offeredQty}</TableCell>
-                                <TableCell className="text-right">${Number(offer.unitPriceQuoted).toFixed(2)}</TableCell>
-                                <TableCell className="text-right font-semibold">${(offeredQty * Number(offer.unitPriceQuoted)).toFixed(2)}</TableCell>
-                                <TableCell>{formatTimestampDate(offer.estimatedDeliveryDate)}</TableCell>
-                                <TableCell className="text-xs max-w-[150px] truncate" title={offer.conditions || undefined}>{offer.conditions || "N/A"}</TableCell>
-                                <TableCell className="text-center">
-                                  <Button variant="ghost" size="icon" asChild title={`View Quotation ${offer.quotationId.substring(0,6)}...`}>
-                                    <Link href={`/quotations/${offer.quotationId}`} target="_blank" rel="noopener noreferrer">
-                                      <Icons.View className="h-4 w-4" />
-                                    </Link>
-                                  </Button>
-                                </TableCell>
-                              </TableRow>
-                            );
-                          })}
-                        </TableBody>
-                      </Table>
+          {productsForComparison.map((product) => {
+            const netRemainingToAward = product.remainingToAward;
+            return (
+              <Card key={product.requisitionProductId} className="shadow-md">
+                <CardHeader>
+                  <div className="flex justify-between items-start">
+                    <div>
+                      <CardTitle className="font-headline text-xl">{product.productName}</CardTitle>
+                      <CardDescription>
+                        Required: {product.requiredQuantity} | Ordered: {product.alreadyPurchased} | Pending PO: {product.pendingPOQuantity || 0} |
+                        <span className={cn("font-semibold", netRemainingToAward <= 0 ? "text-green-600" : "text-orange-600")}>
+                          {""} Net Remaining: {netRemainingToAward}
+                        </span>
+                      </CardDescription>
                     </div>
-                  </RadioGroup>
-                ) : (
-                  <p className="text-sm text-muted-foreground">No supplier offers received for this product yet.</p>
-                )}
-              </CardContent>
-               {product.offers.length > 0 && (
-                 <CardFooter className="pt-2 border-t">
-                    <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => handleOfferSelection(product.requisitionProductId, null)}
-                        disabled={!selectedOffers[product.requisitionProductId]}
+                    {netRemainingToAward <= 0 && (<Badge variant="default" className="bg-green-500 text-white">Requirement Met/Exceeded</Badge>)}
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  {product.offers.length > 0 ? (
+                    <RadioGroup
+                      value={selectedOffers[product.requisitionProductId]?.quotationDetailId || ""}
+                      onValueChange={(value) => {
+                        handleOfferSelection(product.requisitionProductId, value);
+                      }}
                     >
-                        <Icons.Delete className="mr-2 h-3 w-3" /> Clear Selection for {product.productName}
-                    </Button>
-                 </CardFooter>
-                )}
-            </Card>
-          ))}
+                      <div className="relative w-full overflow-auto">
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead className="w-10"></TableHead>
+                              <TableHead>Supplier</TableHead>
+                              <TableHead className="text-right">Offered Qty</TableHead>
+                              <TableHead className="text-right">Unit Price</TableHead>
+                              <TableHead className="text-right">Line Total (for Offered Qty)</TableHead>
+                              <TableHead>Delivery ETA</TableHead>
+                              <TableHead className="max-w-[100px]">Conditions</TableHead>
+                              <TableHead className="text-center">Quote</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {product.offers.map((offer) => {
+                              const isSelected = selectedOffers[product.requisitionProductId]?.quotationDetailId === offer.id;
+                              const offeredQty = offer.quotedQuantity;
+                              const canSelectOffer = offeredQty > 0;
+                              return (
+                                <TableRow key={offer.id} className={cn(isSelected && "bg-primary/10", currentQuoteIdFromParams === offer.quotationId && !isSelected && "bg-blue-50")}>
+                                  <TableCell>
+                                    <RadioGroupItem value={offer.id} id={`${product.requisitionProductId}-${offer.id}`} disabled={!canSelectOffer}/>
+                                  </TableCell>
+                                  <TableCell className="font-medium">{offer.supplierName}</TableCell>
+                                  <TableCell className="text-right">{offeredQty}</TableCell>
+                                  <TableCell className="text-right">${Number(offer.unitPriceQuoted).toFixed(2)}</TableCell>
+                                  <TableCell className="text-right font-semibold">${(offeredQty * Number(offer.unitPriceQuoted)).toFixed(2)}</TableCell>
+                                  <TableCell>{formatTimestampDate(offer.estimatedDeliveryDate)}</TableCell>
+                                  <TableCell className="text-xs max-w-[150px] truncate" title={offer.conditions || undefined}>{offer.conditions || "N/A"}</TableCell>
+                                  <TableCell className="text-center">
+                                    <Button variant="ghost" size="icon" asChild title={`View Quotation ${offer.quotationId.substring(0,6)}...`}>
+                                      <Link href={`/quotations/${offer.quotationId}`} target="_blank" rel="noopener noreferrer">
+                                        <Icons.View className="h-4 w-4" />
+                                      </Link>
+                                    </Button>
+                                  </TableCell>
+                                </TableRow>
+                              );
+                            })}
+                          </TableBody>
+                        </Table>
+                      </div>
+                    </RadioGroup>
+                  ) : (
+                    <p className="text-sm text-muted-foreground">No supplier offers received for this product yet.</p>
+                  )}
+                </CardContent>
+                 {product.offers.length > 0 && (
+                   <CardFooter className="pt-2 border-t">
+                      <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => handleOfferSelection(product.requisitionProductId, null)}
+                          disabled={!selectedOffers[product.requisitionProductId]}
+                      >
+                          <Icons.Delete className="mr-2 h-3 w-3" /> Clear Selection for {product.productName}
+                      </Button>
+                   </CardFooter>
+                  )}
+              </Card>
+            );
+          })}
 
           {awardSummaryDetails.awardedItems.length > 0 && (
             <Card className="mt-6 shadow-lg">
               <CardHeader>
                 <CardTitle className="font-headline">Award Summary & PO Creation</CardTitle>
-                <CardDescription>Review selections. Clicking "Finalize" will create Purchase Order(s) with 'Pending' status. Requisition 'Purchased Qty' will update when POs are marked 'Sent'. The actual quantity ordered will be the supplier's quoted quantity for the selected offer.</CardDescription>
+                <CardDescription>Review selections. Clicking "Finalize" will create Purchase Order(s) with 'Pending' status. The actual quantity ordered will be the supplier's quoted quantity for the selected offer.</CardDescription>
               </CardHeader>
               <CardContent>
                 <div className="relative w-full overflow-auto">
@@ -669,7 +685,11 @@ export default function CompareQuotationsPage() {
                 </div>
               </CardContent>
               <CardFooter className="flex justify-end">
-                <Button size="lg" onClick={handleFinalizeAwards} disabled={awardSummaryDetails.awardedItems.length === 0 && productsForComparison.some(p => p.remainingToAward > 0) || isSubmittingAwards || isLoading}>
+                <Button 
+                  size="lg" 
+                  onClick={handleFinalizeAwards} 
+                  disabled={isSubmittingAwards || isLoading || (awardSummaryDetails.awardedItems.length === 0 && productsForComparison.some(p => p.remainingToAward > 0))}
+                >
                   {isSubmittingAwards ? <Icons.Logo className="mr-2 h-5 w-5 animate-spin" /> : <Icons.ShoppingCart className="mr-2 h-5 w-5" />}
                   {isSubmittingAwards ? "Processing..." : "Create Pending PO(s)"}
                 </Button>
@@ -678,8 +698,32 @@ export default function CompareQuotationsPage() {
           )}
         </div>
       )}
+
+      <AlertDialog open={isOverOrderConfirmOpen} onOpenChange={setIsOverOrderConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Confirm Over-Ordering</AlertDialogTitle>
+            <AlertDialogDescription>
+              You are about to create Purchase Orders that may result in ordering more than originally requisitioned (considering existing pending POs and already purchased quantities) for the following items:
+              <ul className="list-disc pl-5 mt-2 space-y-1 text-sm">
+                {overOrderDetails.map(detail => (
+                  <li key={detail.productName}>
+                    <strong>{detail.productName}</strong>: Original Req: {detail.originalReq}, Potential Total Committed: {detail.potentialTotal} (Over by {detail.overBy})
+                  </li>
+                ))}
+              </ul>
+              This action will proceed to create Purchase Order(s) with the selected quantities. Are you sure you want to continue?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => { setIsOverOrderConfirmOpen(false); setOverOrderDetails([]); }}>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={proceedWithFinalizingAwards}>
+              Confirm & Create PO(s)
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   );
 }
     
-
