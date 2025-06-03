@@ -60,6 +60,7 @@ interface QuotationOffer extends QuotationDetail {
   overallQuotationStatus: QuotationStatus;
   quotationTotal: number;
   quotationAdditionalCosts?: QuotationAdditionalCost[];
+  // estimatedDeliveryDate is already part of QuotationDetail from types/index.ts
 }
 
 interface ProductToCompare extends RequisitionRequiredProduct {
@@ -71,13 +72,14 @@ interface ProductToCompare extends RequisitionRequiredProduct {
 
 export interface SelectedOfferInfo {
   quotationId: string;
-  quotationDetailId: string; 
+  quotationDetailId: string;
   supplierName: string;
   supplierId: string;
   productId: string;
   productName: string;
   awardedQuantity: number;
   unitPrice: number;
+  estimatedDeliveryDate: Timestamp; // Added to store the ETA
 }
 
 const formatTimestampDate = (timestamp?: Timestamp | null): string => {
@@ -142,7 +144,7 @@ export default function CompareQuotationsPage() {
         .filter((quoteHeader) =>
           ["Received", "Partially Awarded", "Awarded"].includes(quoteHeader.status)
         )
-        .map((quoteHeader) => getQuotationById(quoteHeader.id)); 
+        .map((quoteHeader) => getQuotationById(quoteHeader.id));
 
       const validDetailedQuotes = (await Promise.all(detailedRelevantQuotesPromises)).filter(q => q !== null) as Quotation[];
       setRelevantQuotesWithDetails(validDetailedQuotes);
@@ -158,7 +160,7 @@ export default function CompareQuotationsPage() {
         });
       });
 
-      validDetailedQuotes.forEach((quote) => { 
+      validDetailedQuotes.forEach((quote) => {
         quote.quotationDetails?.forEach((detail) => {
           const productEntry = productsToCompareMap.get(detail.productId);
           if (productEntry) {
@@ -203,18 +205,15 @@ export default function CompareQuotationsPage() {
       const offer = productBeingAwarded.offers.find(o => o.id === clickedOfferDetailId);
 
       if (offer) {
-        if (offer.quotedQuantity <= 0) { // Cannot select an offer with zero quantity
+        if (offer.quotedQuantity <= 0) {
           toast({
             title: "Cannot Select Offer",
             description: "This offer has zero quoted quantity from the supplier.",
             variant: "default",
           });
-          return prevSelectedOffers; // Don't change selection if invalid offer clicked
+          return prevSelectedOffers;
         }
         
-        // User explicitly selects this offer, intending to order the supplier's quoted quantity.
-        // The PO will be for offer.quotedQuantity.
-        // Backend will handle how this affects requisition's "purchased" or "required" values.
         updated[requisitionProductId] = {
           quotationId: offer.quotationId,
           quotationDetailId: offer.id,
@@ -222,17 +221,17 @@ export default function CompareQuotationsPage() {
           supplierId: offer.supplierId,
           productId: offer.productId,
           productName: offer.productName,
-          awardedQuantity: offer.quotedQuantity, // Key change: use supplier's quoted quantity
+          awardedQuantity: offer.quotedQuantity, 
           unitPrice: offer.unitPriceQuoted,
+          estimatedDeliveryDate: offer.estimatedDeliveryDate || Timestamp.fromDate(new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)), // Store ETA
         };
       } else {
-        // This case should ideally not be reached if clickedOfferDetailId is always valid
-        updated[requisitionProductId] = null; 
+        updated[requisitionProductId] = null;
       }
       return updated;
     });
   };
-  
+
   const awardSummaryDetails = useMemo(() => {
     let productsSubtotal = 0;
     const awardedItems: SelectedOfferInfo[] = [];
@@ -283,21 +282,19 @@ export default function CompareQuotationsPage() {
     }
 
     const today = new Date();
-    today.setHours(0, 0, 0, 0); 
-    
+    today.setHours(0, 0, 0, 0);
+
     let allProductsAttemptedForFulfillment = true;
     const newSelectedOffers: Record<string, SelectedOfferInfo | null> = {};
 
     for (const product of productsForComparison) {
         if (product.remainingToAward <= 0 && !Object.values(selectedOffers).some(so => so?.productId === product.productId && so.awardedQuantity > 0)) {
-            // If requirement is already met AND no offer is currently selected for it, skip.
-            // If an offer IS selected, we might be trying to optimize that selection.
             newSelectedOffers[product.requisitionProductId] = selectedOffers[product.requisitionProductId] || null;
             continue;
         }
 
         const validOffersForProduct = product.offers.filter(offer => {
-            if (offer.quotedQuantity <= 0) return false; // Supplier must offer some quantity
+            if (offer.quotedQuantity <= 0) return false;
             if (deliveryDaysConstraint !== null) {
                 if (!offer.estimatedDeliveryDate) return false;
                 const deliveryDate = offer.estimatedDeliveryDate.toDate();
@@ -311,8 +308,8 @@ export default function CompareQuotationsPage() {
 
         if (validOffersForProduct.length === 0) {
             allProductsAttemptedForFulfillment = false;
-            newSelectedOffers[product.requisitionProductId] = null; 
-            if (product.remainingToAward > 0) { // Only toast if still needed
+            newSelectedOffers[product.requisitionProductId] = null;
+            if (product.remainingToAward > 0) {
                  toast({
                     title: "Calculation Issue",
                     description: `No valid offers found for ${product.productName} within the ETA constraint or with sufficient quantity.`,
@@ -322,34 +319,23 @@ export default function CompareQuotationsPage() {
             continue;
         }
 
-        // Prioritize offers that meet or exceed remainingToAward, then by price, then by ETA.
-        // If no offer fully meets remainingToAward, pick the best partial one.
-        
         let bestOfferForProduct: QuotationOffer | null = null;
-        
         const sortedValidOffers = [...validOffersForProduct].sort((a,b) => {
-            // Rule 1: Prefer offers that meet/exceed remainingToAward
             const a_meets_req = a.quotedQuantity >= product.remainingToAward;
             const b_meets_req = b.quotedQuantity >= product.remainingToAward;
             if (a_meets_req && !b_meets_req) return -1;
             if (!a_meets_req && b_meets_req) return 1;
-
-            // Rule 2: Price
             if (a.unitPriceQuoted !== b.unitPriceQuoted) return a.unitPriceQuoted - b.unitPriceQuoted;
-            
-            // Rule 3: ETA
             const etaA = a.estimatedDeliveryDate?.toMillis() || Infinity;
             const etaB = b.estimatedDeliveryDate?.toMillis() || Infinity;
             return etaA - etaB;
         });
-
         bestOfferForProduct = sortedValidOffers[0] || null;
-        
+
         if (bestOfferForProduct) {
-            const quantityToOrderFromOffer = bestOfferForProduct.quotedQuantity; // Order what the supplier offers
-            
+            const quantityToOrderFromOffer = bestOfferForProduct.quotedQuantity;
             if (product.remainingToAward > 0 && quantityToOrderFromOffer < product.remainingToAward) {
-                allProductsAttemptedForFulfillment = false; 
+                allProductsAttemptedForFulfillment = false;
                 toast({
                     title: "Optimal Combination: Partial Fulfillment",
                     description: `Best offer for ${product.productName} from ${bestOfferForProduct.supplierName} is for ${quantityToOrderFromOffer} units, but ${product.remainingToAward} are still needed for the requisition.`,
@@ -357,9 +343,6 @@ export default function CompareQuotationsPage() {
                     duration: 7000
                 });
             }
-            // Note: If quantityToOrderFromOffer > product.remainingToAward, we are over-ordering for this item.
-            // This is acceptable if it's for a price break and the user/calculator decides this.
-
             newSelectedOffers[product.requisitionProductId] = {
                 quotationId: bestOfferForProduct.quotationId,
                 quotationDetailId: bestOfferForProduct.id,
@@ -367,10 +350,11 @@ export default function CompareQuotationsPage() {
                 supplierId: bestOfferForProduct.supplierId,
                 productId: bestOfferForProduct.productId,
                 productName: bestOfferForProduct.productName,
-                awardedQuantity: quantityToOrderFromOffer, // Use the offer's full quoted quantity
+                awardedQuantity: quantityToOrderFromOffer,
                 unitPrice: bestOfferForProduct.unitPriceQuoted,
+                estimatedDeliveryDate: bestOfferForProduct.estimatedDeliveryDate || Timestamp.fromDate(new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)), // Store ETA
             };
-        } else { 
+        } else {
              if (product.remainingToAward > 0) allProductsAttemptedForFulfillment = false;
             newSelectedOffers[product.requisitionProductId] = null;
         }
@@ -389,7 +373,7 @@ export default function CompareQuotationsPage() {
         for (const product of productsForComparison) {
             const selectedAward = newSelectedOffers[product.requisitionProductId];
             const totalAwardedForProduct = selectedAward ? selectedAward.awardedQuantity : 0;
-            if (totalAwardedForProduct < product.requiredQuantity) { // Check against original total requirement
+            if (totalAwardedForProduct < product.requiredQuantity) {
                 allOriginalRequirementsMetOrExceeded = false;
                 break;
             }
@@ -447,7 +431,6 @@ export default function CompareQuotationsPage() {
         confirmationDescription += " Additionally, some items will be ordered in quantities greater than the remaining requisition requirement.";
     }
 
-
     if (unmetProducts.length === 0 && !willOverOrder && awardsToProcess.length > 0) {
          toast({
             title: "Award Confirmation",
@@ -460,10 +443,9 @@ export default function CompareQuotationsPage() {
             title: "Award Confirmation Notice",
             description: confirmationDescription,
             variant: "default",
-            duration: 10000, 
+            duration: 10000,
         });
     }
-
 
     setIsSubmittingAwards(true);
     try {
@@ -476,9 +458,9 @@ export default function CompareQuotationsPage() {
           duration: 7000,
         });
         if (result.createdPurchaseOrderIds && result.createdPurchaseOrderIds.length > 0) {
-            router.push('/purchase-orders'); 
+            router.push('/purchase-orders');
         } else {
-            fetchComparisonData(); 
+            fetchComparisonData();
         }
       } else {
         toast({ title: "Finalization Failed", description: result.message || "Could not process awards or create POs.", variant: "destructive" });
@@ -584,8 +566,8 @@ export default function CompareQuotationsPage() {
                         <TableBody>
                           {product.offers.map((offer) => {
                             const isSelected = selectedOffers[product.requisitionProductId]?.quotationDetailId === offer.id;
-                            const offeredQty = offer.quotedQuantity; // "Award Qty" column now shows supplier's offered qty
-                            const canSelectOffer = offeredQty > 0; 
+                            const offeredQty = offer.quotedQuantity;
+                            const canSelectOffer = offeredQty > 0;
                             return (
                               <TableRow key={offer.id} className={cn(isSelected && "bg-primary/10", currentQuoteIdFromParams === offer.quotationId && !isSelected && "bg-blue-50")}>
                                 <TableCell>
@@ -617,9 +599,9 @@ export default function CompareQuotationsPage() {
               </CardContent>
                {product.offers.length > 0 && (
                  <CardFooter className="pt-2 border-t">
-                    <Button 
-                        variant="outline" 
-                        size="sm" 
+                    <Button
+                        variant="outline"
+                        size="sm"
                         onClick={() => handleOfferSelection(product.requisitionProductId, null)}
                         disabled={!selectedOffers[product.requisitionProductId]}
                     >
