@@ -1,3 +1,4 @@
+
 // src/components/icons.ts
 import type { SVGProps } from 'react';
 import {
@@ -42,7 +43,8 @@ import {
   UsersRound,
   LayoutList,
   Calendar as LucideCalendar,
-  Check, // Added Check icon import
+  Check,
+  X // Ensure X is imported
 } from 'lucide-react';
 
 export const StockPilotLogo = (props: SVGProps<SVGSVGElement>) => (
@@ -111,6 +113,6 @@ export const Icons = {
   LayoutList: LayoutList,
   ClipboardList: ClipboardList,
   Calendar: LucideCalendar,
-  Check: Check, // Added Check icon mapping
-  X: X, // Assuming X is also from lucide-react and might be used elsewhere
+  Check: Check,
+  X: X, // Ensure X is mapped
 };
