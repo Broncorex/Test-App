@@ -1,4 +1,3 @@
-
 "use client";
 
 import { useParams, useRouter } from "next/navigation";
@@ -23,8 +22,8 @@ import {
   FormControl,
   FormField,
   FormItem,
-  FormMessage as ShadFormMessage, // Alias for clarity
-  FormLabel as ShadFormLabelFromHookForm // Alias for clarity
+  FormMessage as ShadFormMessage,
+  FormLabel as ShadFormLabelFromHookForm
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -47,7 +46,7 @@ import Link from "next/link";
 
 const quotedProductSchema = z.object({
   productId: z.string().min(1, "Product ID is required"),
-  productName: z.string(), 
+  productName: z.string(),
   originalRequiredQuantity: z.number(),
   quotedQuantity: z.coerce.number().min(1, "Quoted quantity must be at least 1."),
 });
@@ -63,16 +62,16 @@ type SupplierQuoteDetailFormData = z.infer<typeof supplierQuoteDetailSchema>;
 const quotationRequestFormSchema = z.object({
   suppliersToQuote: z.array(supplierQuoteDetailSchema)
     .min(1, "At least one supplier must be selected for quotation.")
-    .superRefine((suppliers, ctx) => { 
-        suppliers.forEach((supplierItem, index) => {
-            if (!supplierItem.productsToQuote || supplierItem.productsToQuote.length === 0) {
-                 ctx.addIssue({
-                    code: z.ZodIssueCode.custom,
-                    message: `Supplier ${supplierItem.supplierName} must have at least one product selected to be included in the quote request.`,
-                    path: [index, "productsToQuote"], 
-                });
-            }
-        });
+    .superRefine((suppliers, ctx) => {
+      suppliers.forEach((supplierItem, index) => {
+        if (!supplierItem.productsToQuote || supplierItem.productsToQuote.length === 0) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `Supplier "${supplierItem.supplierName}" must have at least one product selected to be included in the quote request.`,
+            path: [index, "productsToQuote"],
+          });
+        }
+      });
     }),
   responseDeadline: z.date({ required_error: "Response deadline is required." }),
   notes: z.string().optional(),
@@ -88,7 +87,8 @@ interface AnalyzedPriceRange {
   alternativeNextRange: PriceRange | null;
 }
 
-const analyzePriceRanges = (originalRequiredQuantity: number, priceRanges?: PriceRange[]): AnalyzedPriceRange => {
+// Memoized version of analyzePriceRanges
+const memoizedAnalyzePriceRanges = useCallback((originalRequiredQuantity: number, priceRanges?: PriceRange[]): AnalyzedPriceRange => {
   const result: AnalyzedPriceRange = {
     currentRange: null,
     currentPricePerUnit: null,
@@ -114,6 +114,7 @@ const analyzePriceRanges = (originalRequiredQuantity: number, priceRanges?: Pric
   }
 
   if (!result.currentRange && sortedRanges.length > 0) {
+    // If original quantity doesn't fit any range, suggest the first available range
     result.alternativeNextRange = sortedRanges[0];
   }
 
@@ -122,12 +123,12 @@ const analyzePriceRanges = (originalRequiredQuantity: number, priceRanges?: Pric
       if (range.minQuantity > originalRequiredQuantity && range.price !== null && range.price < result.currentPricePerUnit) {
         result.nextBetterRange = range;
         result.quantityToReachNextBetter = range.minQuantity - originalRequiredQuantity;
-        break; 
+        break;
       }
     }
   }
   return result;
-};
+}, []); // No dependencies, as it's a pure function
 
 const getApplicablePriceRange = (quantity: number, priceRanges?: PriceRange[]): PriceRange | null => {
   if (!priceRanges || priceRanges.length === 0 || isNaN(quantity) || quantity <= 0) {
@@ -142,7 +143,7 @@ const getApplicablePriceRange = (quantity: number, priceRanges?: PriceRange[]): 
       return range;
     }
   }
-  return null; 
+  return null;
 };
 
 
@@ -202,10 +203,10 @@ export default function RequisitionDetailPage() {
         setRequisition(fetchedRequisition);
         setSelectedStatus(fetchedRequisition.status);
         setEditableNotes(fetchedRequisition.notes || "");
-        quoteRequestForm.reset({ 
-            suppliersToQuote: [],
-            responseDeadline: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-            notes: fetchedRequisition.notes || "",
+        quoteRequestForm.reset({
+          suppliersToQuote: [],
+          responseDeadline: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+          notes: fetchedRequisition.notes || "",
         });
 
       } else {
@@ -223,47 +224,60 @@ export default function RequisitionDetailPage() {
     fetchRequisitionData();
   }, [fetchRequisitionData]);
 
+  // Optimized supplier product links loading with batching and progressive updates
   const prepareSupplierProductLinks = useCallback(async () => {
     if (!requisition?.requiredProducts || requisition.requiredProducts.length === 0 || availableSuppliers.length === 0) {
       setAllSupplierProductLinks({});
       setIsLoadingAllSupplierLinks(false);
       return;
     }
+
     setIsLoadingAllSupplierLinks(true);
     const links: Record<string, Record<string, ProveedorProducto | null>> = {};
-    const productFetchPromises: Promise<void>[] = [];
 
-    for (const supplier of availableSuppliers) {
-      links[supplier.id] = {};
-      for (const reqProduct of requisition.requiredProducts) {
-        const promise = getSupplierProduct(supplier.id, reqProduct.productId)
-          .then(link => {
-            links[supplier.id][reqProduct.productId] = link;
+    try {
+      const batchSize = 3; // Number of suppliers to process in parallel
+      for (let i = 0; i < availableSuppliers.length; i += batchSize) {
+        const supplierBatch = availableSuppliers.slice(i, i + batchSize);
+
+        await Promise.all(
+          supplierBatch.map(async (supplier) => {
+            links[supplier.id] = {};
+            const productPromises = requisition.requiredProducts!.map(async (reqProduct) => {
+              try {
+                const link = await getSupplierProduct(supplier.id, reqProduct.productId);
+                links[supplier.id][reqProduct.productId] = link;
+              } catch (error) {
+                console.error(`Error fetching link for supplier ${supplier.id}, product ${reqProduct.productId}:`, error);
+                links[supplier.id][reqProduct.productId] = null;
+              }
+            });
+            await Promise.all(productPromises);
           })
-          .catch(error => {
-            console.error(`Error fetching link for supplier ${supplier.id}, product ${reqProduct.productId}:`, error);
-            links[supplier.id][reqProduct.productId] = null;
-          });
-        productFetchPromises.push(promise);
+        );
+        // Update state after each batch to show progressive loading
+        setAllSupplierProductLinks({ ...links });
       }
+    } catch (error) {
+      console.error('Error in prepareSupplierProductLinks:', error);
+      toast({ title: "Error", description: "Failed to load some supplier product links.", variant: "destructive" });
+    } finally {
+      setIsLoadingAllSupplierLinks(false);
     }
-    await Promise.all(productFetchPromises);
-    setAllSupplierProductLinks(links);
-    setIsLoadingAllSupplierLinks(false);
-  }, [requisition?.requiredProducts, availableSuppliers]);
+  }, [requisition?.requiredProducts, availableSuppliers, toast]);
 
   const handleOpenQuoteRequestDialog = async () => {
     setIsLoadingSuppliers(true);
     setExpandedSupplierProducts({});
-    quoteRequestForm.reset({ 
-        suppliersToQuote: [],
-        responseDeadline: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-        notes: requisition?.notes || "",
+    quoteRequestForm.reset({
+      suppliersToQuote: [],
+      responseDeadline: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      notes: requisition?.notes || "",
     });
-    setAllSupplierProductLinks({}); 
+    setAllSupplierProductLinks({}); // Clear previous links
 
     try {
-      const suppliers = await getAllSuppliers(true); 
+      const suppliers = await getAllSuppliers(true);
       setAvailableSuppliers(suppliers);
     } catch (error) {
       toast({ title: "Error", description: "Could not load suppliers for quotation request.", variant: "destructive" });
@@ -298,34 +312,49 @@ export default function RequisitionDetailPage() {
     }
   };
 
+  // Fix for Product Selection Conflict: Ensure immutability and correct field update
   const toggleProductForSupplierInForm = (
-    supplierFormIndex: number, 
-    reqProduct: RequisitionRequiredProduct,
+    supplierFormIndex: number,
+    reqProduct: RequiredProduct, // Corrected type to RequiredProduct
     isChecked: boolean
   ) => {
     const currentSupplierData = quoteRequestForm.getValues(`suppliersToQuote.${supplierFormIndex}`);
     if (!currentSupplierData) return;
 
-    let currentProductsToQuote = currentSupplierData.productsToQuote || []; 
+    const currentProductsToQuote = currentSupplierData.productsToQuote || [];
     const productQuoteIndex = currentProductsToQuote.findIndex(p => p.productId === reqProduct.productId);
 
+    let newProductsToQuote;
+
     if (isChecked) {
-      if (productQuoteIndex === -1) { 
-        currentProductsToQuote = [
+      if (productQuoteIndex === -1) {
+        newProductsToQuote = [
           ...currentProductsToQuote,
           {
             productId: reqProduct.productId,
             productName: reqProduct.productName,
             originalRequiredQuantity: reqProduct.requiredQuantity,
-            quotedQuantity: reqProduct.requiredQuantity, 
+            quotedQuantity: reqProduct.requiredQuantity,
           }
         ];
+      } else {
+        newProductsToQuote = currentProductsToQuote; // No change if already exists and is checked
       }
-    } else { 
-      currentProductsToQuote = currentProductsToQuote.filter(p => p.productId !== reqProduct.productId);
+    } else {
+      if (productQuoteIndex !== -1) {
+        newProductsToQuote = currentProductsToQuote.filter(p => p.productId !== reqProduct.productId);
+      } else {
+        newProductsToQuote = currentProductsToQuote; // No change if already removed and is unchecked
+      }
     }
-    
-    quoteRequestForm.setValue(`suppliersToQuote.${supplierFormIndex}.productsToQuote`, currentProductsToQuote.length > 0 ? currentProductsToQuote : undefined, { shouldValidate: true });
+
+    quoteRequestForm.setValue(
+      `suppliersToQuote.${supplierFormIndex}.productsToQuote`,
+      newProductsToQuote.length > 0 ? newProductsToQuote : undefined, // Set to undefined if empty to pass Zod's .min(1) check at array level
+      { shouldValidate: true, shouldDirty: true }
+    );
+
+    // Trigger validation for the specific field, and also the parent array to catch overall supplier product requirements
     quoteRequestForm.trigger(`suppliersToQuote.${supplierFormIndex}.productsToQuote`);
     quoteRequestForm.trigger(`suppliersToQuote`);
   };
@@ -349,9 +378,9 @@ export default function RequisitionDetailPage() {
           responseDeadline: Timestamp.fromDate(data.responseDeadline),
           notes: data.notes || "",
           productDetailsToRequest: supplierQuote.productsToQuote.map(qp => ({
-              productId: qp.productId,
-              productName: qp.productName,
-              requiredQuantity: qp.quotedQuantity, 
+            productId: qp.productId,
+            productName: qp.productName,
+            requiredQuantity: qp.quotedQuantity,
           }))
         };
         await createQuotation(quotationData, currentUser.uid);
@@ -370,13 +399,17 @@ export default function RequisitionDetailPage() {
     if (successCount > 0 && errorCount === 0) {
       toast({ title: "Quotation Requests Sent", description: `${successCount} quotation request(s) initiated.` });
       setIsQuoteRequestDialogOpen(false);
-      fetchRequisitionData(); 
+      fetchRequisitionData();
     } else if (successCount > 0 && errorCount > 0) {
       toast({ title: "Partial Success", description: `${successCount} request(s) initiated, ${errorCount} failed.`, variant: "default" });
     } else if (errorCount > 0 && successCount === 0) {
-      // Error already toasted
+      // Error already toasted for individual failures
+      toast({ title: "All Requests Failed", description: "No quotation requests could be sent.", variant: "destructive" });
     } else if (successCount === 0 && errorCount === 0 && data.suppliersToQuote.length > 0) {
-        toast({ title: "No Requests Sent", description: "Ensure products are selected for each chosen supplier.", variant: "default" });
+      // This case should ideally be caught by Zod schema, but as a fallback
+      toast({ title: "No Requests Sent", description: "Ensure products are selected for each chosen supplier.", variant: "default" });
+    } else {
+      toast({ title: "No Suppliers Selected", description: "Please select at least one supplier and product to send a quote request.", variant: "default" });
     }
     setIsSubmittingQuoteRequest(false);
   };
@@ -384,11 +417,11 @@ export default function RequisitionDetailPage() {
 
   const handleStatusUpdate = async () => {
     if (!requisition || !selectedStatus || selectedStatus === requisition.status) {
-      toast({title: "No Change", description: "Status is already set or no status selected.", variant: "default"});
+      toast({ title: "No Change", description: "Status is already set or no status selected.", variant: "default" });
       return;
     }
     if (role === 'employee' && requisition.requestingUserId === currentUser?.uid && requisition.status === "Pending Quotation" && selectedStatus === "Canceled") {
-        // Proceed
+      // Proceed for employee to cancel their own pending requisition
     } else if (role !== 'admin' && role !== 'superadmin') {
       toast({ title: "Permission Denied", description: "You cannot update status for this requisition.", variant: "destructive" });
       return;
@@ -407,17 +440,17 @@ export default function RequisitionDetailPage() {
   };
 
   const handleSaveNotes = async () => {
-    if (!requisition || !currentUser ) return;
+    if (!requisition || !currentUser) return;
     if (role !== 'admin' && role !== 'superadmin' && requisition.requestingUserId !== currentUser.uid) {
-        toast({ title: "Permission Denied", description: "You cannot edit notes for this requisition.", variant: "destructive" });
-        return;
+      toast({ title: "Permission Denied", description: "You cannot edit notes for this requisition.", variant: "destructive" });
+      return;
     }
     if (requisition.status !== "Pending Quotation" && role === 'employee') {
-         toast({ title: "Action Denied", description: "Notes can only be edited by employees when requisition is 'Pending Quotation'.", variant: "default" });
-        return;
+      toast({ title: "Action Denied", description: "Notes can only be edited by employees when requisition is 'Pending Quotation'.", variant: "default" });
+      return;
     }
 
-    setIsUpdatingStatus(true); 
+    setIsUpdatingStatus(true); // Re-using status update loading state for notes
     try {
       await updateRequisition(requisitionId, { notes: editableNotes });
       setRequisition(prev => prev ? { ...prev, notes: editableNotes, updatedAt: Timestamp.now() } : null);
@@ -450,12 +483,43 @@ export default function RequisitionDetailPage() {
       default: return "secondary";
     }
   };
-   const getStatusBadgeClass = (status: RequisitionStatus) => {
+  const getStatusBadgeClass = (status: RequisitionStatus) => {
     switch (status) {
       case "Completed": return "bg-green-500 hover:bg-green-600 text-white";
       default: return "";
     }
   };
+
+  // Memoize expensive calculations for product analysis in the render
+  const supplierAnalysisData = useMemo(() => {
+    if (!requisition?.requiredProducts || requisition.requiredProducts.length === 0 || !availableSuppliers.length || !allSupplierProductLinks) {
+      return {};
+    }
+
+    const analysisData: Record<string, Record<string, {
+      priceAnalysis: AnalyzedPriceRange;
+      canQuoteProduct: boolean;
+      link: ProveedorProducto | null;
+    }>> = {};
+
+    availableSuppliers.forEach(supplier => {
+      analysisData[supplier.id] = {};
+      const supplierLinks = allSupplierProductLinks[supplier.id] || {};
+
+      requisition.requiredProducts!.forEach(reqProduct => {
+        const link = supplierLinks[reqProduct.productId];
+        const canQuoteProduct = !!(link && link.isActive && link.isAvailable);
+        const priceAnalysis = memoizedAnalyzePriceRanges(reqProduct.requiredQuantity, link?.priceRanges);
+
+        analysisData[supplier.id][reqProduct.productId] = {
+          priceAnalysis,
+          canQuoteProduct,
+          link
+        };
+      });
+    });
+    return analysisData;
+  }, [requisition?.requiredProducts, availableSuppliers, allSupplierProductLinks, memoizedAnalyzePriceRanges]);
 
 
   if (isLoading && !requisition) {
@@ -486,21 +550,21 @@ export default function RequisitionDetailPage() {
   return (
     <>
       <PageHeader
-        title={`Requisition: ${requisition.id.substring(0,8)}...`}
+        title={`Requisition: ${requisition.id.substring(0, 8)}...`}
         description={`Details for requisition created on ${new Date(requisition.creationDate.seconds * 1000).toLocaleDateString()}`}
         actions={
           <div className="flex gap-2 flex-wrap">
             {canRequestQuotes && (
               <Button onClick={handleOpenQuoteRequestDialog} disabled={isLoadingSuppliers || isLoadingAllSupplierLinks}>
-                 { (isLoadingSuppliers || isLoadingAllSupplierLinks) ? <Icons.Logo className="mr-2 h-4 w-4 animate-spin" /> : <Icons.Send className="mr-2 h-4 w-4" />}
-                 Request Quotations
+                {(isLoadingSuppliers || isLoadingAllSupplierLinks) ? <Icons.Logo className="mr-2 h-4 w-4 animate-spin" /> : <Icons.Send className="mr-2 h-4 w-4" />}
+                Request Quotations
               </Button>
             )}
             {canCompareQuotes && (
               <Button asChild variant="outline">
                 <Link href={`/requisitions/${requisition.id}/compare-quotations`}>
-                    <Icons.LayoutList className="mr-2 h-4 w-4" />
-                    Compare Linked Quotations
+                  <Icons.LayoutList className="mr-2 h-4 w-4" />
+                  Compare Linked Quotations
                 </Link>
               </Button>
             )}
@@ -553,42 +617,42 @@ export default function RequisitionDetailPage() {
             </div>
             <div className="flex justify-between"><span className="text-muted-foreground">Last Updated:</span><span className="font-medium">{formatTimestampDateTime(requisition.updatedAt)}</span></div>
           </CardContent>
-           {canManageStatus && (
+          {canManageStatus && (
             <CardFooter className="border-t pt-4">
-                <div className="w-full space-y-2">
-                    <Label htmlFor="status-update" className="font-semibold">Update Status:</Label>
-                    <div className="flex gap-2">
-                    <Select value={selectedStatus} onValueChange={(value) => setSelectedStatus(value as RequisitionStatus)}>
-                        <SelectTrigger id="status-update" className="flex-1">
-                        <SelectValue placeholder="Select new status" />
-                        </SelectTrigger>
-                        <SelectContent>
-                        {REQUISITION_STATUSES.map(s => (
-                            <SelectItem 
-                                key={s} 
-                                value={s}
-                                disabled={
-                                    role === 'employee' && 
-                                    requisition.status === "Pending Quotation" && 
-                                    s !== "Canceled" && 
-                                    s !== "Pending Quotation" 
-                                }
-                            >
-                                {s}
-                            </SelectItem>
-                        ))}
-                        </SelectContent>
-                    </Select>
-                    <Button 
-                        onClick={handleStatusUpdate} 
-                        disabled={isUpdatingStatus || selectedStatus === requisition.status || (role === 'employee' && requisition.status === "Pending Quotation" && selectedStatus !== "Canceled" && selectedStatus !== "Pending Quotation")}
-                    >
-                        {isUpdatingStatus ? <Icons.Logo className="animate-spin" /> : "Save Status"}
-                    </Button>
-                    </div>
+              <div className="w-full space-y-2">
+                <Label htmlFor="status-update" className="font-semibold">Update Status:</Label>
+                <div className="flex gap-2">
+                  <Select value={selectedStatus} onValueChange={(value) => setSelectedStatus(value as RequisitionStatus)}>
+                    <SelectTrigger id="status-update" className="flex-1">
+                      <SelectValue placeholder="Select new status" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {REQUISITION_STATUSES.map(s => (
+                        <SelectItem
+                          key={s}
+                          value={s}
+                          disabled={
+                            role === 'employee' &&
+                            requisition.status === "Pending Quotation" &&
+                            s !== "Canceled" &&
+                            s !== "Pending Quotation"
+                          }
+                        >
+                          {s}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Button
+                    onClick={handleStatusUpdate}
+                    disabled={isUpdatingStatus || selectedStatus === requisition.status || (role === 'employee' && requisition.status === "Pending Quotation" && selectedStatus !== "Canceled" && selectedStatus !== "Pending Quotation")}
+                  >
+                    {isUpdatingStatus ? <Icons.Logo className="animate-spin" /> : "Save Status"}
+                  </Button>
                 </div>
+              </div>
             </CardFooter>
-           )}
+          )}
         </Card>
 
         <Card className="md:col-span-2">
@@ -598,7 +662,7 @@ export default function RequisitionDetailPage() {
           </CardHeader>
           <CardContent>
             {requisition.requiredProducts && requisition.requiredProducts.length > 0 ? (
-               <ScrollArea className="h-[calc(100vh-20rem)]">
+              <ScrollArea className="h-[calc(100vh-20rem)]">
                 <Table>
                   <TableHeader>
                     <TableRow>
@@ -629,12 +693,12 @@ export default function RequisitionDetailPage() {
 
       <Dialog open={isQuoteRequestDialogOpen} onOpenChange={setIsQuoteRequestDialogOpen}>
         <DialogContent className="sm:max-w-2xl md:max-w-3xl flex flex-col max-h-[90vh]">
-           <Form {...quoteRequestForm}>
+          <Form {...quoteRequestForm}>
             <form onSubmit={quoteRequestForm.handleSubmit(handleQuoteRequestSubmit)} className="flex flex-col flex-grow min-h-0">
               <DialogHeader>
                 <DialogTitle className="font-headline">Request Quotations</DialogTitle>
                 <DialogDescription>
-                  Select suppliers, choose products and quantities for each, and set a response deadline for requisition: {requisition.id.substring(0,8)}...
+                  Select suppliers, choose products and quantities for each, and set a response deadline for requisition: {requisition.id.substring(0, 8)}...
                 </DialogDescription>
               </DialogHeader>
 
@@ -667,200 +731,219 @@ export default function RequisitionDetailPage() {
                         </p>
                       </div>
                       {isLoadingSuppliers ? <p>Loading suppliers...</p> :
-                       availableSuppliers.length === 0 ? <p>No active suppliers found.</p> :
-                      <ScrollArea className="h-[calc(100vh-28rem)] md:h-72 rounded-md border p-1">
-                        {availableSuppliers.map((supplier) => {
-                          const supplierLinks = allSupplierProductLinks[supplier.id] || {};
-                           const hasAnyQuotableProduct = requisition.requiredProducts?.some(
-                            rp => supplierLinks[rp.productId]?.isActive && supplierLinks[rp.productId]?.isAvailable
-                          ) || false;
+                        availableSuppliers.length === 0 ? <p>No active suppliers found.</p> :
+                          <ScrollArea className="h-[calc(100vh-28rem)] md:h-72 rounded-md border p-1">
+                            {availableSuppliers.map((supplier) => {
+                              // Determine if supplier has any quotable products based on pre-fetched links
+                              const hasAnyQuotableProduct = requisition.requiredProducts?.some(
+                                rp => supplierAnalysisData[supplier.id]?.[rp.productId]?.canQuoteProduct
+                              ) || false;
 
-                          const isSupplierSelectedForQuoting = suppliersToQuoteFields.some(field => field.supplierId === supplier.id);
-                          const actualSupplierFormIndex = suppliersToQuoteFields.findIndex(s => s.supplierId === supplier.id);
-                          const currentSupplierInForm = isSupplierSelectedForQuoting ? suppliersToQuoteFields[actualSupplierFormIndex] : undefined;
-                          const productsForThisSupplierInForm = currentSupplierInForm?.productsToQuote || [];
+                              const isSupplierSelectedForQuoting = suppliersToQuoteFields.some(field => field.supplierId === supplier.id);
+                              const actualSupplierFormIndex = suppliersToQuoteFields.findIndex(s => s.supplierId === supplier.id);
+                              const currentSupplierInForm = isSupplierSelectedForQuoting ? suppliersToQuoteFields[actualSupplierFormIndex] : undefined;
+                              const productsForThisSupplierInForm = currentSupplierInForm?.productsToQuote || [];
 
-
-                          return (
-                            <Card key={supplier.id} className={cn("mb-2 bg-muted/10", !hasAnyQuotableProduct && "opacity-60")}>
-                              <CardHeader
-                                className="p-2 flex flex-row items-center justify-between cursor-pointer hover:bg-muted/20"
-                                onClick={() => {
-                                  if (hasAnyQuotableProduct && isSupplierSelectedForQuoting) { 
-                                    setExpandedSupplierProducts(prev => ({ ...prev, [supplier.id]: !prev[supplier.id] }))
-                                  }
-                                }}
-                              >
-                                <div className="flex items-center space-x-3">
-                                  <Checkbox
-                                    id={`supplier-checkbox-${supplier.id}`}
-                                    checked={isSupplierSelectedForQuoting}
-                                    disabled={!hasAnyQuotableProduct && !isSupplierSelectedForQuoting}
-                                    onCheckedChange={(checked) => {
-                                      toggleSupplierForQuoting(supplier, !!checked);
-                                      if (checked && !expandedSupplierProducts[supplier.id] && hasAnyQuotableProduct) {
-                                        setExpandedSupplierProducts(prev => ({ ...prev, [supplier.id]: true }));
-                                      } else if (!checked) {
-                                        setExpandedSupplierProducts(prev => ({ ...prev, [supplier.id]: false }));
+                              return (
+                                <Card key={supplier.id} className={cn("mb-2 bg-muted/10", !hasAnyQuotableProduct && "opacity-60")}>
+                                  <CardHeader
+                                    className="p-2 flex flex-row items-center justify-between cursor-pointer hover:bg-muted/20"
+                                    onClick={() => {
+                                      if (hasAnyQuotableProduct && isSupplierSelectedForQuoting) {
+                                        setExpandedSupplierProducts(prev => ({ ...prev, [supplier.id]: !prev[supplier.id] }))
                                       }
                                     }}
-                                    onClick={(e) => e.stopPropagation()} 
-                                  />
-                                  <ShadFormLabelFromHookForm htmlFor={`supplier-checkbox-${supplier.id}`} className={cn("font-semibold text-md", !hasAnyQuotableProduct && "text-muted-foreground")}>
-                                    {supplier.name}
-                                  </ShadFormLabelFromHookForm>
-                                </div>
-                                {hasAnyQuotableProduct && isSupplierSelectedForQuoting && ( 
-                                  <Button type="button" variant="ghost" size="sm" className="p-1 h-auto">
-                                    {expandedSupplierProducts[supplier.id] ? <Icons.ChevronDown className="h-4 w-4 rotate-180" /> : <Icons.ChevronDown className="h-4 w-4" />}
-                                  </Button>
-                                )}
-                              </CardHeader>
-
-                              {!hasAnyQuotableProduct && (
-                                <CardContent className="p-2 pt-0 text-xs text-muted-foreground">
-                                  This supplier does not have active product links for items in this requisition.
-                                </CardContent>
-                              )}
-                              
-                              {hasAnyQuotableProduct && expandedSupplierProducts[supplier.id] && isSupplierSelectedForQuoting && (
-                                <CardContent className="p-2 pl-4 border-t">
-                                  {isLoadingAllSupplierLinks && !allSupplierProductLinks[supplier.id] ? <p className="text-xs">Loading product links...</p> :
-                                  !requisition.requiredProducts || requisition.requiredProducts.length === 0 ? (
-                                    <p className="text-xs text-muted-foreground">No products in this requisition to quote for.</p>
-                                  ) : (
-                                    <div className="space-y-3">
-                                      <p className="text-xs font-medium text-muted-foreground">Select products & set quantities for {supplier.name}:</p>
-                                      {requisition.requiredProducts.map((reqProduct) => {
-                                        const link = allSupplierProductLinks[supplier.id]?.[reqProduct.productId];
-                                        const canQuoteThisProduct = !!(link && link.isActive && link.isAvailable);
-                                        
-                                        const productIsSelectedForThisSupplier = productsForThisSupplierInForm.some(p => p.productId === reqProduct.productId);
-                                        const currentProductQuoteIndex = productsForThisSupplierInForm.findIndex(p => p.productId === reqProduct.productId);
-                                        
-                                        const priceAnalysis = analyzePriceRanges(reqProduct.requiredQuantity, link?.priceRanges);
-                                        const watchedQuotedQuantity = productIsSelectedForThisSupplier && currentProductQuoteIndex !== -1 ? quoteRequestForm.watch(`suppliersToQuote.${actualSupplierFormIndex}.productsToQuote.${currentProductQuoteIndex}.quotedQuantity`) : reqProduct.requiredQuantity;
-                                        const numericWatchedQty = Number(watchedQuotedQuantity);
-                                        const applicableRangeForWatchedQty = getApplicablePriceRange(numericWatchedQty, link?.priceRanges);
-
-                                        return (
-                                          <div key={reqProduct.productId} className="p-3 rounded-md border bg-background relative">
-                                            <div className="flex items-start space-x-3">
-                                              <Checkbox
-                                                id={`supplier-${supplier.id}-product-${reqProduct.productId}`}
-                                                disabled={!canQuoteThisProduct || actualSupplierFormIndex === -1}
-                                                checked={productIsSelectedForThisSupplier}
-                                                onCheckedChange={(checked) => {
-                                                    if (actualSupplierFormIndex !== -1) {
-                                                        toggleProductForSupplierInForm(actualSupplierFormIndex, reqProduct, !!checked);
-                                                    }
-                                                }}
-                                              />
-                                              <div className="flex-1 space-y-1">
-                                                <ShadFormLabelFromHookForm htmlFor={`supplier-${supplier.id}-product-${reqProduct.productId}`} className="font-normal text-sm">
-                                                  {reqProduct.productName} (Orig. Req: {reqProduct.requiredQuantity})
-                                                </ShadFormLabelFromHookForm>
-                                                {!canQuoteThisProduct && (
-                                                  <p className="text-xs text-destructive">This supplier does not offer this product or it's unavailable.</p>
-                                                )}
-                                              </div>
-                                            </div>
-
-                                            {productIsSelectedForThisSupplier && canQuoteThisProduct && actualSupplierFormIndex !== -1 && currentProductQuoteIndex !== -1 &&(
-                                              <div className="mt-2 pl-8 space-y-2">
-                                                <FormField
-                                                  control={quoteRequestForm.control}
-                                                  name={`suppliersToQuote.${actualSupplierFormIndex}.productsToQuote.${currentProductQuoteIndex}.quotedQuantity`}
-                                                  render={({ field }) => (
-                                                    <FormItem>
-                                                      <ShadFormLabelFromHookForm className="text-xs">Quoted Quantity*</ShadFormLabelFromHookForm>
-                                                      <FormControl>
-                                                        <Input type="number" {...field} className="h-8 text-sm" />
-                                                      </FormControl>
-                                                      <ShadFormMessage className="text-xs"/>
-                                                    </FormItem>
-                                                  )}
-                                                />
-                                                {link && link.priceRanges.length > 0 && (
-                                                  <div className="mt-1 text-xs">
-                                                    {priceAnalysis.currentPricePerUnit !== null && priceAnalysis.currentRange && (
-                                                      <p>
-                                                        Current Req. Price: <span className="font-semibold">${priceAnalysis.currentPricePerUnit.toFixed(2)}/unit</span>
-                                                        (Qty: {priceAnalysis.currentRange.minQuantity}
-                                                        {priceAnalysis.currentRange.maxQuantity ? `-${priceAnalysis.currentRange.maxQuantity}` : '+'})
-                                                      </p>
-                                                    )}
-                                                    {priceAnalysis.nextBetterRange && priceAnalysis.quantityToReachNextBetter !== null && priceAnalysis.nextBetterRange.price !== null && (
-                                                      <p className="text-green-600 font-medium">
-                                                        Tip: Order {priceAnalysis.quantityToReachNextBetter} more (total {priceAnalysis.nextBetterRange.minQuantity}) for ${priceAnalysis.nextBetterRange.price.toFixed(2)}/unit.
-                                                      </p>
-                                                    )}
-                                                    {priceAnalysis.alternativeNextRange && !priceAnalysis.currentRange && priceAnalysis.alternativeNextRange.price !== null &&(
-                                                      <p className="text-blue-600">
-                                                          Note: First available price is ${priceAnalysis.alternativeNextRange.price.toFixed(2)}/unit for {priceAnalysis.alternativeNextRange.minQuantity} units.
-                                                      </p>
-                                                    )}
-                                                  </div>
-                                                )}
-                                                {link && link.priceRanges && link.priceRanges.length > 0 && (
-                                                  <div className="mt-3 space-y-1">
-                                                    <p className="text-xs font-medium text-muted-foreground">Available Price Tiers for this supplier:</p>
-                                                    <ul className="list-none pl-0 text-xs">
-                                                      {link.priceRanges.map((range, rangeIdx) => {
-                                                        const isRangeActive = applicableRangeForWatchedQty &&
-                                                          range.minQuantity === applicableRangeForWatchedQty.minQuantity &&
-                                                          range.maxQuantity === applicableRangeForWatchedQty.maxQuantity &&
-                                                          range.price === applicableRangeForWatchedQty.price &&
-                                                          range.priceType === applicableRangeForWatchedQty.priceType;
-                                                        return (
-                                                          <li 
-                                                            key={rangeIdx} 
-                                                            className={cn(
-                                                              "py-0.5 px-1.5 rounded-sm my-0.5",
-                                                              isRangeActive
-                                                                ? "bg-primary/20 text-primary font-semibold ring-1 ring-primary" 
-                                                                : "bg-muted/50"
-                                                            )}
-                                                          >
-                                                            Qty: {range.minQuantity}{range.maxQuantity ? `-${range.maxQuantity}` : '+'}
-                                                            {range.priceType === 'fixed' && range.price !== null ? ` - $${Number(range.price).toFixed(2)}/unit` : ` - ${range.priceType}`}
-                                                            {range.additionalConditions && <span className="text-muted-foreground text-[10px]"> ({range.additionalConditions})</span>}
-                                                          </li>
-                                                        );
-                                                      })}
-                                                    </ul>
-                                                  </div>
-                                                )}
-                                              </div>
-                                            )}
-                                          </div>
-                                        );
-                                      })}
-                                      {quoteRequestForm.formState.errors.suppliersToQuote?.[actualSupplierFormIndex]?.productsToQuote && (
-                                          <ShadFormMessage className="mt-1 text-xs">
-                                              {typeof quoteRequestForm.formState.errors.suppliersToQuote?.[actualSupplierFormIndex]?.productsToQuote?.message === 'string'
-                                               ? quoteRequestForm.formState.errors.suppliersToQuote?.[actualSupplierFormIndex]?.productsToQuote?.message
-                                               : "Please ensure at least one product is selected for this supplier."
-                                              }
-                                          </ShadFormMessage>
-                                      )}
+                                  >
+                                    <div className="flex items-center space-x-3">
+                                      <Checkbox
+                                        id={`supplier-checkbox-${supplier.id}`}
+                                        checked={isSupplierSelectedForQuoting}
+                                        disabled={!hasAnyQuotableProduct && !isSupplierSelectedForQuoting} // Can't select if no quotable products, but keep selected if already selected
+                                        onCheckedChange={(checked) => {
+                                          toggleSupplierForQuoting(supplier, !!checked);
+                                          if (checked && !expandedSupplierProducts[supplier.id] && hasAnyQuotableProduct) {
+                                            setExpandedSupplierProducts(prev => ({ ...prev, [supplier.id]: true }));
+                                          } else if (!checked) {
+                                            setExpandedSupplierProducts(prev => ({ ...prev, [supplier.id]: false }));
+                                          }
+                                        }}
+                                        onClick={(e) => e.stopPropagation()} // Prevent card header click from toggling checkbox
+                                      />
+                                      <ShadFormLabelFromHookForm htmlFor={`supplier-checkbox-${supplier.id}`} className={cn("font-semibold text-md", !hasAnyQuotableProduct && "text-muted-foreground")}>
+                                        {supplier.name}
+                                      </ShadFormLabelFromHookForm>
                                     </div>
+                                    {hasAnyQuotableProduct && isSupplierSelectedForQuoting && (
+                                      <Button type="button" variant="ghost" size="sm" className="p-1 h-auto">
+                                        {expandedSupplierProducts[supplier.id] ? <Icons.ChevronDown className="h-4 w-4 rotate-180" /> : <Icons.ChevronDown className="h-4 w-4" />}
+                                      </Button>
+                                    )}
+                                  </CardHeader>
+
+                                  {!hasAnyQuotableProduct && (
+                                    <CardContent className="p-2 pt-0 text-xs text-muted-foreground">
+                                      This supplier does not have active product links for items in this requisition.
+                                    </CardContent>
                                   )}
-                                </CardContent>
-                              )}
-                            </Card>
-                          );
-                        })}
-                      </ScrollArea>
+
+                                  {hasAnyQuotableProduct && expandedSupplierProducts[supplier.id] && isSupplierSelectedForQuoting && (
+                                    <CardContent className="p-2 pl-4 border-t">
+                                      {isLoadingAllSupplierLinks && !allSupplierProductLinks[supplier.id] ? (
+                                        // Show skeleton while products for this supplier are loading due to batching
+                                        <div className="space-y-2">
+                                          <Skeleton className="h-4 w-3/4 mb-2" />
+                                          <Skeleton className="h-10 w-full" />
+                                          <Skeleton className="h-6 w-1/2" />
+                                          <Skeleton className="h-24 w-full" />
+                                        </div>
+                                      ) : !requisition.requiredProducts || requisition.requiredProducts.length === 0 ? (
+                                        <p className="text-xs text-muted-foreground">No products in this requisition to quote for.</p>
+                                      ) : (
+                                        <div className="space-y-3">
+                                          <p className="text-xs font-medium text-muted-foreground">Select products & set quantities for {supplier.name}:</p>
+                                          {requisition.requiredProducts.map((reqProduct) => {
+                                            // Use the memoized supplierAnalysisData to get product-specific details
+                                            const productAnalysis = supplierAnalysisData[supplier.id]?.[reqProduct.productId];
+                                            const link = productAnalysis?.link || null;
+                                            const canQuoteThisProduct = productAnalysis?.canQuoteProduct || false;
+                                            const priceAnalysis = productAnalysis?.priceAnalysis || {
+                                              currentRange: null,
+                                              currentPricePerUnit: null,
+                                              nextBetterRange: null,
+                                              quantityToReachNextBetter: null,
+                                              alternativeNextRange: null,
+                                            };
+
+                                            const productIsSelectedForThisSupplier = productsForThisSupplierInForm.some(p => p.productId === reqProduct.productId);
+                                            const currentProductQuoteIndex = productsForThisSupplierInForm.findIndex(p => p.productId === reqProduct.productId);
+
+                                            // Watch the quantity for the current product in the form for dynamic price range display
+                                            const watchedQuotedQuantity = productIsSelectedForThisSupplier && currentProductQuoteIndex !== -1
+                                              ? quoteRequestForm.watch(`suppliersToQuote.${actualSupplierFormIndex}.productsToQuote.${currentProductQuoteIndex}.quotedQuantity`)
+                                              : reqProduct.requiredQuantity;
+                                            const numericWatchedQty = Number(watchedQuotedQuantity);
+                                            const applicableRangeForWatchedQty = getApplicablePriceRange(numericWatchedQty, link?.priceRanges);
+
+                                            return (
+                                              <div key={reqProduct.productId} className="p-3 rounded-md border bg-background relative">
+                                                <div className="flex items-start space-x-3">
+                                                  <Checkbox
+                                                    id={`supplier-${supplier.id}-product-${reqProduct.productId}`}
+                                                    disabled={!canQuoteThisProduct || actualSupplierFormIndex === -1}
+                                                    checked={productIsSelectedForThisSupplier}
+                                                    onCheckedChange={(checked) => {
+                                                      if (actualSupplierFormIndex !== -1) {
+                                                        toggleProductForSupplierInForm(actualSupplierFormIndex, reqProduct, !!checked);
+                                                      }
+                                                    }}
+                                                  />
+                                                  <div className="flex-1 space-y-1">
+                                                    <ShadFormLabelFromHookForm htmlFor={`supplier-${supplier.id}-product-${reqProduct.productId}`} className="font-normal text-sm">
+                                                      {reqProduct.productName} (Orig. Req: {reqProduct.requiredQuantity})
+                                                    </ShadFormLabelFromHookForm>
+                                                    {!canQuoteThisProduct && (
+                                                      <p className="text-xs text-destructive">This supplier does not offer this product or it's unavailable.</p>
+                                                    )}
+                                                  </div>
+                                                </div>
+
+                                                {productIsSelectedForThisSupplier && canQuoteThisProduct && actualSupplierFormIndex !== -1 && currentProductQuoteIndex !== -1 && (
+                                                  <div className="mt-2 pl-8 space-y-2">
+                                                    <FormField
+                                                      control={quoteRequestForm.control}
+                                                      name={`suppliersToQuote.${actualSupplierFormIndex}.productsToQuote.${currentProductQuoteIndex}.quotedQuantity`}
+                                                      render={({ field }) => (
+                                                        <FormItem>
+                                                          <ShadFormLabelFromHookForm className="text-xs">Quoted Quantity*</ShadFormLabelFromHookForm>
+                                                          <FormControl>
+                                                            <Input type="number" {...field} className="h-8 text-sm" />
+                                                          </FormControl>
+                                                          <ShadFormMessage className="text-xs" />
+                                                        </FormItem>
+                                                      )}
+                                                    />
+                                                    {link && link.priceRanges && link.priceRanges.length > 0 && (
+                                                      <div className="mt-1 text-xs">
+                                                        {priceAnalysis.currentPricePerUnit !== null && priceAnalysis.currentRange && (
+                                                          <p>
+                                                            Original Req. Price: <span className="font-semibold">${priceAnalysis.currentPricePerUnit.toFixed(2)}/unit</span>
+                                                            (Qty: {priceAnalysis.currentRange.minQuantity}
+                                                            {priceAnalysis.currentRange.maxQuantity ? `-${priceAnalysis.currentRange.maxQuantity}` : '+'})
+                                                          </p>
+                                                        )}
+                                                        {priceAnalysis.nextBetterRange && priceAnalysis.quantityToReachNextBetter !== null && priceAnalysis.nextBetterRange.price !== null && (
+                                                          <p className="text-green-600 font-medium">
+                                                            Tip: Order {priceAnalysis.nextBetterRange.minQuantity} (add {priceAnalysis.quantityToReachNextBetter}) for ${priceAnalysis.nextBetterRange.price.toFixed(2)}/unit.
+                                                          </p>
+                                                        )}
+                                                        {priceAnalysis.alternativeNextRange && !priceAnalysis.currentRange && priceAnalysis.alternativeNextRange.price !== null && (
+                                                          <p className="text-blue-600">
+                                                            Note: First available price is ${priceAnalysis.alternativeNextRange.price.toFixed(2)}/unit for {priceAnalysis.alternativeNextRange.minQuantity} units.
+                                                          </p>
+                                                        )}
+                                                      </div>
+                                                    )}
+                                                    {link && link.priceRanges && link.priceRanges.length > 0 && (
+                                                      <div className="mt-3 space-y-1">
+                                                        <p className="text-xs font-medium text-muted-foreground">Available Price Tiers for this supplier:</p>
+                                                        <ul className="list-none pl-0 text-xs">
+                                                          {link.priceRanges.map((range, rangeIdx) => {
+                                                            const isRangeActive = applicableRangeForWatchedQty &&
+                                                              range.minQuantity === applicableRangeForWatchedQty.minQuantity &&
+                                                              range.maxQuantity === applicableRangeForWatchedQty.maxQuantity &&
+                                                              range.price === applicableRangeForWatchedQty.price &&
+                                                              range.priceType === applicableRangeForWatchedQty.priceType;
+                                                            return (
+                                                              <li
+                                                                key={rangeIdx}
+                                                                className={cn(
+                                                                  "py-0.5 px-1.5 rounded-sm my-0.5",
+                                                                  isRangeActive
+                                                                    ? "bg-primary/20 text-primary font-semibold ring-1 ring-primary"
+                                                                    : "bg-muted/50"
+                                                                )}
+                                                              >
+                                                                Qty: {range.minQuantity}{range.maxQuantity ? `-${range.maxQuantity}` : '+'}
+                                                                {range.priceType === 'fixed' && range.price !== null ? ` - $${Number(range.price).toFixed(2)}/unit` : ` - ${range.priceType}`}
+                                                                {range.additionalConditions && <span className="text-muted-foreground text-[10px]"> ({range.additionalConditions})</span>}
+                                                              </li>
+                                                            );
+                                                          })}
+                                                        </ul>
+                                                      </div>
+                                                    )}
+                                                  </div>
+                                                )}
+                                              </div>
+                                            );
+                                          })}
+                                          {/* Error message for productsToQuote if it's empty when it shouldn't be */}
+                                          {quoteRequestForm.formState.errors.suppliersToQuote?.[actualSupplierFormIndex]?.productsToQuote && (
+                                            <ShadFormMessage className="mt-1 text-xs">
+                                              {typeof quoteRequestForm.formState.errors.suppliersToQuote?.[actualSupplierFormIndex]?.productsToQuote?.message === 'string'
+                                                ? quoteRequestForm.formState.errors.suppliersToQuote?.[actualSupplierFormIndex]?.productsToQuote?.message
+                                                : "Please ensure at least one product is selected for this supplier."
+                                              }
+                                            </ShadFormMessage>
+                                          )}
+                                        </div>
+                                      )}
+                                    </CardContent>
+                                  )}
+                                </Card>
+                              );
+                            })}
+                          </ScrollArea>
                       }
+                      {/* Global error message for suppliersToQuote array */}
                       {quoteRequestForm.formState.errors.suppliersToQuote && typeof quoteRequestForm.formState.errors.suppliersToQuote.message === 'string' && (
-                         <ShadFormMessage className="pt-1 text-sm">
-                            {quoteRequestForm.formState.errors.suppliersToQuote.message}
+                        <ShadFormMessage className="pt-1 text-sm">
+                          {quoteRequestForm.formState.errors.suppliersToQuote.message}
                         </ShadFormMessage>
                       )}
-                       {quoteRequestForm.formState.errors.suppliersToQuote?.root && (
-                         <ShadFormMessage className="pt-1 text-sm">
-                            {quoteRequestForm.formState.errors.suppliersToQuote.root.message}
+                      {quoteRequestForm.formState.errors.suppliersToQuote?.root && (
+                        <ShadFormMessage className="pt-1 text-sm">
+                          {quoteRequestForm.formState.errors.suppliersToQuote.root.message}
                         </ShadFormMessage>
                       )}
                     </FormItem>
@@ -883,7 +966,7 @@ export default function RequisitionDetailPage() {
                           </FormControl>
                         </PopoverTrigger>
                         <PopoverContent className="w-auto p-0" align="start">
-                          <Calendar mode="single" selected={field.value} onSelect={field.onChange} disabled={(date) => date < new Date(new Date().setDate(new Date().getDate() -1 )) } initialFocus/>
+                          <Calendar mode="single" selected={field.value} onSelect={field.onChange} disabled={(date) => date < new Date(new Date().setDate(new Date().getDate() - 1))} initialFocus />
                         </PopoverContent>
                       </Popover>
                       <ShadFormMessage />
@@ -906,8 +989,8 @@ export default function RequisitionDetailPage() {
               <DialogFooter className="pt-4 flex-shrink-0">
                 <DialogClose asChild><Button type="button" variant="outline">Cancel</Button></DialogClose>
                 <Button
-                    type="submit"
-                    disabled={isSubmittingQuoteRequest || isLoadingSuppliers || isLoadingAllSupplierLinks || availableSuppliers.length === 0 || !requisition.requiredProducts || requisition.requiredProducts.length === 0 || !quoteRequestForm.formState.isValid}
+                  type="submit"
+                  disabled={isSubmittingQuoteRequest || isLoadingSuppliers || isLoadingAllSupplierLinks || availableSuppliers.length === 0 || !requisition.requiredProducts || requisition.requiredProducts.length === 0 || !quoteRequestForm.formState.isValid}
                 >
                   {isSubmittingQuoteRequest ? <Icons.Logo className="animate-spin" /> : <Icons.Send />}
                   {isSubmittingQuoteRequest ? "Sending..." : "Send Requests"}
@@ -920,5 +1003,3 @@ export default function RequisitionDetailPage() {
     </>
   );
 }
-
-    
