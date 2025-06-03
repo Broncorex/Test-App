@@ -33,14 +33,14 @@ import { getSupplierProduct } from "@/services/supplierProductService";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
-import { Label } from "@/components/ui/label"; 
+import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import Link from "next/link";
 
 
 const supplierQuoteDetailSchema = z.object({
   supplierId: z.string(),
-  supplierName: z.string(), 
+  supplierName: z.string(),
   selectedProductIds: z.array(z.string()).min(1, "Must select at least one product for this supplier."),
 });
 
@@ -62,6 +62,61 @@ const quotationRequestFormSchema = z.object({
   notes: z.string().optional(),
 });
 type QuotationRequestFormData = z.infer<typeof quotationRequestFormSchema>;
+
+interface AnalyzedPriceRange {
+  currentRange: PriceRange | null;
+  currentPricePerUnit: number | null;
+  nextBetterRange: PriceRange | null;
+  quantityToReachNextBetter: number | null;
+  alternativeNextRange: PriceRange | null; // If no currentRange, this is the first available tier
+}
+
+const analyzePriceRanges = (requiredQuantity: number, priceRanges?: PriceRange[]): AnalyzedPriceRange => {
+  const result: AnalyzedPriceRange = {
+    currentRange: null,
+    currentPricePerUnit: null,
+    nextBetterRange: null,
+    quantityToReachNextBetter: null,
+    alternativeNextRange: null,
+  };
+
+  if (!priceRanges || priceRanges.length === 0) {
+    return result;
+  }
+
+  const sortedRanges = [...priceRanges]
+    .filter(range => range.price !== null && range.priceType === 'fixed') // Only consider fixed prices for this analysis
+    .sort((a, b) => a.minQuantity - b.minQuantity);
+
+  // Find current applicable range
+  for (const range of sortedRanges) {
+    if (requiredQuantity >= range.minQuantity && (range.maxQuantity === null || requiredQuantity <= range.maxQuantity)) {
+      result.currentRange = range;
+      result.currentPricePerUnit = range.price;
+      break;
+    }
+  }
+  
+  // If no current range, find the first possible range if qty is increased
+  if (!result.currentRange && sortedRanges.length > 0) {
+    result.alternativeNextRange = sortedRanges[0];
+  }
+
+  // Find next better price range
+  if (result.currentPricePerUnit !== null) {
+    for (const range of sortedRanges) {
+      if (range.minQuantity > requiredQuantity && range.price !== null && range.price < result.currentPricePerUnit) {
+        result.nextBetterRange = range;
+        result.quantityToReachNextBetter = range.minQuantity - requiredQuantity;
+        break; // Found the first next better range
+      }
+    }
+  } else if (result.alternativeNextRange) {
+    // If no current price, no "next better" in the same sense, alternative is already set
+  }
+
+  return result;
+};
 
 
 export default function RequisitionDetailPage() {
@@ -95,7 +150,7 @@ export default function RequisitionDetailPage() {
     resolver: zodResolver(quotationRequestFormSchema),
     defaultValues: {
       suppliersToQuote: [],
-      responseDeadline: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), 
+      responseDeadline: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
       notes: "",
     },
   });
@@ -154,7 +209,7 @@ export default function RequisitionDetailPage() {
           })
           .catch(error => {
             console.error(`Error fetching link for supplier ${supplier.id}, product ${reqProduct.productId}:`, error);
-            links[supplier.id][reqProduct.productId] = null; 
+            links[supplier.id][reqProduct.productId] = null;
           });
         productFetchPromises.push(promise);
       }
@@ -254,7 +309,7 @@ export default function RequisitionDetailPage() {
             .filter(rp => supplierQuote.selectedProductIds.includes(rp.productId))
             .map(rp => ({
                 productId: rp.productId,
-                productName: rp.productName, 
+                productName: rp.productName,
                 requiredQuantity: rp.requiredQuantity,
             }))
         };
@@ -306,7 +361,7 @@ export default function RequisitionDetailPage() {
 
   const handleSaveNotes = async () => {
     if (!requisition || !currentUser || !canManageStatus) return;
-    setIsUpdatingStatus(true); 
+    setIsUpdatingStatus(true);
     try {
       await updateRequisition(requisitionId, { notes: editableNotes });
       setRequisition(prev => prev ? { ...prev, notes: editableNotes, updatedAt: Timestamp.now() } : null);
@@ -323,7 +378,7 @@ export default function RequisitionDetailPage() {
     setEditableNotes(requisition?.notes || "");
     setIsEditingNotes(false);
   };
-  
+
   const formatTimestampDateTime = (timestamp?: Timestamp | null): string => {
     if (!timestamp) return "N/A";
     return timestamp.toDate().toLocaleString();
@@ -347,7 +402,7 @@ export default function RequisitionDetailPage() {
   };
 
 
-  if (isLoading && !requisition) { 
+  if (isLoading && !requisition) {
     return (
       <div className="space-y-4">
         <PageHeader title="Requisition Details" description="Loading requisition information..." />
@@ -472,7 +527,7 @@ export default function RequisitionDetailPage() {
           </CardHeader>
           <CardContent>
             {requisition.requiredProducts && requisition.requiredProducts.length > 0 ? (
-               <ScrollArea className="h-[calc(100vh-20rem)]"> 
+               <ScrollArea className="h-[calc(100vh-20rem)]">
                 <Table>
                   <TableHeader>
                     <TableRow>
@@ -511,7 +566,7 @@ export default function RequisitionDetailPage() {
                   Select suppliers, choose products for each, and set a response deadline for requisition: {requisition.id.substring(0,8)}...
                 </DialogDescription>
               </DialogHeader>
-              
+
               <div className="flex-grow overflow-y-auto min-h-0 py-4 pr-2 space-y-4">
                 <div>
                   <h3 className="text-md font-semibold mb-2">Requisitioned Products (Read-only):</h3>
@@ -528,7 +583,7 @@ export default function RequisitionDetailPage() {
                 </div>
 
                 <Separator />
-                
+
                 <FormField
                   control={quoteRequestForm.control}
                   name="suppliersToQuote"
@@ -537,7 +592,7 @@ export default function RequisitionDetailPage() {
                       <div className="mb-2">
                         <ShadFormLabelFromHookForm className="text-base font-semibold">Suppliers to Quote *</ShadFormLabelFromHookForm>
                         <p className="text-sm text-muted-foreground">
-                          Select suppliers, then expand to choose products for each. Applicable price ranges are shown.
+                          Select suppliers, then expand to choose products for each. Applicable price ranges and optimization tips are shown.
                         </p>
                       </div>
                       {isLoadingSuppliers ? <p>Loading suppliers...</p> :
@@ -548,13 +603,13 @@ export default function RequisitionDetailPage() {
                           const hasAnyQuotableProduct = requisition.requiredProducts?.some(
                             rp => supplierLinks[rp.productId]?.isActive && supplierLinks[rp.productId]?.isAvailable
                           ) || false;
-                          
+
                           const formSupplierIndex = suppliersToQuoteFields.findIndex(s => s.supplierId === supplier.id);
                           const isSupplierSelectedForQuoting = formSupplierIndex !== -1;
 
                           return (
                             <Card key={supplier.id} className={cn("mb-2 bg-muted/10", !hasAnyQuotableProduct && "opacity-60")}>
-                              <CardHeader 
+                              <CardHeader
                                 className="p-2 flex flex-row items-center justify-between cursor-pointer hover:bg-muted/20"
                                 onClick={() => {
                                   if (hasAnyQuotableProduct) {
@@ -575,7 +630,7 @@ export default function RequisitionDetailPage() {
                                         }
                                       }
                                     }}
-                                    onClick={(e) => e.stopPropagation()} 
+                                    onClick={(e) => e.stopPropagation()}
                                   />
                                   <ShadFormLabelFromHookForm htmlFor={`supplier-checkbox-${supplier.id}`} className={cn("font-semibold text-md", !hasAnyQuotableProduct && "text-muted-foreground")}>
                                     {supplier.name}
@@ -606,20 +661,7 @@ export default function RequisitionDetailPage() {
                                         const link = allSupplierProductLinks[supplier.id]?.[reqProduct.productId];
                                         const canQuoteThisProduct = !!(link && link.isActive && link.isAvailable);
                                         const currentSupplierFormData = suppliersToQuoteFields[formSupplierIndex];
-
-                                        let applicablePriceRange: PriceRange | null = null;
-                                        if (link && link.priceRanges) {
-                                          
-                                          const sortedRanges = [...link.priceRanges].sort((a,b) => a.minQuantity - b.minQuantity);
-                                          for (const range of sortedRanges) {
-                                            const meetsMin = reqProduct.requiredQuantity >= range.minQuantity;
-                                            const meetsMax = range.maxQuantity === null || reqProduct.requiredQuantity <= range.maxQuantity;
-                                            if (meetsMin && meetsMax) {
-                                              applicablePriceRange = range;
-                                              break; 
-                                            }
-                                          }
-                                        }
+                                        const priceAnalysis = analyzePriceRanges(reqProduct.requiredQuantity, link?.priceRanges);
 
                                         return (
                                           <div key={reqProduct.productId} className="p-2 rounded-md border bg-background relative">
@@ -652,10 +694,27 @@ export default function RequisitionDetailPage() {
                                             />
                                             {canQuoteThisProduct && link && link.priceRanges.length > 0 && (
                                               <div className="mt-1 pl-8 text-xs">
-                                                <p className="font-medium text-muted-foreground">Current Price Ranges:</p>
+                                                {priceAnalysis.currentPricePerUnit !== null && priceAnalysis.currentRange && (
+                                                  <p className="text-xs">
+                                                    Current: <span className="font-semibold">${priceAnalysis.currentPricePerUnit.toFixed(2)}/unit</span>
+                                                    (Qty: {priceAnalysis.currentRange.minQuantity}
+                                                    {priceAnalysis.currentRange.maxQuantity ? `-${priceAnalysis.currentRange.maxQuantity}` : '+'})
+                                                  </p>
+                                                )}
+                                                {priceAnalysis.nextBetterRange && priceAnalysis.quantityToReachNextBetter !== null && priceAnalysis.nextBetterRange.price !== null && (
+                                                  <p className="text-xs text-green-600 font-medium">
+                                                    Tip: Order {priceAnalysis.quantityToReachNextBetter} more (total {priceAnalysis.nextBetterRange.minQuantity}) for ${priceAnalysis.nextBetterRange.price.toFixed(2)}/unit.
+                                                  </p>
+                                                )}
+                                                {priceAnalysis.alternativeNextRange && !priceAnalysis.currentRange && priceAnalysis.alternativeNextRange.price !== null &&(
+                                                   <p className="text-xs text-blue-600">
+                                                      Note: First available price is ${priceAnalysis.alternativeNextRange.price.toFixed(2)}/unit for {priceAnalysis.alternativeNextRange.minQuantity} units.
+                                                   </p>
+                                                )}
+                                                <p className="font-medium text-muted-foreground mt-0.5">All Price Ranges:</p>
                                                 <ul className="list-disc list-inside">
                                                   {link.priceRanges.map((range, idx) => {
-                                                    const isApplicable = applicablePriceRange === range;
+                                                    const isApplicable = priceAnalysis.currentRange?.minQuantity === range.minQuantity && priceAnalysis.currentRange?.maxQuantity === range.maxQuantity;
                                                     return (
                                                       <li key={idx} className={cn("py-0.5",isApplicable && "bg-primary/10 p-1 rounded-sm")}>
                                                         Qty {range.minQuantity}{range.maxQuantity ? `-${range.maxQuantity}` : '+'}
@@ -669,7 +728,7 @@ export default function RequisitionDetailPage() {
                                               </div>
                                             )}
                                             {canQuoteThisProduct && (!link || link.priceRanges.length === 0) && (
-                                               <p className="mt-1 pl-8 text-xs text-muted-foreground">No predefined price ranges for this product.</p>
+                                               <p className="mt-1 pl-8 text-xs text-muted-foreground">No predefined price ranges for this product from this supplier.</p>
                                             )}
                                           </div>
                                         );
@@ -740,8 +799,8 @@ export default function RequisitionDetailPage() {
 
               <DialogFooter className="pt-4 flex-shrink-0">
                 <DialogClose asChild><Button type="button" variant="outline">Cancel</Button></DialogClose>
-                <Button 
-                    type="submit" 
+                <Button
+                    type="submit"
                     disabled={isSubmittingQuoteRequest || isLoadingSuppliers || isLoadingAllSupplierLinks || availableSuppliers.length === 0 || !requisition.requiredProducts || requisition.requiredProducts.length === 0}
                 >
                   {isSubmittingQuoteRequest ? <Icons.Logo className="animate-spin" /> : <Icons.Send />}
@@ -756,4 +815,3 @@ export default function RequisitionDetailPage() {
   );
 }
 
-    
