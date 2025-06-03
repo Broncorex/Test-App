@@ -69,7 +69,7 @@ const quotationRequestFormSchema = z.object({
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
             message: `Supplier "${supplierItem.supplierName}" must have at least one product selected to be included in the quote request.`,
-            path: [index, "productsToQuote"],
+            path: [`suppliersToQuote`, index, "productsToQuote"],
           });
         }
       });
@@ -157,15 +157,19 @@ export default function RequisitionDetailPage() {
     }
 
     if (!result.currentRange && sortedRanges.length > 0) {
-      result.alternativeNextRange = sortedRanges[0];
-    }
-
-    if (result.currentPricePerUnit !== null) {
+      // If current required quantity is below the lowest tier, suggest the lowest tier.
+      const lowestTier = sortedRanges[0];
+      if (lowestTier.price !== null) {
+        result.alternativeNextRange = lowestTier;
+      }
+    } else if (result.currentPricePerUnit !== null) { // Only look for better if a current price is established
       for (const range of sortedRanges) {
+        // A "better" range must have a minQuantity greater than the current required quantity,
+        // and offer a strictly lower unit price.
         if (range.minQuantity > originalRequiredQuantity && range.price !== null && range.price < result.currentPricePerUnit) {
           result.nextBetterRange = range;
           result.quantityToReachNextBetter = range.minQuantity - originalRequiredQuantity;
-          break;
+          break; // Found the next immediate better range
         }
       }
     }
@@ -300,7 +304,7 @@ export default function RequisitionDetailPage() {
         appendSupplierToQuote({
           supplierId: supplier.id,
           supplierName: supplier.name,
-          productsToQuote: undefined,
+          productsToQuote: undefined, 
         });
       }
     } else {
@@ -630,7 +634,7 @@ export default function RequisitionDetailPage() {
                       <TableRow key={item.id}>
                         <TableCell className="font-medium">{item.productName}</TableCell>
                         <TableCell className="text-right">{item.requiredQuantity}</TableCell>
-                        <TableCell className="text-right">{item.purchasedQuantity}</TableCell>
+                        <TableCell className="text-right">{item.purchasedQuantity || 0}</TableCell>
                         <TableCell className="whitespace-pre-wrap">{item.notes || "N/A"}</TableCell>
                       </TableRow>
                     ))}
@@ -686,7 +690,7 @@ export default function RequisitionDetailPage() {
                       {isLoadingSuppliers ? <p>Loading suppliers...</p> :
                         availableSuppliers.length === 0 ? <p>No active suppliers found.</p> :
                           <ScrollArea className="h-[calc(100vh-28rem)] md:h-72 rounded-md border p-1">
-                            {availableSuppliers.map((supplier, supplierIndex) => {
+                            {availableSuppliers.map((supplier) => {
                               const actualSupplierFormIndex = suppliersToQuoteFields.findIndex(sField => sField.supplierId === supplier.id);
                               const isSupplierSelectedForQuoting = actualSupplierFormIndex !== -1;
 
@@ -696,7 +700,7 @@ export default function RequisitionDetailPage() {
                                   supplier={supplier}
                                   requisitionRequiredProducts={requisition.requiredProducts || []}
                                   supplierAnalysisData={supplierAnalysisData}
-                                  formInstance={quoteRequestForm} 
+                                  formInstance={quoteRequestForm}
                                   supplierFormIndex={actualSupplierFormIndex}
                                   isSupplierSelected={isSupplierSelectedForQuoting}
                                   onToggleSupplier={toggleSupplierForQuoting}
@@ -777,3 +781,5 @@ export default function RequisitionDetailPage() {
     </>
   );
 }
+
+    
