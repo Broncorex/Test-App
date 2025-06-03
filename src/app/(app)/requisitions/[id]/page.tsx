@@ -1,3 +1,4 @@
+
 "use client";
 
 import { useParams, useRouter } from "next/navigation";
@@ -9,7 +10,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth-store";
 import { getRequisitionById, updateRequisitionStatus, updateRequisition, type UpdateRequisitionData } from "@/services/requisitionService";
-import type { Requisition, RequisitionStatus, RequiredProduct, Supplier, ProveedorProducto, PriceRange } from "@/types";
+import type { Requisition, RequisitionStatus, RequiredProduct, Supplier, ProveedorProducto, PriceRange } from "@/types"; // Ensure PriceRange is imported
 import { REQUISITION_STATUSES } from "@/types";
 import { Timestamp } from "firebase/firestore";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -55,7 +56,7 @@ type QuotedProductFormData = z.infer<typeof quotedProductSchema>;
 const supplierQuoteDetailSchema = z.object({
   supplierId: z.string(),
   supplierName: z.string(),
-  productsToQuote: z.array(quotedProductSchema).optional(), // Removed .min(1) here. SuperRefine will handle it.
+  productsToQuote: z.array(quotedProductSchema).optional(),
 });
 type SupplierQuoteDetailFormData = z.infer<typeof supplierQuoteDetailSchema>;
 
@@ -87,65 +88,6 @@ interface AnalyzedPriceRange {
   alternativeNextRange: PriceRange | null;
 }
 
-// Memoized version of analyzePriceRanges
-const memoizedAnalyzePriceRanges = useCallback((originalRequiredQuantity: number, priceRanges?: PriceRange[]): AnalyzedPriceRange => {
-  const result: AnalyzedPriceRange = {
-    currentRange: null,
-    currentPricePerUnit: null,
-    nextBetterRange: null,
-    quantityToReachNextBetter: null,
-    alternativeNextRange: null,
-  };
-
-  if (!priceRanges || priceRanges.length === 0 || isNaN(originalRequiredQuantity) || originalRequiredQuantity <= 0) {
-    return result;
-  }
-
-  const sortedRanges = [...priceRanges]
-    .filter(range => range.price !== null && range.priceType === 'fixed')
-    .sort((a, b) => a.minQuantity - b.minQuantity);
-
-  for (const range of sortedRanges) {
-    if (originalRequiredQuantity >= range.minQuantity && (range.maxQuantity === null || originalRequiredQuantity <= range.maxQuantity)) {
-      result.currentRange = range;
-      result.currentPricePerUnit = range.price;
-      break;
-    }
-  }
-
-  if (!result.currentRange && sortedRanges.length > 0) {
-    // If original quantity doesn't fit any range, suggest the first available range
-    result.alternativeNextRange = sortedRanges[0];
-  }
-
-  if (result.currentPricePerUnit !== null) {
-    for (const range of sortedRanges) {
-      if (range.minQuantity > originalRequiredQuantity && range.price !== null && range.price < result.currentPricePerUnit) {
-        result.nextBetterRange = range;
-        result.quantityToReachNextBetter = range.minQuantity - originalRequiredQuantity;
-        break;
-      }
-    }
-  }
-  return result;
-}, []); // No dependencies, as it's a pure function
-
-const getApplicablePriceRange = (quantity: number, priceRanges?: PriceRange[]): PriceRange | null => {
-  if (!priceRanges || priceRanges.length === 0 || isNaN(quantity) || quantity <= 0) {
-    return null;
-  }
-  const sortedRanges = [...priceRanges]
-    .filter(range => range.price !== null && range.priceType === 'fixed')
-    .sort((a, b) => a.minQuantity - b.minQuantity);
-
-  for (const range of sortedRanges) {
-    if (quantity >= range.minQuantity && (range.maxQuantity === null || quantity <= range.maxQuantity)) {
-      return range;
-    }
-  }
-  return null;
-};
-
 
 export default function RequisitionDetailPage() {
   const params = useParams();
@@ -173,12 +115,70 @@ export default function RequisitionDetailPage() {
   const [isLoadingAllSupplierLinks, setIsLoadingAllSupplierLinks] = useState(false);
   const [expandedSupplierProducts, setExpandedSupplierProducts] = useState<Record<string, boolean>>({});
 
+  // MOVED HOOKS INSIDE THE COMPONENT
+  const memoizedAnalyzePriceRanges = useCallback((originalRequiredQuantity: number, priceRangesParam?: PriceRange[]): AnalyzedPriceRange => {
+    const result: AnalyzedPriceRange = {
+      currentRange: null,
+      currentPricePerUnit: null,
+      nextBetterRange: null,
+      quantityToReachNextBetter: null,
+      alternativeNextRange: null,
+    };
+
+    if (!priceRangesParam || priceRangesParam.length === 0 || isNaN(originalRequiredQuantity) || originalRequiredQuantity <= 0) {
+      return result;
+    }
+
+    const sortedRanges = [...priceRangesParam]
+      .filter(range => range.price !== null && range.priceType === 'fixed')
+      .sort((a, b) => a.minQuantity - b.minQuantity);
+
+    for (const range of sortedRanges) {
+      if (originalRequiredQuantity >= range.minQuantity && (range.maxQuantity === null || originalRequiredQuantity <= range.maxQuantity)) {
+        result.currentRange = range;
+        result.currentPricePerUnit = range.price;
+        break;
+      }
+    }
+
+    if (!result.currentRange && sortedRanges.length > 0) {
+      result.alternativeNextRange = sortedRanges[0];
+    }
+
+    if (result.currentPricePerUnit !== null) {
+      for (const range of sortedRanges) {
+        if (range.minQuantity > originalRequiredQuantity && range.price !== null && range.price < result.currentPricePerUnit) {
+          result.nextBetterRange = range;
+          result.quantityToReachNextBetter = range.minQuantity - originalRequiredQuantity;
+          break;
+        }
+      }
+    }
+    return result;
+  }, []);
+
+  const getApplicablePriceRange = useCallback((quantity: number, priceRangesParam?: PriceRange[]): PriceRange | null => {
+    if (!priceRangesParam || priceRangesParam.length === 0 || isNaN(quantity) || quantity <= 0) {
+      return null;
+    }
+    const sortedRanges = [...priceRangesParam]
+      .filter(range => range.price !== null && range.priceType === 'fixed')
+      .sort((a, b) => a.minQuantity - b.minQuantity);
+
+    for (const range of sortedRanges) {
+      if (quantity >= range.minQuantity && (range.maxQuantity === null || quantity <= range.maxQuantity)) {
+        return range;
+      }
+    }
+    return null;
+  }, []);
+
 
   const quoteRequestForm = useForm<QuotationRequestFormData>({
     resolver: zodResolver(quotationRequestFormSchema),
     defaultValues: {
       suppliersToQuote: [],
-      responseDeadline: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // Default to 1 week from now
+      responseDeadline: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), 
       notes: "",
     },
   });
@@ -224,7 +224,6 @@ export default function RequisitionDetailPage() {
     fetchRequisitionData();
   }, [fetchRequisitionData]);
 
-  // Optimized supplier product links loading with batching and progressive updates
   const prepareSupplierProductLinks = useCallback(async () => {
     if (!requisition?.requiredProducts || requisition.requiredProducts.length === 0 || availableSuppliers.length === 0) {
       setAllSupplierProductLinks({});
@@ -236,7 +235,7 @@ export default function RequisitionDetailPage() {
     const links: Record<string, Record<string, ProveedorProducto | null>> = {};
 
     try {
-      const batchSize = 3; // Number of suppliers to process in parallel
+      const batchSize = 3; 
       for (let i = 0; i < availableSuppliers.length; i += batchSize) {
         const supplierBatch = availableSuppliers.slice(i, i + batchSize);
 
@@ -255,7 +254,6 @@ export default function RequisitionDetailPage() {
             await Promise.all(productPromises);
           })
         );
-        // Update state after each batch to show progressive loading
         setAllSupplierProductLinks({ ...links });
       }
     } catch (error) {
@@ -274,7 +272,7 @@ export default function RequisitionDetailPage() {
       responseDeadline: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
       notes: requisition?.notes || "",
     });
-    setAllSupplierProductLinks({}); // Clear previous links
+    setAllSupplierProductLinks({}); 
 
     try {
       const suppliers = await getAllSuppliers(true);
@@ -302,7 +300,7 @@ export default function RequisitionDetailPage() {
         appendSupplierToQuote({
           supplierId: supplier.id,
           supplierName: supplier.name,
-          productsToQuote: undefined, // Initialize as undefined
+          productsToQuote: undefined, 
         });
       }
     } else {
@@ -312,10 +310,9 @@ export default function RequisitionDetailPage() {
     }
   };
 
-  // Fix for Product Selection Conflict: Ensure immutability and correct field update
   const toggleProductForSupplierInForm = (
     supplierFormIndex: number,
-    reqProduct: RequiredProduct, // Corrected type to RequiredProduct
+    reqProduct: RequisitionRequiredProduct, 
     isChecked: boolean
   ) => {
     const currentSupplierData = quoteRequestForm.getValues(`suppliersToQuote.${supplierFormIndex}`);
@@ -338,23 +335,22 @@ export default function RequisitionDetailPage() {
           }
         ];
       } else {
-        newProductsToQuote = currentProductsToQuote; // No change if already exists and is checked
+        newProductsToQuote = currentProductsToQuote; 
       }
     } else {
       if (productQuoteIndex !== -1) {
         newProductsToQuote = currentProductsToQuote.filter(p => p.productId !== reqProduct.productId);
       } else {
-        newProductsToQuote = currentProductsToQuote; // No change if already removed and is unchecked
+        newProductsToQuote = currentProductsToQuote; 
       }
     }
 
     quoteRequestForm.setValue(
       `suppliersToQuote.${supplierFormIndex}.productsToQuote`,
-      newProductsToQuote.length > 0 ? newProductsToQuote : undefined, // Set to undefined if empty to pass Zod's .min(1) check at array level
+      newProductsToQuote.length > 0 ? newProductsToQuote : undefined, 
       { shouldValidate: true, shouldDirty: true }
     );
 
-    // Trigger validation for the specific field, and also the parent array to catch overall supplier product requirements
     quoteRequestForm.trigger(`suppliersToQuote.${supplierFormIndex}.productsToQuote`);
     quoteRequestForm.trigger(`suppliersToQuote`);
   };
@@ -379,8 +375,8 @@ export default function RequisitionDetailPage() {
           notes: data.notes || "",
           productDetailsToRequest: supplierQuote.productsToQuote.map(qp => ({
             productId: qp.productId,
-            productName: qp.productName,
-            requiredQuantity: qp.quotedQuantity,
+            productName: qp.productName, 
+            requiredQuantity: qp.quotedQuantity, 
           }))
         };
         await createQuotation(quotationData, currentUser.uid);
@@ -403,10 +399,8 @@ export default function RequisitionDetailPage() {
     } else if (successCount > 0 && errorCount > 0) {
       toast({ title: "Partial Success", description: `${successCount} request(s) initiated, ${errorCount} failed.`, variant: "default" });
     } else if (errorCount > 0 && successCount === 0) {
-      // Error already toasted for individual failures
       toast({ title: "All Requests Failed", description: "No quotation requests could be sent.", variant: "destructive" });
     } else if (successCount === 0 && errorCount === 0 && data.suppliersToQuote.length > 0) {
-      // This case should ideally be caught by Zod schema, but as a fallback
       toast({ title: "No Requests Sent", description: "Ensure products are selected for each chosen supplier.", variant: "default" });
     } else {
       toast({ title: "No Suppliers Selected", description: "Please select at least one supplier and product to send a quote request.", variant: "default" });
@@ -421,7 +415,7 @@ export default function RequisitionDetailPage() {
       return;
     }
     if (role === 'employee' && requisition.requestingUserId === currentUser?.uid && requisition.status === "Pending Quotation" && selectedStatus === "Canceled") {
-      // Proceed for employee to cancel their own pending requisition
+      // Allow
     } else if (role !== 'admin' && role !== 'superadmin') {
       toast({ title: "Permission Denied", description: "You cannot update status for this requisition.", variant: "destructive" });
       return;
@@ -450,7 +444,7 @@ export default function RequisitionDetailPage() {
       return;
     }
 
-    setIsUpdatingStatus(true); // Re-using status update loading state for notes
+    setIsUpdatingStatus(true); 
     try {
       await updateRequisition(requisitionId, { notes: editableNotes });
       setRequisition(prev => prev ? { ...prev, notes: editableNotes, updatedAt: Timestamp.now() } : null);
@@ -490,7 +484,6 @@ export default function RequisitionDetailPage() {
     }
   };
 
-  // Memoize expensive calculations for product analysis in the render
   const supplierAnalysisData = useMemo(() => {
     if (!requisition?.requiredProducts || requisition.requiredProducts.length === 0 || !availableSuppliers.length || !allSupplierProductLinks) {
       return {};
@@ -733,8 +726,7 @@ export default function RequisitionDetailPage() {
                       {isLoadingSuppliers ? <p>Loading suppliers...</p> :
                         availableSuppliers.length === 0 ? <p>No active suppliers found.</p> :
                           <ScrollArea className="h-[calc(100vh-28rem)] md:h-72 rounded-md border p-1">
-                            {availableSuppliers.map((supplier) => {
-                              // Determine if supplier has any quotable products based on pre-fetched links
+                            {availableSuppliers.map((supplier, supplierIndex) => {
                               const hasAnyQuotableProduct = requisition.requiredProducts?.some(
                                 rp => supplierAnalysisData[supplier.id]?.[rp.productId]?.canQuoteProduct
                               ) || false;
@@ -758,7 +750,7 @@ export default function RequisitionDetailPage() {
                                       <Checkbox
                                         id={`supplier-checkbox-${supplier.id}`}
                                         checked={isSupplierSelectedForQuoting}
-                                        disabled={!hasAnyQuotableProduct && !isSupplierSelectedForQuoting} // Can't select if no quotable products, but keep selected if already selected
+                                        disabled={!hasAnyQuotableProduct && !isSupplierSelectedForQuoting}
                                         onCheckedChange={(checked) => {
                                           toggleSupplierForQuoting(supplier, !!checked);
                                           if (checked && !expandedSupplierProducts[supplier.id] && hasAnyQuotableProduct) {
@@ -767,7 +759,7 @@ export default function RequisitionDetailPage() {
                                             setExpandedSupplierProducts(prev => ({ ...prev, [supplier.id]: false }));
                                           }
                                         }}
-                                        onClick={(e) => e.stopPropagation()} // Prevent card header click from toggling checkbox
+                                        onClick={(e) => e.stopPropagation()} 
                                       />
                                       <ShadFormLabelFromHookForm htmlFor={`supplier-checkbox-${supplier.id}`} className={cn("font-semibold text-md", !hasAnyQuotableProduct && "text-muted-foreground")}>
                                         {supplier.name}
@@ -789,7 +781,6 @@ export default function RequisitionDetailPage() {
                                   {hasAnyQuotableProduct && expandedSupplierProducts[supplier.id] && isSupplierSelectedForQuoting && (
                                     <CardContent className="p-2 pl-4 border-t">
                                       {isLoadingAllSupplierLinks && !allSupplierProductLinks[supplier.id] ? (
-                                        // Show skeleton while products for this supplier are loading due to batching
                                         <div className="space-y-2">
                                           <Skeleton className="h-4 w-3/4 mb-2" />
                                           <Skeleton className="h-10 w-full" />
@@ -802,7 +793,6 @@ export default function RequisitionDetailPage() {
                                         <div className="space-y-3">
                                           <p className="text-xs font-medium text-muted-foreground">Select products & set quantities for {supplier.name}:</p>
                                           {requisition.requiredProducts.map((reqProduct) => {
-                                            // Use the memoized supplierAnalysisData to get product-specific details
                                             const productAnalysis = supplierAnalysisData[supplier.id]?.[reqProduct.productId];
                                             const link = productAnalysis?.link || null;
                                             const canQuoteThisProduct = productAnalysis?.canQuoteProduct || false;
@@ -816,8 +806,7 @@ export default function RequisitionDetailPage() {
 
                                             const productIsSelectedForThisSupplier = productsForThisSupplierInForm.some(p => p.productId === reqProduct.productId);
                                             const currentProductQuoteIndex = productsForThisSupplierInForm.findIndex(p => p.productId === reqProduct.productId);
-
-                                            // Watch the quantity for the current product in the form for dynamic price range display
+                                            
                                             const watchedQuotedQuantity = productIsSelectedForThisSupplier && currentProductQuoteIndex !== -1
                                               ? quoteRequestForm.watch(`suppliersToQuote.${actualSupplierFormIndex}.productsToQuote.${currentProductQuoteIndex}.quotedQuantity`)
                                               : reqProduct.requiredQuantity;
@@ -917,7 +906,6 @@ export default function RequisitionDetailPage() {
                                               </div>
                                             );
                                           })}
-                                          {/* Error message for productsToQuote if it's empty when it shouldn't be */}
                                           {quoteRequestForm.formState.errors.suppliersToQuote?.[actualSupplierFormIndex]?.productsToQuote && (
                                             <ShadFormMessage className="mt-1 text-xs">
                                               {typeof quoteRequestForm.formState.errors.suppliersToQuote?.[actualSupplierFormIndex]?.productsToQuote?.message === 'string'
@@ -935,7 +923,6 @@ export default function RequisitionDetailPage() {
                             })}
                           </ScrollArea>
                       }
-                      {/* Global error message for suppliersToQuote array */}
                       {quoteRequestForm.formState.errors.suppliersToQuote && typeof quoteRequestForm.formState.errors.suppliersToQuote.message === 'string' && (
                         <ShadFormMessage className="pt-1 text-sm">
                           {quoteRequestForm.formState.errors.suppliersToQuote.message}
@@ -1003,3 +990,5 @@ export default function RequisitionDetailPage() {
     </>
   );
 }
+    
+    
