@@ -117,8 +117,8 @@ export default function QuotationDetailPage() {
             productId: d.productId,
             productName: d.productName,
             requiredQuantity: d.requiredQuantity,
-            quotedQuantity: d.quotedQuantity ?? d.requiredQuantity,
-            unitPriceQuoted: d.unitPriceQuoted ?? 0,
+            quotedQuantity: d.quotedQuantity !== undefined ? d.quotedQuantity : d.requiredQuantity,
+            unitPriceQuoted: d.unitPriceQuoted !== undefined ? d.unitPriceQuoted : 0,
             conditions: d.conditions ?? "",
             estimatedDeliveryDate: d.estimatedDeliveryDate?.toDate() ?? (fetchedQuotation.responseDeadline?.toDate() || new Date()),
             notes: d.notes ?? "",
@@ -619,4 +619,3 @@ export default function QuotationDetailPage() {
   );
 }
 
-    

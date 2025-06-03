@@ -138,11 +138,11 @@ export const createQuotation = async (data: CreateQuotationRequestData, userId: 
       productName: requestedProduct.productName, 
       requiredQuantity: requestedProduct.requiredQuantity,
       // these are set when supplier responds
-      // quotedQuantity: 0, 
-      // unitPriceQuoted: 0,
-      // conditions: "", 
-      // estimatedDeliveryDate: data.responseDeadline, 
-      // notes: "", 
+      // quotedQuantity: undefined, 
+      // unitPriceQuoted: undefined,
+      // conditions: undefined, 
+      // estimatedDeliveryDate: undefined, 
+      // notes: undefined, 
     };
     batch.set(detailRef, detailData);
   }
@@ -184,16 +184,22 @@ export const getQuotationById = async (id: string): Promise<Quotation | null> =>
 
   const quotationDetailsCollectionRef = collection(quotationRef, "quotationDetails");
   const detailsSnap = await getDocs(query(quotationDetailsCollectionRef, orderBy("productName")));
-  const quotationDetails: QuotationDetail[] = detailsSnap.docs.map(docSnap => ({
-    id: docSnap.id,
-    ...docSnap.data(),
-    // Ensure all fields have defaults if not present (especially for newly created details)
-    quotedQuantity: docSnap.data().quotedQuantity ?? 0,
-    unitPriceQuoted: docSnap.data().unitPriceQuoted ?? 0,
-    conditions: docSnap.data().conditions ?? "",
-    estimatedDeliveryDate: docSnap.data().estimatedDeliveryDate ?? Timestamp.now(), // Or a more sensible default like responseDeadline
-    notes: docSnap.data().notes ?? "",
-  } as QuotationDetail));
+  
+  const quotationDetails: QuotationDetail[] = detailsSnap.docs.map(docSnap => {
+    const detailData = docSnap.data();
+    return {
+      id: docSnap.id,
+      productId: detailData.productId,
+      productName: detailData.productName,
+      requiredQuantity: detailData.requiredQuantity,
+      // Pass through Firestore values, let form handle defaults if undefined
+      quotedQuantity: detailData.quotedQuantity, 
+      unitPriceQuoted: detailData.unitPriceQuoted,
+      conditions: detailData.conditions ?? "", // Keep string defaults
+      estimatedDeliveryDate: detailData.estimatedDeliveryDate, // Keep as Timestamp or undefined
+      notes: detailData.notes ?? "", // Keep string defaults
+    } as QuotationDetail; // Type assertion okay as form will handle undefined
+  });
 
   return {
     id: quotationSnap.id,
