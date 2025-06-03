@@ -1,4 +1,4 @@
-
+// src/components/icons.ts
 import type { SVGProps } from 'react';
 import {
   LayoutDashboard,
@@ -11,7 +11,8 @@ import {
   LogOut,
   LogIn,
   UserPlus as LucideUserPlus,
-  ChevronDown,
+  ChevronDown,        // Ya lo tienes
+  ChevronUp,          // <--- AÑADIR ESTA IMPORTACIÓN
   Menu,
   Package,
   FilePlus2,
@@ -38,7 +39,7 @@ import {
   MapPin,
   Building,
   Briefcase,
-  UsersRound, 
+  UsersRound,
   LayoutList,
   Calendar as LucideCalendar,
 } from 'lucide-react';
@@ -70,7 +71,7 @@ export const Icons = {
   RegisterStock: PackagePlus,
   VisualizeStock: BarChart3,
   Products: Boxes,
-  Warehouses: Building,
+  Warehouses: Building, // Warehouse fue cambiado por Building, asegúrate que sea consistente.
   Suppliers: UsersRound,
   Categories: LayoutList,
   Users: Users,
@@ -79,13 +80,14 @@ export const Icons = {
   Login: LogIn,
   UserPlus: LucideUserPlus,
   ChevronDown: ChevronDown,
+  ChevronUp: ChevronUp,      // <--- AÑADIR ESTA LÍNEA
   Menu: Menu,
   Logo: StockPilotLogo,
   Package: Package,
   Inbound: Archive,
   Outbound: LucideSend,
   Send: LucideSend,
-  Inventory: ClipboardList, // Changed from Package to ClipboardList for Inventory specifically
+  Inventory: ClipboardList,
   Location: MapPin,
   Business: Briefcase,
   ShoppingCart: ShoppingCart,
@@ -105,7 +107,7 @@ export const Icons = {
   MoreHorizontal: MoreHorizontal,
   List: List,
   Grid: Grid,
-  LayoutList: LayoutList,
-  ClipboardList: ClipboardList, 
+  LayoutList: LayoutList, // Tienes LayoutList dos veces, lo cual es redundante pero no dañino.
+  ClipboardList: ClipboardList,
   Calendar: LucideCalendar,
 };
