@@ -1,4 +1,3 @@
-
 import {
   collection,
   addDoc,
@@ -249,17 +248,22 @@ export const processAndFinalizeAwards = async (
       const requisitionData = requisitionSnap.data() as Requisition;
       console.log(`[RequisitionService] Fetched requisition ${requisitionId} within transaction. Status: ${requisitionData.status}`);
 
-      // Update pendingPOQuantity for required products
+      // First, get all required products outside the transaction to build a lookup map
       const requiredProductsColRef = collection(requisitionRef, "requiredProducts");
+      const requiredProductsSnapshot = await getDocs(requiredProductsColRef);
+      const requiredProductsMap = new Map<string, { ref: any, data: RequisitionRequiredProduct }>();
+      
+      requiredProductsSnapshot.docs.forEach(docSnap => {
+        const data = docSnap.data() as RequisitionRequiredProduct;
+        requiredProductsMap.set(data.productId, { ref: docSnap.ref, data });
+      });
+
+      // Update pendingPOQuantity for required products using the pre-fetched data
       for (const item of poDetailsForPendingQtyUpdate) {
-        const reqProdQuery = query(requiredProductsColRef, where("productId", "==", item.productId), limit(1));
-        const reqProdSnap = await transaction.get(reqProdQuery); // Transactional read
-        if (!reqProdSnap.empty) {
-          const reqProdDocSnap = reqProdSnap.docs[0];
-          const reqProdRef = reqProdDocSnap.ref;
-          const reqProdData = reqProdDocSnap.data() as RequisitionRequiredProduct;
-          const newPendingPOQuantity = (reqProdData.pendingPOQuantity || 0) + item.orderedQuantity;
-          transaction.update(reqProdRef, { pendingPOQuantity: newPendingPOQuantity });
+        const reqProdInfo = requiredProductsMap.get(item.productId);
+        if (reqProdInfo) {
+          const newPendingPOQuantity = (reqProdInfo.data.pendingPOQuantity || 0) + item.orderedQuantity;
+          transaction.update(reqProdInfo.ref, { pendingPOQuantity: newPendingPOQuantity });
           console.log(`[RequisitionService] Incremented pendingPOQuantity for product ${item.productId} on requisition ${requisitionId} by ${item.orderedQuantity} to ${newPendingPOQuantity}`);
         } else {
            console.warn(`[RequisitionService] Product ${item.productId} from new PO not found in requisition ${requisitionId} required products during pendingPOQuantity update.`);
@@ -326,30 +330,36 @@ export const updateRequisitionStateAfterPOSent = async (
       }
       const requisitionData = requisitionSnap.data() as Requisition;
 
+      // Get required products outside transaction first
       const requiredProductsColRef = collection(db, `requisitions/${poFromDb.originRequisitionId}/requiredProducts`);
-      const requiredProductsQuerySnap = await transaction.get(query(requiredProductsColRef)); // Get all required products for this req
+      const requiredProductsSnapshot = await getDocs(requiredProductsColRef);
+      const requiredProductsMap = new Map<string, { ref: any, data: RequisitionRequiredProduct }>();
+      
+      requiredProductsSnapshot.docs.forEach(docSnap => {
+        const data = docSnap.data() as RequisitionRequiredProduct;
+        requiredProductsMap.set(data.productId, { ref: docSnap.ref, data });
+      });
 
       let allReqItemsNowFullyPurchased = true;
 
       for (const poDetail of poFromDb.details) {
-        const reqProdDocSnap = requiredProductsQuerySnap.docs.find(
-          (docSnap) => (docSnap.data() as RequisitionRequiredProduct).productId === poDetail.productId
-        );
+        const reqProdInfo = requiredProductsMap.get(poDetail.productId);
 
-        if (reqProdDocSnap) {
-          const reqProdRef = reqProdDocSnap.ref;
-          const reqProdData = reqProdDocSnap.data() as RequisitionRequiredProduct;
+        if (reqProdInfo) {
+          const newPurchasedQty = (reqProdInfo.data.purchasedQuantity || 0) + poDetail.orderedQuantity;
+          const newPendingPOQuantity = Math.max(0, (reqProdInfo.data.pendingPOQuantity || 0) - poDetail.orderedQuantity);
           
-          const newPurchasedQty = (reqProdData.purchasedQuantity || 0) + poDetail.orderedQuantity;
-          const newPendingPOQuantity = Math.max(0, (reqProdData.pendingPOQuantity || 0) - poDetail.orderedQuantity);
-          
-          transaction.update(reqProdRef, { 
+          transaction.update(reqProdInfo.ref, { 
             purchasedQuantity: newPurchasedQty,
             pendingPOQuantity: newPendingPOQuantity 
           });
-          console.log(`[RequisitionService] Updated ReqProduct ${reqProdDocSnap.id} (ProdID: ${reqProdData.productId}): purchasedQty to ${newPurchasedQty}, pendingPOQuantity to ${newPendingPOQuantity}`);
+          console.log(`[RequisitionService] Updated ReqProduct (ProdID: ${reqProdInfo.data.productId}): purchasedQty to ${newPurchasedQty}, pendingPOQuantity to ${newPendingPOQuantity}`);
           
-          if (newPurchasedQty < reqProdData.requiredQuantity) {
+          // Update the local data for final status check
+          reqProdInfo.data.purchasedQuantity = newPurchasedQty;
+          reqProdInfo.data.pendingPOQuantity = newPendingPOQuantity;
+          
+          if (newPurchasedQty < reqProdInfo.data.requiredQuantity) {
             allReqItemsNowFullyPurchased = false;
           }
         } else {
@@ -357,12 +367,9 @@ export const updateRequisitionStateAfterPOSent = async (
         }
       }
       
-      // Re-fetch updated required products within the transaction to accurately determine requisition status
-      const finalReqProdsSnap = await transaction.get(query(requiredProductsColRef));
-      const finalRequiredProducts = finalReqProdsSnap.docs.map(doc => doc.data() as RequisitionRequiredProduct);
-
-      allReqItemsNowFullyPurchased = finalRequiredProducts.every(
-        rp => (rp.purchasedQuantity || 0) >= rp.requiredQuantity
+      // Check final status using updated local data
+      allReqItemsNowFullyPurchased = Array.from(requiredProductsMap.values()).every(
+        reqProdInfo => (reqProdInfo.data.purchasedQuantity || 0) >= reqProdInfo.data.requiredQuantity
       );
 
       let newRequisitionStatus = requisitionData.status;
@@ -397,27 +404,25 @@ export const handleRequisitionUpdateForPOCancellation = async (
     return;
   }
 
+  // Get required products outside transaction first
+  const requiredProductsColRef = collection(db, `requisitions/${requisitionId}/requiredProducts`);
+  const requiredProductsSnapshot = await getDocs(requiredProductsColRef);
+  const requiredProductsMap = new Map<string, { ref: any, data: RequisitionRequiredProduct }>();
+  
+  requiredProductsSnapshot.docs.forEach(docSnap => {
+    const data = docSnap.data() as RequisitionRequiredProduct;
+    requiredProductsMap.set(data.productId, { ref: docSnap.ref, data });
+  });
+
   await runTransaction(db, async (transaction) => {
     const requisitionRef = doc(db, "requisitions", requisitionId);
-    // We might not need to read the main requisition document if only updating subcollection and updatedAt
-    // const requisitionSnap = await transaction.get(requisitionRef);
-    // if (!requisitionSnap.exists()) {
-    //   throw new Error(`Requisition ${requisitionId} not found for PO cancellation update.`);
-    // }
-
-    const requiredProductsColRef = collection(requisitionRef, "requiredProducts");
 
     for (const poDetail of canceledPODetails) {
-      const reqProdQuery = query(requiredProductsColRef, where("productId", "==", poDetail.productId), limit(1));
-      const reqProdSnap = await transaction.get(reqProdQuery); 
+      const reqProdInfo = requiredProductsMap.get(poDetail.productId);
 
-      if (!reqProdSnap.empty) {
-        const reqProdDocSnap = reqProdSnap.docs[0];
-        const reqProdRef = reqProdDocSnap.ref;
-        const reqProdData = reqProdDocSnap.data() as RequisitionRequiredProduct;
-        
-        const newPendingPOQuantity = Math.max(0, (reqProdData.pendingPOQuantity || 0) - poDetail.orderedQuantity);
-        transaction.update(reqProdRef, { pendingPOQuantity: newPendingPOQuantity });
+      if (reqProdInfo) {
+        const newPendingPOQuantity = Math.max(0, (reqProdInfo.data.pendingPOQuantity || 0) - poDetail.orderedQuantity);
+        transaction.update(reqProdInfo.ref, { pendingPOQuantity: newPendingPOQuantity });
         console.log(`[RequisitionService] For POCancel: Decremented pendingPOQuantity for product ${poDetail.productId} on requisition ${requisitionId} by ${poDetail.orderedQuantity} to ${newPendingPOQuantity}`);
       } else {
         console.warn(`[RequisitionService] For POCancel: Product ${poDetail.productId} from canceled PO not found in requisition ${requisitionId}.`);
@@ -436,4 +441,3 @@ interface UpdatedRequiredProductQuantities {
         required: number;
     };
 }
-const updatedRequiredProductQuantitiesAfterPOUpdate: RequisitionRequiredProduct[] = [];
