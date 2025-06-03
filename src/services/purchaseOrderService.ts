@@ -26,8 +26,9 @@ import type {
   User as AppUser,
 } from "@/types";
 import { getSupplierById } from "./supplierService";
-import { getUserById } from "./userService"; // To get user name
-import { getProductById } from "./productService"; // To validate products
+import { getUserById } from "./userService"; 
+import { getProductById } from "./productService"; 
+import { handleRequisitionUpdateForPOCancellation } from "./requisitionService"; // Import new function
 
 const purchaseOrdersCollection = collection(db, "purchaseOrders");
 
@@ -92,9 +93,9 @@ export const createPurchaseOrder = async (
     supplierId: data.supplierId,
     originRequisitionId: data.originRequisitionId,
     quotationReferenceId: data.quotationReferenceId || null,
-    orderDate: now, // Order date is when PO is created
+    orderDate: now, 
     expectedDeliveryDate: data.expectedDeliveryDate,
-    status: "Pending", // Initial status
+    status: "Pending", 
     productsSubtotal,
     additionalCosts: data.additionalCosts || [],
     totalAmount,
@@ -113,7 +114,7 @@ export const createPurchaseOrder = async (
       productId: detailData.productId,
       productName: detailData.productName,
       orderedQuantity: detailData.orderedQuantity,
-      receivedQuantity: 0, // Initially 0
+      receivedQuantity: 0, 
       unitPrice: detailData.unitPrice,
       subtotal: detailData.orderedQuantity * detailData.unitPrice,
       notes: detailData.notes,
@@ -168,6 +169,7 @@ export interface PurchaseOrderFilters {
   status?: PurchaseOrderStatus;
   orderDateFrom?: Timestamp;
   orderDateTo?: Timestamp;
+  originRequisitionId?: string; // Added for fetching specific POs for a requisition
 }
 
 export const getAllPurchaseOrders = async (filters: PurchaseOrderFilters = {}): Promise<PurchaseOrder[]> => {
@@ -184,6 +186,9 @@ export const getAllPurchaseOrders = async (filters: PurchaseOrderFilters = {}): 
   }
   if (filters.orderDateTo) {
     qConstraints.push(where("orderDate", "<=", filters.orderDateTo));
+  }
+  if (filters.originRequisitionId) {
+    qConstraints.push(where("originRequisitionId", "==", filters.originRequisitionId));
   }
   qConstraints.push(orderBy("orderDate", "desc"));
 
@@ -209,7 +214,7 @@ export const getAllPurchaseOrders = async (filters: PurchaseOrderFilters = {}): 
       ...data,
       supplierName,
       creationUserName,
-    } as PurchaseOrder;
+    } as PurchaseOrder; // Cast as PurchaseOrder (details will be undefined for list)
   });
 
   return Promise.all(purchaseOrdersPromises);
@@ -218,9 +223,19 @@ export const getAllPurchaseOrders = async (filters: PurchaseOrderFilters = {}): 
 export const updatePurchaseOrderStatus = async (
   poId: string,
   newStatus: PurchaseOrderStatus,
-  userId: string // User performing the update
+  userId: string 
 ): Promise<void> => {
   const poRef = doc(db, "purchaseOrders", poId);
+  let originalPO: PurchaseOrder | null = null;
+
+  // Fetch original PO if we're potentially moving from Pending to Canceled
+  if (newStatus === "Canceled") {
+    originalPO = await getPurchaseOrderById(poId); // This fetches details too
+    if (!originalPO) {
+      throw new Error(`Purchase Order ${poId} not found during status update.`);
+    }
+  }
+  
   const updateData: Partial<PurchaseOrder> = {
     status: newStatus,
     updatedAt: Timestamp.now(),
@@ -228,7 +243,11 @@ export const updatePurchaseOrderStatus = async (
   if (newStatus === "Completed" || newStatus === "Canceled") {
     updateData.completionDate = Timestamp.now();
   }
+  
   await updateDoc(poRef, updateData);
-};
 
-    
+  // After successfully updating PO status, if it was a Pending PO that got Canceled, update requisition
+  if (originalPO && originalPO.status === "Pending" && newStatus === "Canceled" && originalPO.details) {
+    await handleRequisitionUpdateForPOCancellation(originalPO.originRequisitionId, originalPO.details, userId);
+  }
+};

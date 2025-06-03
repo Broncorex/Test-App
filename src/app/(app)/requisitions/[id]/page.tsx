@@ -37,7 +37,7 @@ import * as z from "zod";
 import { getAllSuppliers } from "@/services/supplierService";
 import { createQuotation, type CreateQuotationRequestData } from "@/services/quotationService";
 import { getSupplierProduct } from "@/services/supplierProductService";
-import { getAllPurchaseOrders, getPurchaseOrderById } from "@/services/purchaseOrderService";
+// Removed getAllPurchaseOrders and getPurchaseOrderById as pending Qty is now stored
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { Label } from "@/components/ui/label";
@@ -48,7 +48,7 @@ import { SupplierQuotationCard } from "@/components/requisitions/supplier-quotat
 
 const quotedProductSchema = z.object({
   productId: z.string().min(1, "Product ID is required"),
-  productName: z.string(),
+  productName: z.string(), 
   originalRequiredQuantity: z.number(),
   quotedQuantity: z.coerce.number().min(1, "Quoted quantity must be at least 1."),
 }).superRefine((data, ctx) => {
@@ -65,7 +65,7 @@ type QuotedProductFormData = z.infer<typeof quotedProductSchema>;
 const supplierQuoteDetailSchema = z.object({
   supplierId: z.string(),
   supplierName: z.string(),
-  productsToQuote: z.array(quotedProductSchema).optional(),
+  productsToQuote: z.array(quotedProductSchema).optional(), 
 });
 type SupplierQuoteDetailFormData = z.infer<typeof supplierQuoteDetailSchema>;
 
@@ -74,7 +74,7 @@ const quotationRequestFormSchema = z.object({
     .min(1, "At least one supplier must be selected for quotation.")
     .superRefine((suppliers, ctx) => {
       suppliers.forEach((supplierItem, index) => {
-        if (supplierItem.productsToQuote === undefined || supplierItem.productsToQuote.length === 0) {
+        if (!supplierItem.productsToQuote || supplierItem.productsToQuote.length === 0) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
             message: `Supplier "${supplierItem.supplierName}" must have at least one product selected to be included in the quote request.`,
@@ -124,8 +124,7 @@ export default function RequisitionDetailPage() {
   const [isLoadingAllSupplierLinks, setIsLoadingAllSupplierLinks] = useState(false);
   const [expandedSupplierProducts, setExpandedSupplierProducts] = useState<Record<string, boolean>>({});
 
-  const [pendingOrderedQuantities, setPendingOrderedQuantities] = useState<Record<string, number>>({});
-  const [isLoadingPendingQuantities, setIsLoadingPendingQuantities] = useState(false);
+  // Removed state for pendingOrderedQuantities and isLoadingPendingQuantities
 
   const quoteRequestForm = useForm<QuotationRequestFormData>({
     resolver: zodResolver(quotationRequestFormSchema),
@@ -203,7 +202,7 @@ export default function RequisitionDetailPage() {
   const fetchRequisitionData = useCallback(async () => {
     if (!requisitionId || !appUser) return;
     setIsLoading(true);
-    setIsLoadingPendingQuantities(true);
+    // setIsLoadingPendingQuantities(true); // Removed
     try {
       const fetchedRequisition = await getRequisitionById(requisitionId);
       if (fetchedRequisition) {
@@ -211,7 +210,7 @@ export default function RequisitionDetailPage() {
           toast({ title: "Access Denied", description: "You do not have permission to view this requisition.", variant: "destructive" });
           router.replace("/requisitions");
           setIsLoading(false);
-          setIsLoadingPendingQuantities(false);
+          // setIsLoadingPendingQuantities(false); // Removed
           return;
         }
         setRequisition(fetchedRequisition);
@@ -223,20 +222,7 @@ export default function RequisitionDetailPage() {
           notes: fetchedRequisition.notes || "",
         });
 
-        const allPOsForRequisition = await getAllPurchaseOrders({ originRequisitionId: fetchedRequisition.id });
-        const pendingPOs = allPOsForRequisition.filter(po => po.status === "Pending");
-        const pendingQuantitiesMap: Record<string, number> = {};
-
-        for (const pendingPOHeader of pendingPOs) {
-          const fullPendingPO = await getPurchaseOrderById(pendingPOHeader.id); 
-          if (fullPendingPO && fullPendingPO.details) {
-            fullPendingPO.details.forEach(detail => {
-              pendingQuantitiesMap[detail.productId] = (pendingQuantitiesMap[detail.productId] || 0) + detail.orderedQuantity;
-            });
-          }
-        }
-        setPendingOrderedQuantities(pendingQuantitiesMap);
-
+        // Removed dynamic PO fetching for pending quantities
       } else {
         toast({ title: "Error", description: "Requisition not found.", variant: "destructive" });
         router.replace("/requisitions");
@@ -246,7 +232,7 @@ export default function RequisitionDetailPage() {
       toast({ title: "Error", description: "Failed to fetch requisition details.", variant: "destructive" });
     } finally {
       setIsLoading(false);
-      setIsLoadingPendingQuantities(false);
+      // setIsLoadingPendingQuantities(false); // Removed
     }
   }, [requisitionId, appUser, role, router, toast, quoteRequestForm]);
 
@@ -652,7 +638,7 @@ export default function RequisitionDetailPage() {
                       <TableHead>Product Name</TableHead>
                       <TableHead className="text-right">Required Qty</TableHead>
                       <TableHead className="text-right">Purchased Qty</TableHead>
-                      <TableHead className="text-right">Pending Order Qty</TableHead>
+                      <TableHead className="text-right">Pending PO Qty</TableHead>
                       <TableHead>Item Notes</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -663,7 +649,7 @@ export default function RequisitionDetailPage() {
                         <TableCell className="text-right">{item.requiredQuantity}</TableCell>
                         <TableCell className="text-right">{item.purchasedQuantity || 0}</TableCell>
                         <TableCell className="text-right">
-                           {isLoadingPendingQuantities ? <Skeleton className="h-5 w-10 inline-block" /> : (pendingOrderedQuantities[item.productId] || 0)}
+                           {isLoading ? <Skeleton className="h-5 w-10 inline-block" /> : (item.pendingPOQuantity || 0)}
                         </TableCell>
                         <TableCell className="whitespace-pre-wrap">{item.notes || "N/A"}</TableCell>
                       </TableRow>
@@ -720,7 +706,7 @@ export default function RequisitionDetailPage() {
                       {isLoadingSuppliers ? <p>Loading suppliers...</p> :
                         availableSuppliers.length === 0 ? <p>No active suppliers found.</p> :
                           <ScrollArea className="h-[calc(100vh-28rem)] md:h-72 rounded-md border p-1">
-                            {availableSuppliers.map((supplier, supplierFormIndexInAvailableList) => {
+                            {availableSuppliers.map((supplier) => {
                               const isSupplierSelectedForQuoting = suppliersToQuoteFields.some(sField => sField.supplierId === supplier.id);
                                const actualSupplierFormIndex = suppliersToQuoteFields.findIndex(sField => sField.supplierId === supplier.id);
 
@@ -754,6 +740,7 @@ export default function RequisitionDetailPage() {
                           {quoteRequestForm.formState.errors.suppliersToQuote.root.message}
                         </ShadFormMessage>
                       )}
+                       {/* Specific error display for productsToQuote under each supplier is handled within SupplierQuotationCard */}
                     </FormItem>
                   )}
                 />
@@ -811,5 +798,3 @@ export default function RequisitionDetailPage() {
     </>
   );
 }
-
-    

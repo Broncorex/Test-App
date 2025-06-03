@@ -140,6 +140,7 @@ export interface RequiredProduct {
   productName: string;
   requiredQuantity: number;
   purchasedQuantity: number;
+  pendingPOQuantity?: number; // Added this field
   notes: string;
 }
 
@@ -263,5 +264,3 @@ export interface PurchaseOrder {
   // Subcollection 'details' will hold PurchaseOrderDetail items
   details?: PurchaseOrderDetail[]; // Populated after fetching subcollection
 }
-
-    
