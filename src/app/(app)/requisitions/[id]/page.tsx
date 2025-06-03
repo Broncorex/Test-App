@@ -37,6 +37,7 @@ import * as z from "zod";
 import { getAllSuppliers } from "@/services/supplierService";
 import { createQuotation, type CreateQuotationRequestData } from "@/services/quotationService";
 import { getSupplierProduct } from "@/services/supplierProductService";
+import { getAllPurchaseOrders, getPurchaseOrderById } from "@/services/purchaseOrderService"; // Added
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { Label } from "@/components/ui/label";
@@ -115,6 +116,23 @@ export default function RequisitionDetailPage() {
   const [isLoadingAllSupplierLinks, setIsLoadingAllSupplierLinks] = useState(false);
   const [expandedSupplierProducts, setExpandedSupplierProducts] = useState<Record<string, boolean>>({});
 
+  const [pendingOrderedQuantities, setPendingOrderedQuantities] = useState<Record<string, number>>({});
+  const [isLoadingPendingQuantities, setIsLoadingPendingQuantities] = useState(false);
+
+  const quoteRequestForm = useForm<QuotationRequestFormData>({
+    resolver: zodResolver(quotationRequestFormSchema),
+    defaultValues: {
+      suppliersToQuote: [],
+      responseDeadline: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      notes: "",
+    },
+  });
+
+  const { fields: suppliersToQuoteFields, append: appendSupplierToQuote, remove: removeSupplierFromQuote } = useFieldArray({
+    control: quoteRequestForm.control,
+    name: "suppliersToQuote",
+  });
+  
   const getApplicablePriceRange = useCallback((quantity: number, priceRangesParam?: PriceRange[]): PriceRange | null => {
     if (!priceRangesParam || priceRangesParam.length === 0 || isNaN(quantity) || quantity <= 0) {
       return null;
@@ -128,6 +146,10 @@ export default function RequisitionDetailPage() {
         return range;
       }
     }
+    // If no range explicitly contains the quantity, check if it's below the lowest tier.
+    // If so, no current range applies strictly, but the lowest tier is the "next available".
+    // If it's above the highest tier (and that tier has a maxQuantity), then the highest tier might apply if it has no max or is the last defined.
+    // This logic can be expanded if needed. For now, exact or within-range match.
     return null;
   }, []);
   
@@ -157,19 +179,16 @@ export default function RequisitionDetailPage() {
     }
 
     if (!result.currentRange && sortedRanges.length > 0) {
-      // If current required quantity is below the lowest tier, suggest the lowest tier.
       const lowestTier = sortedRanges[0];
       if (lowestTier.price !== null) {
         result.alternativeNextRange = lowestTier;
       }
-    } else if (result.currentPricePerUnit !== null) { // Only look for better if a current price is established
+    } else if (result.currentPricePerUnit !== null) { 
       for (const range of sortedRanges) {
-        // A "better" range must have a minQuantity greater than the current required quantity,
-        // and offer a strictly lower unit price.
         if (range.minQuantity > originalRequiredQuantity && range.price !== null && range.price < result.currentPricePerUnit) {
           result.nextBetterRange = range;
           result.quantityToReachNextBetter = range.minQuantity - originalRequiredQuantity;
-          break; // Found the next immediate better range
+          break; 
         }
       }
     }
@@ -177,30 +196,18 @@ export default function RequisitionDetailPage() {
   }, []);
 
 
-  const quoteRequestForm = useForm<QuotationRequestFormData>({
-    resolver: zodResolver(quotationRequestFormSchema),
-    defaultValues: {
-      suppliersToQuote: [],
-      responseDeadline: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-      notes: "",
-    },
-  });
-
-  const { fields: suppliersToQuoteFields, append: appendSupplierToQuote, remove: removeSupplierFromQuote } = useFieldArray({
-    control: quoteRequestForm.control,
-    name: "suppliersToQuote",
-  });
-
-
   const fetchRequisitionData = useCallback(async () => {
     if (!requisitionId || !appUser) return;
     setIsLoading(true);
+    setIsLoadingPendingQuantities(true);
     try {
       const fetchedRequisition = await getRequisitionById(requisitionId);
       if (fetchedRequisition) {
         if (role === 'employee' && fetchedRequisition.requestingUserId !== appUser.uid) {
           toast({ title: "Access Denied", description: "You do not have permission to view this requisition.", variant: "destructive" });
           router.replace("/requisitions");
+          setIsLoading(false);
+          setIsLoadingPendingQuantities(false);
           return;
         }
         setRequisition(fetchedRequisition);
@@ -212,6 +219,21 @@ export default function RequisitionDetailPage() {
           notes: fetchedRequisition.notes || "",
         });
 
+        // Fetch and calculate pending ordered quantities
+        const allPOsForRequisition = await getAllPurchaseOrders({ originRequisitionId: fetchedRequisition.id });
+        const pendingPOs = allPOsForRequisition.filter(po => po.status === "Pending");
+        const pendingQuantitiesMap: Record<string, number> = {};
+
+        for (const pendingPOHeader of pendingPOs) {
+          const fullPendingPO = await getPurchaseOrderById(pendingPOHeader.id); // This fetches details
+          if (fullPendingPO && fullPendingPO.details) {
+            fullPendingPO.details.forEach(detail => {
+              pendingQuantitiesMap[detail.productId] = (pendingQuantitiesMap[detail.productId] || 0) + detail.orderedQuantity;
+            });
+          }
+        }
+        setPendingOrderedQuantities(pendingQuantitiesMap);
+
       } else {
         toast({ title: "Error", description: "Requisition not found.", variant: "destructive" });
         router.replace("/requisitions");
@@ -219,8 +241,10 @@ export default function RequisitionDetailPage() {
     } catch (error) {
       console.error("Error fetching requisition details:", error);
       toast({ title: "Error", description: "Failed to fetch requisition details.", variant: "destructive" });
+    } finally {
+      setIsLoading(false);
+      setIsLoadingPendingQuantities(false);
     }
-    setIsLoading(false);
   }, [requisitionId, appUser, role, router, toast, quoteRequestForm]);
 
   useEffect(() => {
@@ -327,7 +351,6 @@ export default function RequisitionDetailPage() {
 
     for (const supplierQuote of data.suppliersToQuote) {
       if (!supplierQuote.productsToQuote || supplierQuote.productsToQuote.length === 0) {
-        console.warn(`Supplier ${supplierQuote.supplierName} has no products selected for quote. Skipping (SuperRefine should have caught this).`);
         continue;
       }
       try {
@@ -626,6 +649,7 @@ export default function RequisitionDetailPage() {
                       <TableHead>Product Name</TableHead>
                       <TableHead className="text-right">Required Qty</TableHead>
                       <TableHead className="text-right">Purchased Qty</TableHead>
+                      <TableHead className="text-right">Pending Order Qty</TableHead>
                       <TableHead>Item Notes</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -635,6 +659,9 @@ export default function RequisitionDetailPage() {
                         <TableCell className="font-medium">{item.productName}</TableCell>
                         <TableCell className="text-right">{item.requiredQuantity}</TableCell>
                         <TableCell className="text-right">{item.purchasedQuantity || 0}</TableCell>
+                        <TableCell className="text-right">
+                           {isLoadingPendingQuantities ? <Skeleton className="h-5 w-10 inline-block" /> : (pendingOrderedQuantities[item.productId] || 0)}
+                        </TableCell>
                         <TableCell className="whitespace-pre-wrap">{item.notes || "N/A"}</TableCell>
                       </TableRow>
                     ))}
@@ -655,7 +682,7 @@ export default function RequisitionDetailPage() {
               <DialogHeader>
                 <DialogTitle className="font-headline">Request Quotations</DialogTitle>
                 <DialogDescription>
-                  Select suppliers, choose products and quantities for each, and set a response deadline for requisition: {requisition.id.substring(0, 8)}...
+                  Select suppliers, choose products and set quoted quantities for each, and set a response deadline for requisition: {requisition.id.substring(0, 8)}...
                 </DialogDescription>
               </DialogHeader>
 
@@ -690,9 +717,9 @@ export default function RequisitionDetailPage() {
                       {isLoadingSuppliers ? <p>Loading suppliers...</p> :
                         availableSuppliers.length === 0 ? <p>No active suppliers found.</p> :
                           <ScrollArea className="h-[calc(100vh-28rem)] md:h-72 rounded-md border p-1">
-                            {availableSuppliers.map((supplier) => {
-                              const actualSupplierFormIndex = suppliersToQuoteFields.findIndex(sField => sField.supplierId === supplier.id);
-                              const isSupplierSelectedForQuoting = actualSupplierFormIndex !== -1;
+                            {availableSuppliers.map((supplier, supplierFormIndex) => {
+                              const isSupplierSelectedForQuoting = suppliersToQuoteFields.some(sField => sField.supplierId === supplier.id);
+                               const actualSupplierFormIndex = suppliersToQuoteFields.findIndex(sField => sField.supplierId === supplier.id);
 
                               return (
                                 <SupplierQuotationCard
@@ -701,7 +728,7 @@ export default function RequisitionDetailPage() {
                                   requisitionRequiredProducts={requisition.requiredProducts || []}
                                   supplierAnalysisData={supplierAnalysisData}
                                   formInstance={quoteRequestForm}
-                                  supplierFormIndex={actualSupplierFormIndex}
+                                  supplierFormIndex={actualSupplierFormIndex} 
                                   isSupplierSelected={isSupplierSelectedForQuoting}
                                   onToggleSupplier={toggleSupplierForQuoting}
                                   isExpanded={!!expandedSupplierProducts[supplier.id]}
