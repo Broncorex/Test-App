@@ -45,11 +45,11 @@ export interface Product {
   updatedAt: Timestamp;
   createdBy: string;
   isActive: boolean;
-  category?: string;
-  quantity?: number;
-  price?: number;
-  warehouseId?: string;
-  lastUpdated?: string | Timestamp;
+  category?: string; // from mock data, consider removing if not used from DB
+  quantity?: number; // from mock data, stock is in stockItems
+  price?: number;    // from mock data, product has basePrice/sellingPrice
+  warehouseId?: string; // from mock data, product itself isn't in a warehouse
+  lastUpdated?: string | Timestamp; // from mock data
 }
 
 
@@ -67,29 +67,41 @@ export interface Warehouse {
   isDefault: boolean;
 }
 
+export type StockMovementType =
+  | 'INBOUND_PO'
+  | 'INBOUND_TRANSFER'
+  | 'INBOUND_ADJUSTMENT'
+  | 'OUTBOUND_SALE'
+  | 'OUTBOUND_TRANSFER'
+  | 'OUTBOUND_ADJUSTMENT'
+  | 'INITIAL_STOCK';
+
 export interface StockMovement {
   id: string;
   productId: string;
+  productName?: string; // Denormalized
   warehouseId: string;
-  type: 'inbound' | 'outbound' | 'adjustment' | 'TRANSFER_OUT' | 'TRANSFER_IN';
+  warehouseName?: string; // Denormalized
+  type: StockMovementType;
   quantityChanged: number;
   quantityBefore: number;
   quantityAfter: number;
   movementDate: Timestamp;
-  userId?: string;
-  reason?: string;
-  notes?: string;
-  relatedDocumentId?: string;
-  supplierId?: string;
+  userId?: string; // User who performed/triggered the action
+  userName?: string; // Denormalized
+  reason: string; // Required
+  notes: string; // Required
+  relatedDocumentId?: string; // Required, e.g., PO ID, Transfer ID
+  supplierId?: string; // Required for INBOUND_PO
 }
 
 export interface StockItem {
-  id?: string;
+  id?: string; // productId_warehouseId
   productId: string;
   warehouseId: string;
   quantity: number;
   lastStockUpdate: Timestamp;
-  updatedBy: string;
+  updatedBy: string; // User UID
 }
 
 export interface User {
@@ -101,7 +113,7 @@ export interface User {
   createdAt: Timestamp | Date;
   isActive: boolean;
   createdBy?: string;
-  name?: string;
+  name?: string; // Potentially redundant with displayName
   assignedWarehouseIds?: string[];
 }
 
@@ -135,7 +147,7 @@ export const REQUISITION_STATUSES = ["Pending Quotation", "Quoted", "PO in Progr
 export type RequisitionStatus = typeof REQUISITION_STATUSES[number];
 
 export interface RequiredProduct {
-  id: string;
+  id: string; // Subcollection document ID
   productId: string;
   productName: string;
   requiredQuantity: number;
@@ -193,7 +205,7 @@ export interface QuotationAdditionalCost {
 }
 
 export interface QuotationDetail {
-  id: string;
+  id: string; // Subcollection document ID
   productId: string;
   productName: string;
   requiredQuantity: number;
@@ -227,14 +239,13 @@ export interface Quotation {
   quotationDetails?: QuotationDetail[];
 }
 
-// --- Purchase Order Types ---
 export const PURCHASE_ORDER_STATUSES = [
   "Pending",
   "SentToSupplier",
-  "ChangesProposedBySupplier", // New status
+  "ChangesProposedBySupplier",
   "ConfirmedBySupplier",
   "RejectedBySupplier",
-  "Partially Received",
+  "PartiallyReceived", // Renamed from "Partially Received" for consistency
   "Completed",
   "Canceled"
 ] as const;
@@ -270,7 +281,35 @@ export interface PurchaseOrder {
   createdAt: Timestamp;
   updatedAt: Timestamp;
   createdBy: string; // User UID (often same as creationUserId)
-  // Subcollection 'details' will hold PurchaseOrderDetail items
   details?: PurchaseOrderDetail[]; // Populated after fetching subcollection
 }
+
+// --- Receipt Types ---
+export const RECEIPT_ITEM_STATUSES = ["Ok", "Damaged", "Missing", "Other"] as const;
+export type ReceiptItemStatus = typeof RECEIPT_ITEM_STATUSES[number];
+
+export interface ReceivedItem {
+  id: string; // Firestore document ID for the subcollection item
+  productId: string;
+  productName: string; // Denormalized
+  quantityReceived: number;
+  itemStatus: ReceiptItemStatus;
+  notes: string;
+}
+
+export interface Receipt {
+  id: string; // Firestore document ID (receiptId)
+  purchaseOrderId: string;
+  receiptDate: Timestamp;
+  receivingUserId: string; // User who recorded the receipt
+  receivingUserName?: string; // Denormalized
+  targetWarehouseId: string;
+  targetWarehouseName?: string; // Denormalized
+  notes: string;
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+  createdBy: string; // User UID (often same as receivingUserId)
+  receivedItems?: ReceivedItem[]; // Populated after fetching subcollection
+}
+
     
