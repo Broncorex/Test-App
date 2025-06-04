@@ -2,7 +2,7 @@
 "use client";
 
 import { useParams, useRouter } from "next/navigation";
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import { PageHeader } from "@/components/shared/page-header";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
@@ -25,7 +25,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { useForm, useFieldArray, Controller } from "react-hook-form";
+import { useForm, useFieldArray, Controller, useWatch } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -71,24 +71,21 @@ const recordReceiptItemSchema = z.object({
   qtyDamagedReceived: z.coerce.number().min(0,"Damaged Qty must be non-negative.").default(0),
   qtyOtherReceived: z.coerce.number().min(0,"Other Qty must be non-negative.").default(0),
   notesForOther: z.string().optional(),
-  qtyDeclaredMissing: z.coerce.number().min(0,"Missing Qty must be non-negative.").default(0),
+  qtyDeclaredMissing: z.coerce.number().min(0,"Missing Qty must be non-negative.").default(0), // Will be auto-calculated but still part of the form data
   notesForMissing: z.string().optional(),
   lineItemNotes: z.string().optional(),
 }).superRefine((data, ctx) => {
     const totalPhysicallyReceived = data.qtyOkReceived + data.qtyDamagedReceived + data.qtyOtherReceived;
     if (totalPhysicallyReceived > data.outstandingQuantity) {
         ctx.addIssue({
-            path: ["qtyOkReceived"], // Could be any of the received fields
+            path: ["qtyOkReceived"], 
             message: `Total physically received (${totalPhysicallyReceived}) cannot exceed outstanding quantity (${data.outstandingQuantity}).`,
         });
     }
-    const totalAccountedFor = totalPhysicallyReceived + data.qtyDeclaredMissing;
-     if (totalAccountedFor > data.outstandingQuantity) {
-        ctx.addIssue({
-            path: ["qtyDeclaredMissing"], // Or any other field contributing to totalAccountedFor
-            message: `Total accounted for items (${totalAccountedFor}) cannot exceed outstanding quantity (${data.outstandingQuantity}). Consider reducing declared missing or received quantities.`,
-        });
-    }
+    // qtyDeclaredMissing is now auto-calculated. If totalPhysicallyReceived is valid, 
+    // qtyDeclaredMissing will be outstandingQuantity - totalPhysicallyReceived, which will be >= 0.
+    // The overall check for totalAccountedFor <= outstandingQuantity is implicitly handled.
+
     if (data.qtyOtherReceived > 0 && (!data.notesForOther || data.notesForOther.trim() === "")) {
       ctx.addIssue({
         path: ["notesForOther"],
@@ -109,18 +106,61 @@ const recordReceiptFormSchema = z.object({
             item.qtyOkReceived > 0 || 
             item.qtyDamagedReceived > 0 || 
             item.qtyOtherReceived > 0 ||
-            item.qtyDeclaredMissing > 0
+            item.qtyDeclaredMissing > 0 // Still check if missing is > 0 for form submission
         );
         if (!anyQuantityEntered) {
              ctx.addIssue({
-                path: [], // Root of the array
-                message: "Please enter received, damaged, other, or missing quantities for at least one item.",
+                path: [], 
+                message: "Please enter received, damaged, other quantities for at least one item (missing will be auto-calculated).",
             });
         }
     }),
 });
 
 type RecordReceiptFormData = z.infer<typeof recordReceiptFormSchema>;
+
+
+// Helper component for auto-calculating missing quantity
+const ReceiptItemMissingCalculator = ({
+  control,
+  index,
+  outstandingQuantity,
+}: {
+  control: any; // Control<RecordReceiptFormData>
+  index: number;
+  outstandingQuantity: number;
+}) => {
+  const qtyOkReceived = useWatch({
+    control,
+    name: `itemsToProcess.${index}.qtyOkReceived`,
+  });
+  const qtyDamagedReceived = useWatch({
+    control,
+    name: `itemsToProcess.${index}.qtyDamagedReceived`,
+  });
+  const qtyOtherReceived = useWatch({
+    control,
+    name: `itemsToProcess.${index}.qtyOtherReceived`,
+  });
+
+  useEffect(() => {
+    const numOk = Number(qtyOkReceived) || 0;
+    const numDamaged = Number(qtyDamagedReceived) || 0;
+    const numOther = Number(qtyOtherReceived) || 0;
+
+    const totalPhysicallyReceived = numOk + numDamaged + numOther;
+    const calculatedMissing = Math.max(0, outstandingQuantity - totalPhysicallyReceived);
+    
+    // Only set value if it's different to avoid infinite loops if setValue itself triggers a re-render that re-runs useEffect
+    const currentMissingVal = control.getValues(`itemsToProcess.${index}.qtyDeclaredMissing`);
+    if (currentMissingVal !== calculatedMissing) {
+        control.setValue(`itemsToProcess.${index}.qtyDeclaredMissing`, calculatedMissing, { shouldValidate: true });
+    }
+
+  }, [qtyOkReceived, qtyDamagedReceived, qtyOtherReceived, outstandingQuantity, index, control]);
+
+  return null; // This component doesn't render anything itself
+};
 
 
 export default function PurchaseOrderDetailPage() {
@@ -206,14 +246,17 @@ export default function PurchaseOrderDetailPage() {
 
   const handleOpenEditPODialog = () => {
     if (!purchaseOrder) return;
-    const sourceData = (purchaseOrder.status === 'PendingInternalReview' && purchaseOrder.originalDetails) ? purchaseOrder : purchaseOrder;
+    // Determine which set of details to use for pre-filling the form
+    const sourceData = (purchaseOrder.status === 'ChangesProposedBySupplier' && purchaseOrder.originalDetails) 
+      ? purchaseOrder // If already in ChangesProposed (and original snap exists), this is for re-editing the proposal
+      : purchaseOrder; // Otherwise, edit the current live details
 
     editPOForm.reset({
       notes: sourceData.notes || "",
       expectedDeliveryDate: sourceData.expectedDeliveryDate?.toDate(),
       additionalCosts: sourceData.additionalCosts?.map(ac => ({...ac, amount: Number(ac.amount)})) || [],
       details: sourceData.details?.map(d => ({
-        id: d.id,
+        id: d.id, // Important for potential future updates where individual detail items might be patched
         productId: d.productId,
         productName: d.productName,
         orderedQuantity: d.orderedQuantity,
@@ -242,11 +285,13 @@ export default function PurchaseOrderDetailPage() {
     };
 
     try {
+      // This service function will now snapshot original details if they don't exist yet
       await updatePurchaseOrderDetailsAndCosts(purchaseOrderId, payload);
       toast({ title: "Supplier's Proposal Recorded", description: "PO details updated. Now awaiting internal review." });
+      // Transition status to PendingInternalReview AFTER data is saved
       await handleStatusChange("PendingInternalReview"); 
       setIsEditPODialogOpen(false);
-      fetchPOData();
+      fetchPOData(); // Re-fetch to get the latest PO with originalDetails if snapshot
     } catch (error: any) {
       console.error("Error updating PO with supplier changes:", error);
       toast({ title: "Update Failed", description: error.message || "Could not update Purchase Order.", variant: "destructive" });
@@ -273,11 +318,11 @@ export default function PurchaseOrderDetailPage() {
                 orderedQuantity: d.orderedQuantity,
                 alreadyReceivedQuantity: d.receivedQuantity || 0,
                 outstandingQuantity: d.orderedQuantity - (d.receivedQuantity || 0),
-                qtyOkReceived: 0,
+                qtyOkReceived: 0, // Default values for the form
                 qtyDamagedReceived: 0,
                 qtyOtherReceived: 0,
                 notesForOther: "",
-                qtyDeclaredMissing: 0,
+                qtyDeclaredMissing: d.orderedQuantity - (d.receivedQuantity || 0), // Auto-calc initial missing
                 notesForMissing: "",
                 lineItemNotes: "",
             }));
@@ -330,7 +375,7 @@ export default function PurchaseOrderDetailPage() {
                 currentPOReceivedQuantity: item.alreadyReceivedQuantity, poOrderedQuantity: item.orderedQuantity
             });
         }
-        if (item.qtyDeclaredMissing > 0) { // "Missing" items are recorded with quantity 0 for actual stock adjustment
+        if (item.qtyDeclaredMissing > 0) { 
             servicePayloadItems.push({
                 productId: item.productId, productName: item.productName, poDetailId: item.poDetailId,
                 quantityReceived: 0, itemStatus: "Missing", 
@@ -340,11 +385,15 @@ export default function PurchaseOrderDetailPage() {
         }
     });
     
-    if (servicePayloadItems.length === 0) {
+    if (servicePayloadItems.length === 0 && data.itemsToProcess.every(itp => itp.qtyDeclaredMissing === itp.outstandingQuantity && itp.outstandingQuantity > 0)) {
+        // This case handles if ALL outstanding items are declared missing without any physical receipt
+        // It's a valid scenario to just record discrepancies.
+    } else if (servicePayloadItems.filter(spi => spi.itemStatus !== "Missing").length === 0 && !data.itemsToProcess.some(itp => itp.qtyDeclaredMissing > 0 && itp.qtyDeclaredMissing < itp.outstandingQuantity)) {
         receiptForm.setError("itemsToProcess", { type: "manual", message: "No quantities were entered for receipt or discrepancy." });
         setIsSubmittingReceipt(false);
         return;
     }
+
 
     const payload: CreateReceiptServiceData = {
         purchaseOrderId: purchaseOrder.id,
@@ -485,7 +534,7 @@ export default function PurchaseOrderDetailPage() {
               <>
                 <Button onClick={() => handleStatusChange("ConfirmedBySupplier")} disabled={isUpdating} variant="default" className="bg-teal-500 hover:bg-teal-600">{isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.Check className="mr-2 h-4 w-4" />}Record Supplier Confirmation</Button>
                 <Button onClick={() => handleStatusChange("RejectedBySupplier")} disabled={isUpdating} variant="destructive">{isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.X className="mr-2 h-4 w-4" />}Record Supplier Rejection</Button>
-                <Button onClick={handleOpenEditPODialog} disabled={isUpdating || isSubmittingEditPO} variant="outline" className="border-orange-500 text-orange-600 hover:bg-orange-50">{isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.Edit className="mr-2 h-4 w-4" />}Record Supplier's Proposal & Review</Button>
+                <Button onClick={handleOpenEditPODialog} disabled={isUpdating || isSubmittingEditPO} variant="outline" className="border-orange-500 text-orange-600 hover:bg-orange-50">{isUpdating || isSubmittingEditPO ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.Edit className="mr-2 h-4 w-4" />}Record Supplier's Proposal & Review</Button>
               </>
             )}
 
@@ -528,6 +577,10 @@ export default function PurchaseOrderDetailPage() {
             <p className="text-sm text-muted-foreground mt-2">
               <em>A detailed side-by-side comparison of original vs. proposed changes is planned for a future update. For now, please compare with the supplier's direct communication if status is 'ChangesProposedBySupplier', or use the comparison view below if available.</em>
             </p>
+             {/* Conditional rendering for side-by-side comparison */}
+            {purchaseOrder.status === "PendingInternalReview" && purchaseOrder.originalDetails && (
+                <p className="mt-2 text-sm text-primary">Use the "Original vs. Proposed Order Comparison" section below to review changes.</p>
+            )}
           </CardContent>
         </Card>
       )}
@@ -661,6 +714,7 @@ export default function PurchaseOrderDetailPage() {
                     const outstandingQty = item.orderedQuantity - item.alreadyReceivedQuantity;
                     return (
                       <Card key={item.id} className="p-3 bg-muted/30">
+                        <ReceiptItemMissingCalculator control={receiptForm.control} index={index} outstandingQuantity={outstandingQty} />
                         <CardTitle className="text-base mb-2">{item.productName}</CardTitle>
                         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end mb-3">
                           <div><FormLabel className="text-xs">Ordered</FormLabel><Input type="text" value={item.orderedQuantity} readOnly disabled className="h-8 text-sm bg-muted/50" /></div>
@@ -668,28 +722,28 @@ export default function PurchaseOrderDetailPage() {
                           <div><FormLabel className="text-xs">Outstanding</FormLabel><Input type="text" value={outstandingQty} readOnly disabled className="h-8 text-sm bg-muted/50 font-semibold" /></div>
                         </div>
                         
-                        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 items-start">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 items-start">
                             <FormField control={receiptForm.control} name={`itemsToProcess.${index}.qtyOkReceived`} render={({ field }) => (
                                 <FormItem><FormLabel className="text-xs">Qty OK Received*</FormLabel><FormControl><Input type="number" {...field} className="h-8 text-sm" min={0} max={outstandingQty} /></FormControl><FormMessage className="text-xs" /></FormItem>
                             )} />
                             <FormField control={receiptForm.control} name={`itemsToProcess.${index}.qtyDamagedReceived`} render={({ field }) => (
                                 <FormItem><FormLabel className="text-xs">Qty Damaged*</FormLabel><FormControl><Input type="number" {...field} className="h-8 text-sm" min={0} /></FormControl><FormMessage className="text-xs" /></FormItem>
                             )} />
-                            <FormField control={receiptForm.control} name={`itemsToProcess.${index}.qtyDeclaredMissing`} render={({ field }) => (
-                                <FormItem><FormLabel className="text-xs">Qty Declared Missing*</FormLabel><FormControl><Input type="number" {...field} className="h-8 text-sm" min={0} /></FormControl><FormMessage className="text-xs" /></FormItem>
+                            <FormField control={receiptForm.control} name={`itemsToProcess.${index}.qtyOtherReceived`} render={({ field }) => (
+                                <FormItem><FormLabel className="text-xs">Qty Other Status*</FormLabel><FormControl><Input type="number" {...field} className="h-8 text-sm" min={0} /></FormControl><FormMessage className="text-xs" /></FormItem>
+                            )} />
+                             <FormField control={receiptForm.control} name={`itemsToProcess.${index}.qtyDeclaredMissing`} render={({ field }) => (
+                                <FormItem><FormLabel className="text-xs">Qty Declared Missing*</FormLabel><FormControl><Input type="number" {...field} className="h-8 text-sm bg-slate-100" readOnly /></FormControl><FormMessage className="text-xs" /></FormItem>
                             )} />
                         </div>
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-2 items-start">
-                             <FormField control={receiptForm.control} name={`itemsToProcess.${index}.qtyOtherReceived`} render={({ field }) => (
-                                <FormItem><FormLabel className="text-xs">Qty Other Status*</FormLabel><FormControl><Input type="number" {...field} className="h-8 text-sm" min={0} /></FormControl><FormMessage className="text-xs" /></FormItem>
-                            )} />
                              <FormField control={receiptForm.control} name={`itemsToProcess.${index}.notesForOther`} render={({ field }) => (
                                 <FormItem><FormLabel className="text-xs">Notes for "Other" Qty</FormLabel><FormControl><Textarea rows={1} {...field} className="text-sm" placeholder="Specify reason if 'Other' > 0" /></FormControl><FormMessage className="text-xs" /></FormItem>
                             )} />
+                            <FormField control={receiptForm.control} name={`itemsToProcess.${index}.notesForMissing`} render={({ field }) => (
+                                <FormItem><FormLabel className="text-xs">Notes for Missing Items</FormLabel><FormControl><Textarea rows={1} {...field} className="text-sm" placeholder="Reason if 'Missing' > 0 (e.g. Backordered)" /></FormControl><FormMessage className="text-xs" /></FormItem>
+                            )} />
                         </div>
-                        <FormField control={receiptForm.control} name={`itemsToProcess.${index}.notesForMissing`} render={({ field }) => (
-                            <FormItem className="mt-2"><FormLabel className="text-xs">Notes for Missing Items</FormLabel><FormControl><Textarea rows={1} {...field} className="text-sm" placeholder="Reason if 'Missing' > 0 (e.g. Backordered)" /></FormControl><FormMessage className="text-xs" /></FormItem>
-                        )} />
                         <FormField control={receiptForm.control} name={`itemsToProcess.${index}.lineItemNotes`} render={({ field }) => (
                             <FormItem className="mt-2"><FormLabel className="text-xs">General Item Notes</FormLabel><FormControl><Textarea rows={1} {...field} className="text-sm" placeholder="e.g., Batch number, expiry" /></FormControl><FormMessage className="text-xs" /></FormItem>
                         )} />
@@ -714,4 +768,6 @@ export default function PurchaseOrderDetailPage() {
   );
 }
 
+    
+    
     
