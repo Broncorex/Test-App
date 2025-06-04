@@ -1,4 +1,3 @@
-
 import {
   collection,
   addDoc,
@@ -38,7 +37,6 @@ import type { CreatePurchaseOrderData, CreatePurchaseOrderDetailData } from "./p
 import { isValid } from "date-fns"; // For validating dates
 
 const requisitionsCollection = collection(db, "requisitions");
-
 
 export interface RequisitionProductData {
   productId: string;
@@ -144,7 +142,6 @@ export const getAllRequisitions = async (filters: RequisitionFilters = {}, curre
   return Promise.all(requisitionsPromises);
 };
 
-
 export const updateRequisitionStatus = async (id: string, status: RequisitionStatus): Promise<void> => {
   const requisitionRef = doc(db, "requisitions", id);
   await updateDoc(requisitionRef, {
@@ -249,26 +246,39 @@ export const processAndFinalizeAwards = async (
     await runTransaction(db, async (transaction) => {
       console.log(`[RequisitionService] Transaction started for requisitionId: ${requisitionId} to update statuses and pending quantities.`);
       const now = Timestamp.now();
+      
+      // Create document references properly within the transaction
       const requisitionRef = doc(db, "requisitions", requisitionId);
+      
+      // Get requisition within transaction
       const requisitionSnap = await transaction.get(requisitionRef);
-
       if (!requisitionSnap.exists()) {
         console.error(`[RequisitionService] Requisition ${requisitionId} not found within transaction.`);
         throw new Error("Requisition not found.");
       }
+      
       const requisitionData = requisitionSnap.data() as Requisition;
       console.log(`[RequisitionService] Fetched requisition ${requisitionId} within transaction. Status: ${requisitionData.status}`);
 
-      const requiredProductsColRef = collection(requisitionRef, "requiredProducts");
-      // Fetch RequiredProducts within the transaction to ensure latest data
-      const requiredProductsQuerySnapshot = await transaction.get(query(requiredProductsColRef));
+      // Get required products using individual document references
       const requiredProductsMap = new Map<string, { ref: any, data: RequisitionRequiredProduct }>();
+      
+      // First, get all required products outside transaction to get their IDs
+      const requiredProductsColRef = collection(db, `requisitions/${requisitionId}/requiredProducts`);
+      const requiredProductsSnapshot = await getDocs(requiredProductsColRef);
+      
+      // Now get each document within the transaction
+      for (const docSnap of requiredProductsSnapshot.docs) {
+        const docRef = doc(db, `requisitions/${requisitionId}/requiredProducts`, docSnap.id);
+        const transactionDocSnap = await transaction.get(docRef);
+        
+        if (transactionDocSnap.exists()) {
+          const data = transactionDocSnap.data() as RequisitionRequiredProduct;
+          requiredProductsMap.set(data.productId, { ref: docRef, data });
+        }
+      }
 
-      requiredProductsQuerySnapshot.docs.forEach(docSnap => {
-        const data = docSnap.data() as RequisitionRequiredProduct;
-        requiredProductsMap.set(data.productId, { ref: docSnap.ref, data });
-      });
-
+      // Update pending quantities for each product
       for (const item of poDetailsForPendingQtyUpdate) {
         const reqProdInfo = requiredProductsMap.get(item.productId);
         if (reqProdInfo) {
@@ -280,13 +290,17 @@ export const processAndFinalizeAwards = async (
         }
       }
 
+      // Update requisition status
       const newRequisitionStatus: RequisitionStatus = selectedAwards.length > 0 ? "PO in Progress" : requisitionData.status;
       console.log(`[RequisitionService] Staging update for requisition ${requisitionId} status to: ${newRequisitionStatus}`);
       transaction.update(requisitionRef, { status: newRequisitionStatus, updatedAt: now });
 
+      // Update quotation statuses
       for (const originalQuote of allRelevantOriginalQuotes) {
+        // Create proper document reference for each quotation
         const quoteRef = doc(db, "cotizaciones", originalQuote.id);
         const awardsFromThisQuote = selectedAwards.filter(sa => sa.quotationId === originalQuote.id);
+        
         if (awardsFromThisQuote.length > 0) {
           let allOfferedItemsAwarded = true;
           if (originalQuote.quotationDetails && awardsFromThisQuote.length < originalQuote.quotationDetails.length) {
@@ -314,7 +328,6 @@ export const processAndFinalizeAwards = async (
   }
 };
 
-
 export const updateRequisitionQuantitiesPostConfirmation = async (
   purchaseOrderId: string,
   userId: string
@@ -322,38 +335,49 @@ export const updateRequisitionQuantitiesPostConfirmation = async (
   console.log(`[RequisitionService] Starting updateRequisitionQuantitiesPostConfirmation for PO ID: ${purchaseOrderId}. User: ${userId}`);
 
   try {
-    await runTransaction(db, async (transaction) => {
-      const poFromDb = await getPurchaseOrderById(purchaseOrderId); // Fetches PO with details
-      if (!poFromDb || !poFromDb.details) {
-        throw new Error(`Purchase Order ${purchaseOrderId} or its details not found.`);
-      }
-      // This function is specifically for when a PO status moves to 'ConfirmedBySupplier'
-      // (or any other status that implies items are now "truly" ordered and no longer just pending PO creation)
-      if (poFromDb.status !== "ConfirmedBySupplier") {
-         console.warn(`[RequisitionService] PO ${purchaseOrderId} is not in "ConfirmedBySupplier" status (actual: ${poFromDb.status}). Requisition quantities for purchased/pending not updated by this call.`);
-         return; 
-      }
+    // Get PO data outside of transaction first
+    const poFromDb = await getPurchaseOrderById(purchaseOrderId);
+    if (!poFromDb || !poFromDb.details) {
+      throw new Error(`Purchase Order ${purchaseOrderId} or its details not found.`);
+    }
+    
+    if (poFromDb.status !== "ConfirmedBySupplier") {
+       console.warn(`[RequisitionService] PO ${purchaseOrderId} is not in "ConfirmedBySupplier" status (actual: ${poFromDb.status}). Requisition quantities for purchased/pending not updated by this call.`);
+       return { success: true, message: "PO not in ConfirmedBySupplier status, no update needed." };
+    }
 
+    await runTransaction(db, async (transaction) => {
+      // Create proper document references
       const requisitionRef = doc(db, "requisitions", poFromDb.originRequisitionId);
       const requisitionSnap = await transaction.get(requisitionRef);
+      
       if (!requisitionSnap.exists()) {
         throw new Error(`Origin Requisition ${poFromDb.originRequisitionId} not found for PO ${poFromDb.id}.`);
       }
+      
       const requisitionData = requisitionSnap.data() as Requisition;
 
+      // Get required products - first fetch outside transaction to get IDs
       const requiredProductsColRef = collection(db, `requisitions/${poFromDb.originRequisitionId}/requiredProducts`);
-      // Fetch required products within the transaction
-      const requiredProductsQuerySnapshot = await transaction.get(query(requiredProductsColRef));
+      const requiredProductsSnapshot = await getDocs(requiredProductsColRef);
+      
       const requiredProductsMap = new Map<string, { ref: any, data: RequisitionRequiredProduct }>();
 
-      requiredProductsQuerySnapshot.docs.forEach(docSnap => {
-        const data = docSnap.data() as RequisitionRequiredProduct;
-        requiredProductsMap.set(data.productId, { ref: docSnap.ref, data });
-      });
+      // Get each document within the transaction
+      for (const docSnap of requiredProductsSnapshot.docs) {
+        const docRef = doc(db, `requisitions/${poFromDb.originRequisitionId}/requiredProducts`, docSnap.id);
+        const transactionDocSnap = await transaction.get(docRef);
+        
+        if (transactionDocSnap.exists()) {
+          const data = transactionDocSnap.data() as RequisitionRequiredProduct;
+          requiredProductsMap.set(data.productId, { ref: docRef, data });
+        }
+      }
 
-      let allReqItemsNowFullyPurchasedOrExceeded = true; // Changed logic
+      let allReqItemsNowFullyPurchasedOrExceeded = true;
 
-      for (const poDetail of poFromDb.details) {
+      // Update quantities for each PO detail
+      for (const poDetail of poFromDb.details || []) {
         const reqProdInfo = requiredProductsMap.get(poDetail.productId);
 
         if (reqProdInfo) {
@@ -365,9 +389,10 @@ export const updateRequisitionQuantitiesPostConfirmation = async (
             purchasedQuantity: newPurchasedQty,
             pendingPOQuantity: newPendingPOQuantity
           });
+          
           console.log(`[RequisitionService] Updated ReqProduct (ProdID: ${currentReqProdData.productId}): purchasedQty to ${newPurchasedQty}, pendingPOQuantity to ${newPendingPOQuantity}`);
           
-          // Update local map data for subsequent checks
+          // Update local data for status check
           reqProdInfo.data.purchasedQuantity = newPurchasedQty;
           reqProdInfo.data.pendingPOQuantity = newPendingPOQuantity;
 
@@ -379,11 +404,12 @@ export const updateRequisitionQuantitiesPostConfirmation = async (
         }
       }
       
-      // Re-check overall status based on updated data in the map
+      // Check if all items are now fully purchased
       allReqItemsNowFullyPurchasedOrExceeded = Array.from(requiredProductsMap.values()).every(
         rpInfo => (rpInfo.data.purchasedQuantity || 0) >= rpInfo.data.requiredQuantity
       );
 
+      // Update requisition status if needed
       let newRequisitionStatus = requisitionData.status;
       if (allReqItemsNowFullyPurchasedOrExceeded && (requisitionData.status === "PO in Progress" || requisitionData.status === "Quoted")) {
         newRequisitionStatus = "Completed";
@@ -411,37 +437,53 @@ export const handleRequisitionUpdateForPOCancellation = async (
   userId: string
 ): Promise<void> => {
   console.log(`[RequisitionService] Handling PO Cancellation/Rejection for Requisition ID: ${requisitionId}. User: ${userId}`);
+  
   if (!requisitionId || !canceledPODetails || canceledPODetails.length === 0) {
     console.warn("[RequisitionService] Insufficient data for PO cancellation/rejection update on requisition.");
     return;
   }
 
-  await runTransaction(db, async (transaction) => {
-    const requisitionRef = doc(db, "requisitions", requisitionId);
+  try {
+    // Get required products outside transaction first
     const requiredProductsColRef = collection(db, `requisitions/${requisitionId}/requiredProducts`);
-    
-    const requiredProductsQuerySnapshot = await transaction.get(query(requiredProductsColRef));
-    const requiredProductsMap = new Map<string, { ref: any, data: RequisitionRequiredProduct }>();
-    requiredProductsQuerySnapshot.docs.forEach(docSnap => {
-      const data = docSnap.data() as RequisitionRequiredProduct;
-      requiredProductsMap.set(data.productId, { ref: docSnap.ref, data });
-    });
+    const requiredProductsSnapshot = await getDocs(requiredProductsColRef);
 
-    for (const poDetail of canceledPODetails) {
-      const reqProdInfo = requiredProductsMap.get(poDetail.productId);
-
-      if (reqProdInfo) {
-        const currentReqProdData = reqProdInfo.data;
-        const newPendingPOQuantity = Math.max(0, (currentReqProdData.pendingPOQuantity || 0) - poDetail.orderedQuantity);
-        transaction.update(reqProdInfo.ref, { pendingPOQuantity: newPendingPOQuantity });
-        console.log(`[RequisitionService] For POCancel/Reject: Decremented pendingPOQuantity for product ${poDetail.productId} on requisition ${requisitionId} by ${poDetail.orderedQuantity} to ${newPendingPOQuantity}`);
-      } else {
-        console.warn(`[RequisitionService] For POCancel/Reject: Product ${poDetail.productId} from canceled/rejected PO not found in requisition ${requisitionId}.`);
+    await runTransaction(db, async (transaction) => {
+      const requisitionRef = doc(db, "requisitions", requisitionId);
+      
+      const requiredProductsMap = new Map<string, { ref: any, data: RequisitionRequiredProduct }>();
+      
+      // Get each document within the transaction
+      for (const docSnap of requiredProductsSnapshot.docs) {
+        const docRef = doc(db, `requisitions/${requisitionId}/requiredProducts`, docSnap.id);
+        const transactionDocSnap = await transaction.get(docRef);
+        
+        if (transactionDocSnap.exists()) {
+          const data = transactionDocSnap.data() as RequisitionRequiredProduct;
+          requiredProductsMap.set(data.productId, { ref: docRef, data });
+        }
       }
-    }
-    transaction.update(requisitionRef, { updatedAt: Timestamp.now() });
-  });
-  console.log(`[RequisitionService] Successfully updated pending quantities for requisition ${requisitionId} due to PO cancellation/rejection.`);
-};
 
+      // Update pending quantities for canceled PO details
+      for (const poDetail of canceledPODetails) {
+        const reqProdInfo = requiredProductsMap.get(poDetail.productId);
+
+        if (reqProdInfo) {
+          const currentReqProdData = reqProdInfo.data;
+          const newPendingPOQuantity = Math.max(0, (currentReqProdData.pendingPOQuantity || 0) - poDetail.orderedQuantity);
+          transaction.update(reqProdInfo.ref, { pendingPOQuantity: newPendingPOQuantity });
+          console.log(`[RequisitionService] For POCancel/Reject: Decremented pendingPOQuantity for product ${poDetail.productId} on requisition ${requisitionId} by ${poDetail.orderedQuantity} to ${newPendingPOQuantity}`);
+        } else {
+          console.warn(`[RequisitionService] For POCancel/Reject: Product ${poDetail.productId} from canceled/rejected PO not found in requisition ${requisitionId}.`);
+        }
+      }
+      
+      transaction.update(requisitionRef, { updatedAt: Timestamp.now() });
+    });
     
+    console.log(`[RequisitionService] Successfully updated pending quantities for requisition ${requisitionId} due to PO cancellation/rejection.`);
+  } catch (error: any) {
+    console.error(`[RequisitionService] Error updating requisition for PO cancellation:`, error);
+    throw error;
+  }
+};
