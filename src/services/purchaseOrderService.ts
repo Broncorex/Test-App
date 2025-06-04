@@ -1,4 +1,3 @@
-
 import {
   collection,
   addDoc,
@@ -130,20 +129,40 @@ export const createPurchaseOrder = async (
   return purchaseOrderRef.id;
 };
 
-const getPODetails = async (poId: string, transaction?: any): Promise<PurchaseOrderDetail[]> => {
+const getPODetails = async (poId: string): Promise<PurchaseOrderDetail[]> => {
   const detailsCollectionRef = collection(db, `purchaseOrders/${poId}/details`);
   const q = query(detailsCollectionRef, orderBy("productName"));
+  const snapshot = await getDocs(q);
   
-  let snapshot;
-  if (transaction) {
-    snapshot = await transaction.get(query(detailsCollectionRef, orderBy("productName")));
-  } else {
-    snapshot = await getDocs(q);
-  }
-  
-  return snapshot.docs.map((docSnap: QueryDocumentSnapshot<DocumentData>) => ({ id: docSnap.id, ...docSnap.data() } as PurchaseOrderDetail));
+  return snapshot.docs.map((docSnap: QueryDocumentSnapshot<DocumentData>) => ({ 
+    id: docSnap.id, 
+    ...docSnap.data() 
+  } as PurchaseOrderDetail));
 };
 
+// New function to get PO details within a transaction by getting all documents individually
+const getPODetailsInTransaction = async (poId: string, transaction: any): Promise<PurchaseOrderDetail[]> => {
+  // First, get the collection reference outside the transaction to get document IDs
+  const detailsCollectionRef = collection(db, `purchaseOrders/${poId}/details`);
+  const q = query(detailsCollectionRef, orderBy("productName"));
+  const snapshot = await getDocs(q);
+  
+  // Then get each document within the transaction
+  const details: PurchaseOrderDetail[] = [];
+  for (const docSnap of snapshot.docs) {
+    const detailRef = doc(db, `purchaseOrders/${poId}/details`, docSnap.id);
+    const transactionSnap = await transaction.get(detailRef);
+    if (transactionSnap.exists()) {
+      details.push({ 
+        id: transactionSnap.id, 
+        ...transactionSnap.data() 
+      } as PurchaseOrderDetail);
+    }
+  }
+  
+  // Sort by productName as the original query intended
+  return details.sort((a, b) => a.productName.localeCompare(b.productName));
+};
 
 export const getPurchaseOrderById = async (id: string): Promise<PurchaseOrder | null> => {
   if (!id) return null;
@@ -231,7 +250,6 @@ export const getAllPurchaseOrders = async (filters: PurchaseOrderFilters = {}): 
   return Promise.all(purchaseOrdersPromises);
 };
 
-
 export interface UpdatePOWithChangesData {
   notes?: string;
   expectedDeliveryDate?: Timestamp;
@@ -290,7 +308,7 @@ export const updatePurchaseOrderDetailsAndCosts = async (
     // Snapshot original data if this is the first time changes are being proposed
     // This logic assumes that if `originalDetails` is not set, we should snapshot.
     if (!currentPOData.originalDetails && (currentPOData.status === "ChangesProposedBySupplier" || currentPOData.status === "SentToSupplier")) {
-      const originalDetailsSnapshot = await getPODetails(poId, transaction); // Fetch current details within transaction
+      const originalDetailsSnapshot = await getPODetailsInTransaction(poId, transaction); // Use transaction-safe version
       mainPOUpdateData.originalDetails = originalDetailsSnapshot;
       mainPOUpdateData.originalAdditionalCosts = currentPOData.additionalCosts;
       mainPOUpdateData.originalProductsSubtotal = currentPOData.productsSubtotal;
@@ -302,9 +320,13 @@ export const updatePurchaseOrderDetailsAndCosts = async (
     transaction.update(poRef, mainPOUpdateData);
 
     const detailsCollectionRef = collection(poRef, "details");
-    const oldDetailsSnap = await transaction.get(query(detailsCollectionRef));
+    const oldDetailsQ = query(detailsCollectionRef);
+    const oldDetailsSnap = await getDocs(oldDetailsQ); // Get outside transaction first
     
-    oldDetailsSnap.docs.forEach(docSnap => transaction.delete(docSnap.ref));
+    // Delete old details within transaction
+    for (const docSnap of oldDetailsSnap.docs) {
+      transaction.delete(docSnap.ref);
+    }
 
     data.details.forEach(newDetailData => {
       const detailRef = doc(detailsCollectionRef); 
@@ -321,7 +343,6 @@ export const updatePurchaseOrderDetailsAndCosts = async (
     });
   });
 };
-
 
 export const updatePurchaseOrderStatus = async (
   poId: string,
@@ -370,4 +391,3 @@ export const updatePurchaseOrderStatus = async (
 
   await updateDoc(poRef, updateData);
 };
-    
