@@ -25,6 +25,7 @@ import type {
   QuotationAdditionalCost,
   Supplier,
   User as AppUser,
+  SupplierSolutionType,
 } from "@/types";
 import { getSupplierById } from "./supplierService";
 import { getUserById } from "./userService";
@@ -256,7 +257,6 @@ export interface UpdatePOWithChangesData {
   expectedDeliveryDate?: Timestamp;
   additionalCosts: QuotationAdditionalCost[];
   details: Array<{
-    // id?: string; // Keep existing ID if updating, or undefined if new
     productId: string;
     productName: string;
     orderedQuantity: number;
@@ -305,10 +305,9 @@ export const updatePurchaseOrderDetailsAndCosts = async (
       totalAmount: newTotalAmount,
       updatedAt: Timestamp.now(),
     };
-
-    // Snapshot original data if this is the first time changes are being proposed
+    
     if (!currentPOData.originalDetails && (currentPOData.status === "ChangesProposedBySupplier" || currentPOData.status === "SentToSupplier")) {
-      const originalDetailsSnapshot = await getPODetailsInTransaction(poId, transaction);
+      const originalDetailsSnapshot = await getPODetailsInTransaction(poId, transaction); 
       mainPOUpdateData.originalDetails = originalDetailsSnapshot;
       mainPOUpdateData.originalAdditionalCosts = currentPOData.additionalCosts;
       mainPOUpdateData.originalProductsSubtotal = currentPOData.productsSubtotal;
@@ -319,19 +318,16 @@ export const updatePurchaseOrderDetailsAndCosts = async (
     
     transaction.update(poRef, mainPOUpdateData);
 
-    // To delete subcollection items in a transaction, we need their IDs first.
-    // Get the current subcollection items outside the transaction.
     const detailsCollectionRef = collection(poRef, "details");
-    const oldDetailsSnap = await getDocs(query(detailsCollectionRef)); // This read is outside the transaction
-
-    // Then, within the transaction, delete each document by its specific reference.
+    const oldDetailsQ = query(detailsCollectionRef);
+    const oldDetailsSnap = await getDocs(oldDetailsQ); 
+    
     for (const docSnap of oldDetailsSnap.docs) {
-      transaction.delete(doc(detailsCollectionRef, docSnap.id)); // Use specific doc ref for delete
+      transaction.delete(docSnap.ref);
     }
 
-    // Add new details within the transaction
     data.details.forEach(newDetailData => {
-      const detailRef = doc(detailsCollectionRef); // Generate new ID for each detail
+      const detailRef = doc(detailsCollectionRef); 
       const poDetail: Omit<PurchaseOrderDetail, "id"> = {
         productId: newDetailData.productId,
         productName: newDetailData.productName,
@@ -354,7 +350,6 @@ export const updatePurchaseOrderStatus = async (
   const poRef = doc(db, "purchaseOrders", poId);
   const now = Timestamp.now();
   
-  // Fetch the most up-to-date PO data before making decisions
   const originalPO = await getPurchaseOrderById(poId); 
   if (!originalPO) {
     throw new Error(`Purchase Order ${poId} not found for status update.`);
@@ -371,21 +366,17 @@ export const updatePurchaseOrderStatus = async (
   }
 
   if (newStatus === "ConfirmedBySupplier" && originalPO.details) {
-    // Re-fetch PO to ensure details are the latest for requisition update
     const potentiallyUpdatedPO = await getPurchaseOrderById(poId); 
     if (potentiallyUpdatedPO && potentiallyUpdatedPO.details) {
       await updateRequisitionQuantitiesPostConfirmation(poId, userId);
     } else {
-      console.error(`Failed to get updated PO details for PO ID ${poId} before requisition update. Requisition quantities might be based on stale PO data.`);
-      // Consider how to handle this error - potentially throw to alert user or log for admin attention.
-      // For now, let's proceed with a warning.
+      console.error("Failed to get updated PO details for requisition update.");
     }
   } else if (
       (newStatus === "Canceled" && (originalStatus === "Pending" || originalStatus === "SentToSupplier" || originalStatus === "ChangesProposedBySupplier" || originalStatus === "PendingInternalReview")) ||
       (newStatus === "RejectedBySupplier" && (originalStatus === "SentToSupplier" || originalStatus === "ChangesProposedBySupplier" || originalStatus === "PendingInternalReview"))
     ) {
-    // originalPO.details should be populated by getPurchaseOrderById
-    if (originalPO.details && originalPO.details.length > 0) {
+    if (originalPO.details && originalPO.details.length > 0) { // Check if details exist
         await handleRequisitionUpdateForPOCancellation(originalPO.originRequisitionId, originalPO.details, userId);
     } else {
         console.warn(`PO ${poId} details not found or empty when attempting to update requisition for Canceled/RejectedBySupplier status. Requisition may not be correctly updated.`);
@@ -393,6 +384,40 @@ export const updatePurchaseOrderStatus = async (
   }
 
   await updateDoc(poRef, updateData);
+};
+
+// New function to record supplier solution
+export interface RecordSupplierSolutionData {
+  supplierAgreedSolutionType: SupplierSolutionType;
+  supplierAgreedSolutionDetails: string;
+  // Potentially other fields based on solution type, e.g., discountAmount, newETA
+}
+
+export const recordSupplierSolution = async (
+  poId: string,
+  solutionData: RecordSupplierSolutionData,
+  userId: string
+): Promise<void> => {
+  const poRef = doc(db, "purchaseOrders", poId);
+  const now = Timestamp.now();
+
+  // For now, just update the notes and type.
+  // More complex logic for adjusting PO items based on solution type will be added.
+  const updatePayload: Partial<PurchaseOrder> = {
+    supplierAgreedSolutionType: solutionData.supplierAgreedSolutionType,
+    supplierAgreedSolutionDetails: solutionData.supplierAgreedSolutionDetails,
+    updatedAt: now,
+    // Status change will be handled separately based on the solution type.
+  };
+
+  // Placeholder: Based on solutionData.supplierAgreedSolutionType,
+  // you might adjust PO details, costs, or status here within a transaction.
+  // E.g., if type is "CreditPartialCharge", you'd update PO line items.
+  // E.g., if type is "FutureDelivery", you might change status to "AwaitingFutureDelivery".
+
+  console.log("Placeholder: recordSupplierSolution - PO would be updated with solution details.", updatePayload);
+  await updateDoc(poRef, updatePayload);
+  // After this, the page might trigger another status update if needed.
 };
 
     

@@ -246,11 +246,15 @@ export const PURCHASE_ORDER_STATUSES = [
   "PendingInternalReview",
   "ConfirmedBySupplier",
   "RejectedBySupplier",
-  "PartiallyReceived",
+  "PartiallyDelivered", // Renamed from PartiallyReceived
+  "AwaitingFutureDelivery", // New status
   "Completed",
   "Canceled"
 ] as const;
 export type PurchaseOrderStatus = typeof PURCHASE_ORDER_STATUSES[number];
+
+export type SupplierSolutionType = "CreditPartialCharge" | "DiscountForImperfection" | "FutureDelivery" | "Other";
+
 
 export interface PurchaseOrderDetail {
   id: string; // Firestore document ID for the subcollection item
@@ -291,6 +295,10 @@ export interface PurchaseOrder {
   originalTotalAmount?: number;
   originalNotes?: string;
   originalExpectedDeliveryDate?: Timestamp | null;
+
+  // Fields for supplier solution
+  supplierAgreedSolutionType?: SupplierSolutionType;
+  supplierAgreedSolutionDetails?: string;
 }
 
 // --- Receipt Types ---

@@ -9,8 +9,8 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth-store";
-import { getPurchaseOrderById, updatePurchaseOrderStatus, updatePurchaseOrderDetailsAndCosts, type UpdatePOWithChangesData } from "@/services/purchaseOrderService";
-import type { PurchaseOrder, PurchaseOrderStatus, PurchaseOrderDetail, QuotationAdditionalCost, Warehouse as AppWarehouse, User as AppUser } from "@/types";
+import { getPurchaseOrderById, updatePurchaseOrderStatus, updatePurchaseOrderDetailsAndCosts, type UpdatePOWithChangesData, recordSupplierSolution } from "@/services/purchaseOrderService";
+import type { PurchaseOrder, PurchaseOrderStatus, PurchaseOrderDetail, QuotationAdditionalCost, Warehouse as AppWarehouse, User as AppUser, SupplierSolutionType } from "@/types";
 import { QUOTATION_ADDITIONAL_COST_TYPES, PURCHASE_ORDER_STATUSES, RECEIPT_ITEM_STATUSES } from "@/types"; 
 import { Timestamp } from "firebase/firestore";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -67,13 +67,32 @@ const recordReceiptItemSchema = z.object({
   alreadyReceivedQuantity: z.number(),
   outstandingQuantity: z.number(),
   quantityReceivedThisTime: z.coerce.number()
-    .min(0, "Quantity received must be non-negative.")
-    .refine((val, ctx) => {
-        return true; 
-    }, "Cannot receive more than outstanding."),
+    .min(0, "Quantity received must be non-negative."),
   itemStatus: z.enum(RECEIPT_ITEM_STATUSES),
   itemNotes: z.string().optional(),
-});
+}).refine((data, ctx) => {
+    if (data.quantityReceivedThisTime > data.outstandingQuantity) {
+        ctx.addIssue({
+            path: ["quantityReceivedThisTime"],
+            message: `Cannot receive ${data.quantityReceivedThisTime}. Max outstanding is ${data.outstandingQuantity}.`,
+        });
+        return false;
+    }
+    if (data.quantityReceivedThisTime > 0 && data.itemStatus === "Missing") {
+        ctx.addIssue({
+            path: ["itemStatus"],
+            message: `Cannot mark as 'Missing' if quantity > 0 is received. Use 'Ok', 'Damaged', or 'Other'.`,
+        });
+        return false;
+    }
+    if (data.quantityReceivedThisTime === 0 && data.itemStatus !== "Missing") {
+        // Allow 0 quantity only if status is "Missing", otherwise it should have a quantity or be a discrepancy handled differently.
+        // For now, this simplifies, but a more complex logic could allow 0 for 'Ok' if it's just to confirm no receipt this time.
+        // Let's adjust this to allow 0 if the intent is to just record a status like 'Missing' for an item not received at all this time.
+    }
+    return true;
+}, "Invalid quantity or status combination.");
+
 
 const recordReceiptFormSchema = z.object({
   receiptDate: z.date({ required_error: "Receipt date is required." }),
@@ -82,26 +101,18 @@ const recordReceiptFormSchema = z.object({
   itemsToReceive: z.array(recordReceiptItemSchema)
     .min(1, "At least one item must be specified for receipt.")
     .superRefine((items, ctx) => {
-        let totalReceivedThisTime = 0;
-        items.forEach((item, index) => {
-            if (item.quantityReceivedThisTime > item.outstandingQuantity) {
-                ctx.addIssue({
-                    path: [`itemsToReceive`, index, "quantityReceivedThisTime"],
-                    message: `Cannot receive ${item.quantityReceivedThisTime}. Max outstanding is ${item.outstandingQuantity}.`,
-                });
-            }
-            if (item.quantityReceivedThisTime > 0 && item.itemStatus === "Missing") {
-                 ctx.addIssue({
-                    path: [`itemsToReceive`, index, "itemStatus"],
-                    message: `Cannot mark as 'Missing' if quantity > 0 is received. Use 'Ok', 'Damaged', or 'Other'.`,
-                });
-            }
-            totalReceivedThisTime += item.quantityReceivedThisTime;
+        let totalQuantityReceivedThisTime = 0;
+        items.forEach(item => {
+            totalQuantityReceivedThisTime += item.quantityReceivedThisTime;
         });
-        if (totalReceivedThisTime <= 0) {
-            ctx.addIssue({
+        // Check if any item has quantity > 0 OR if all items are marked "Missing"
+        const anyItemHasPositiveQuantity = items.some(item => item.quantityReceivedThisTime > 0);
+        const allItemsMarkedMissingWithZeroQty = items.every(item => item.itemStatus === "Missing" && item.quantityReceivedThisTime === 0);
+
+        if (!anyItemHasPositiveQuantity && !allItemsMarkedMissingWithZeroQty) {
+             ctx.addIssue({
                 path: ["itemsToReceive"], 
-                message: "At least one item must have a received quantity greater than zero.",
+                message: "Either receive a quantity > 0 for at least one item, or mark all unreceived items as 'Missing'.",
             });
         }
     }),
@@ -128,6 +139,11 @@ export default function PurchaseOrderDetailPage() {
   const [availableWarehouses, setAvailableWarehouses] = useState<AppWarehouse[]>([]);
   const [isLoadingWarehouses, setIsLoadingWarehouses] = useState(false);
   const [isSubmittingReceipt, setIsSubmittingReceipt] = useState(false);
+
+  // State for Supplier Solution Dialog (to be implemented later)
+  const [isSupplierSolutionDialogOpen, setIsSupplierSolutionDialogOpen] = useState(false);
+  const [isSubmittingSolution, setIsSubmittingSolution] = useState(false);
+
 
   const editPOForm = useForm<EditPOFormData>({
     resolver: zodResolver(editPOFormSchema),
@@ -188,8 +204,6 @@ export default function PurchaseOrderDetailPage() {
 
   const handleOpenEditPODialog = () => {
     if (!purchaseOrder) return;
-    // If originalDetails exist and status is 'PendingInternalReview', default form to the proposed (current) details
-    // If status is 'ChangesProposedBySupplier', default to current (original) details for editing into proposed
     const sourceData = (purchaseOrder.status === 'PendingInternalReview' && purchaseOrder.originalDetails) ? purchaseOrder : purchaseOrder;
 
     editPOForm.reset({
@@ -227,11 +241,9 @@ export default function PurchaseOrderDetailPage() {
 
     try {
       await updatePurchaseOrderDetailsAndCosts(purchaseOrderId, payload);
-      toast({ title: "Supplier's Proposal Recorded", description: "PO details updated." });
-      // Status change to PendingInternalReview is now separate
+      toast({ title: "Supplier's Proposal Recorded", description: "PO details updated. Now awaiting internal review." });
       await handleStatusChange("PendingInternalReview"); 
       setIsEditPODialogOpen(false);
-      // fetchPOData is called by handleStatusChange
     } catch (error: any) {
       console.error("Error updating PO with supplier changes:", error);
       toast({ title: "Update Failed", description: error.message || "Could not update Purchase Order.", variant: "destructive" });
@@ -287,9 +299,9 @@ export default function PurchaseOrderDetailPage() {
     if (!purchaseOrder || !currentUser) return;
     setIsSubmittingReceipt(true);
 
-    const itemsActuallyReceived = data.itemsToReceive.filter(item => item.quantityReceivedThisTime > 0);
-    if (itemsActuallyReceived.length === 0) {
-        receiptForm.setError("itemsToReceive", { type: "manual", message: "You must enter a received quantity for at least one item." });
+    const itemsToActuallyProcess = data.itemsToReceive.filter(item => item.quantityReceivedThisTime > 0 || item.itemStatus === "Missing");
+    if (itemsToActuallyProcess.length === 0) {
+        receiptForm.setError("itemsToReceive", { type: "manual", message: "Receive at least one item or mark items as missing." });
         setIsSubmittingReceipt(false);
         return;
     }
@@ -300,7 +312,7 @@ export default function PurchaseOrderDetailPage() {
         receivingUserId: currentUser.uid,
         targetWarehouseId: data.targetWarehouseId,
         notes: data.notes || "",
-        itemsToReceive: itemsActuallyReceived.map(item => ({
+        itemsToReceive: itemsToActuallyProcess.map(item => ({
             productId: item.productId,
             productName: item.productName,
             quantityReceived: item.quantityReceivedThisTime,
@@ -314,8 +326,9 @@ export default function PurchaseOrderDetailPage() {
 
     try {
         await createReceipt(payload);
-        await updatePOStatusAfterReceipt(purchaseOrder.id); 
-        toast({ title: "Receipt Recorded", description: "Stock receipt successfully recorded." });
+        // updatePOStatusAfterReceipt will be called by the page after successful createReceipt
+        await updatePOStatusAfterReceipt(purchaseOrder.id, currentUser.uid);
+        toast({ title: "Receipt Recorded", description: "Stock receipt successfully recorded. PO status updated." });
         setIsReceiptDialogOpen(false);
         fetchPOData(); 
     } catch (error: any) {
@@ -323,6 +336,13 @@ export default function PurchaseOrderDetailPage() {
         toast({ title: "Receipt Failed", description: error.message || "Could not record receipt.", variant: "destructive" });
     }
     setIsSubmittingReceipt(false);
+  };
+
+  const handleOpenSupplierSolutionDialog = () => {
+    // This will be implemented in a subsequent phase.
+    console.log("Open Supplier Solution Dialog - TBD");
+    toast({ title: "Feature Pending", description: "Recording supplier solutions for discrepancies is coming soon!", variant: "default" });
+    // setIsSupplierSolutionDialogOpen(true);
   };
 
 
@@ -344,7 +364,8 @@ export default function PurchaseOrderDetailPage() {
       case "PendingInternalReview": return "default";
       case "ConfirmedBySupplier": return "default";
       case "RejectedBySupplier": return "destructive";
-      case "PartiallyReceived": return "default";
+      case "PartiallyDelivered": return "default"; // Changed
+      case "AwaitingFutureDelivery": return "default"; // New
       case "Completed": return "default";
       case "Canceled": return "destructive";
       default: return "secondary";
@@ -358,7 +379,8 @@ export default function PurchaseOrderDetailPage() {
       case "ChangesProposedBySupplier": return "bg-orange-400 hover:bg-orange-500 text-black";
       case "PendingInternalReview": return "bg-purple-500 hover:bg-purple-600 text-white";
       case "ConfirmedBySupplier": return "bg-teal-500 hover:bg-teal-600 text-white";
-      case "PartiallyReceived": return "bg-yellow-400 hover:bg-yellow-500 text-black";
+      case "PartiallyDelivered": return "bg-yellow-500 hover:bg-yellow-600 text-black"; // Changed
+      case "AwaitingFutureDelivery": return "bg-cyan-500 hover:bg-cyan-600 text-white"; // New
       case "Completed": return "bg-green-500 hover:bg-green-600 text-white";
       default: return "";
     }
@@ -378,18 +400,17 @@ export default function PurchaseOrderDetailPage() {
   const showSentToSupplierActions = canManagePO && poStatus === "SentToSupplier";
   const showChangesProposedActions = canManagePO && poStatus === "ChangesProposedBySupplier";
   const showPendingInternalReviewActions = canManagePO && poStatus === "PendingInternalReview";
-  const showConfirmedBySupplierActions = canManagePO && poStatus === "ConfirmedBySupplier";
-  const showPartiallyReceivedActions = canManagePO && poStatus === "PartiallyReceived";
   
-  const showCancelPO = canManagePO && ["Pending", "SentToSupplier", "ChangesProposedBySupplier", "PendingInternalReview", "ConfirmedBySupplier"].includes(poStatus);
-  const showRecordReceipt = canManagePO && (poStatus === "ConfirmedBySupplier" || poStatus === "PartiallyReceived");
-  const showMarkCompleted = canManagePO && (poStatus === "ConfirmedBySupplier" || poStatus === "PartiallyReceived");
+  const showRecordReceipt = canManagePO && (poStatus === "ConfirmedBySupplier" || poStatus === "PartiallyDelivered" || poStatus === "AwaitingFutureDelivery");
+  const showRecordSupplierSolution = canManagePO && poStatus === "PartiallyDelivered";
+
+  const showCancelPO = canManagePO && !["Completed", "Canceled", "RejectedBySupplier", "PartiallyDelivered", "AwaitingFutureDelivery"].includes(poStatus);
+
 
   const renderComparisonTable = (originalItems: PurchaseOrderDetail[], proposedItems: PurchaseOrderDetail[], itemType: "Details" | "Costs") => (
     <Table>
       <TableHeader><TableRow><TableHead>Product</TableHead><TableHead className="text-right">Orig. Qty</TableHead><TableHead className="text-right">Prop. Qty</TableHead><TableHead className="text-right">Orig. Price</TableHead><TableHead className="text-right">Prop. Price</TableHead><TableHead>Notes (Proposed)</TableHead></TableRow></TableHeader>
       <TableBody>
-        {/* Merge and display logic needed here - simplified for now */}
         {proposedItems.map(pItem => {
           const oItem = originalItems.find(oi => oi.productId === pItem.productId);
           return (
@@ -435,7 +456,7 @@ export default function PurchaseOrderDetailPage() {
               <>
                 <Button onClick={() => handleStatusChange("ConfirmedBySupplier")} disabled={isUpdating} variant="default" className="bg-teal-500 hover:bg-teal-600">{isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.Check className="mr-2 h-4 w-4" />}Record Supplier Confirmation</Button>
                 <Button onClick={() => handleStatusChange("RejectedBySupplier")} disabled={isUpdating} variant="destructive">{isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.X className="mr-2 h-4 w-4" />}Record Supplier Rejection</Button>
-                <Button onClick={() => handleStatusChange("ChangesProposedBySupplier")} disabled={isUpdating} variant="outline" className="border-orange-500 text-orange-600 hover:bg-orange-50">{isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.Edit className="mr-2 h-4 w-4" />}Log Supplier Changes</Button>
+                <Button onClick={() => handleOpenEditPODialog()} disabled={isUpdating || isSubmittingEditPO} variant="outline" className="border-orange-500 text-orange-600 hover:bg-orange-50">{isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.Edit className="mr-2 h-4 w-4" />}Record Supplier's Proposal & Review</Button>
               </>
             )}
 
@@ -456,8 +477,7 @@ export default function PurchaseOrderDetailPage() {
             )}
 
             {showRecordReceipt && (<Button onClick={handleOpenReceiptDialog} disabled={isUpdating || isLoadingWarehouses} variant="default"><Icons.Package className="mr-2 h-4 w-4" /> Record Receipt</Button>)}
-            
-            {showMarkCompleted && (<Button onClick={() => handleStatusChange("Completed")} disabled={isUpdating} variant="default" className="bg-green-500 hover:bg-green-600 text-white">{isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.Check className="mr-2 h-4 w-4" />}Mark as Fully Received/Completed</Button>)}
+            {showRecordSupplierSolution && (<Button onClick={handleOpenSupplierSolutionDialog} disabled={isUpdating} variant="outline" className="border-yellow-500 text-yellow-600 hover:bg-yellow-50"><Icons.Edit className="mr-2 h-4 w-4" /> Record Supplier Solution</Button>)}
             
             {showCancelPO && (<AlertDialog><AlertDialogTrigger asChild><Button variant="destructive" disabled={isUpdating}>{isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.Delete className="mr-2 h-4 w-4" />}Cancel PO</Button></AlertDialogTrigger><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Are you sure you want to cancel this Purchase Order?</AlertDialogTitle><AlertDialogDescription>This action will mark the PO as 'Canceled'. If canceled before supplier confirmation, pending quantities on the requisition will be adjusted.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Keep PO</AlertDialogCancel><AlertDialogAction onClick={() => handleStatusChange("Canceled")} className="bg-destructive hover:bg-destructive/90">Confirm Cancellation</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>)}
             
@@ -554,6 +574,13 @@ export default function PurchaseOrderDetailPage() {
             <div className="flex justify-between text-md font-semibold pt-1"><span className="text-muted-foreground">Total PO Amount:</span><span>${Number(purchaseOrder.totalAmount || 0).toFixed(2)}</span></div>
             <Separator />
             <div><span className="text-muted-foreground">Notes:</span><p className="font-medium whitespace-pre-wrap">{purchaseOrder.notes || "N/A"}</p></div>
+            {purchaseOrder.supplierAgreedSolutionType && (
+              <>
+                <Separator />
+                <div><span className="text-muted-foreground">Supplier Solution Type:</span><p className="font-medium">{purchaseOrder.supplierAgreedSolutionType}</p></div>
+                {purchaseOrder.supplierAgreedSolutionDetails && <div><span className="text-muted-foreground">Solution Details:</span><p className="font-medium whitespace-pre-wrap">{purchaseOrder.supplierAgreedSolutionDetails}</p></div>}
+              </>
+            )}
             <Separator />
             <div className="flex justify-between"><span className="text-muted-foreground">Last Updated:</span><span className="font-medium">{formatTimestampDate(purchaseOrder.updatedAt)}</span></div>
           </CardContent>
