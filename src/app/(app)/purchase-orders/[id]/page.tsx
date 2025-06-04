@@ -9,8 +9,9 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth-store";
-import { getPurchaseOrderById, updatePurchaseOrderStatus } from "@/services/purchaseOrderService";
+import { getPurchaseOrderById, updatePurchaseOrderStatus, updatePurchaseOrderDetailsAndCosts, type UpdatePOWithChangesData } from "@/services/purchaseOrderService";
 import type { PurchaseOrder, PurchaseOrderStatus, PurchaseOrderDetail, QuotationAdditionalCost } from "@/types";
+import { QUOTATION_ADDITIONAL_COST_TYPES } from "@/types"; // For edit dialog
 import { Timestamp } from "firebase/firestore";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
@@ -18,8 +19,43 @@ import { Icons } from "@/components/icons";
 import Link from "next/link";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
-import { format, isValid } from "date-fns";
+import { format, isValid, parseISO } from "date-fns";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle as ShadDialogTitle, DialogClose } from "@/components/ui/dialog";
+import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { useForm, useFieldArray, Controller } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import * as z from "zod";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Calendar } from "@/components/ui/calendar";
+import { cn } from "@/lib/utils";
+
+
+const poDetailItemSchema = z.object({
+  id: z.string().optional(), // For existing items in subcollection (though we replace all)
+  productId: z.string(),
+  productName: z.string(), // Denormalized, read-only in form
+  orderedQuantity: z.coerce.number().min(0.001, "Quantity must be positive."),
+  unitPrice: z.coerce.number().min(0, "Price must be non-negative."),
+  notes: z.string().optional(),
+});
+
+const editPOFormSchema = z.object({
+  notes: z.string().optional(),
+  expectedDeliveryDate: z.date().optional(),
+  additionalCosts: z.array(z.object({
+    description: z.string().min(1, "Cost description is required."),
+    amount: z.coerce.number().min(0, "Cost amount must be non-negative."),
+    type: z.enum(QUOTATION_ADDITIONAL_COST_TYPES),
+  })).optional(),
+  details: z.array(poDetailItemSchema).min(1, "At least one product item is required."),
+});
+
+type EditPOFormData = z.infer<typeof editPOFormSchema>;
+
 
 export default function PurchaseOrderDetailPage() {
   const params = useParams();
@@ -31,6 +67,23 @@ export default function PurchaseOrderDetailPage() {
   const [purchaseOrder, setPurchaseOrder] = useState<PurchaseOrder | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isUpdating, setIsUpdating] = useState(false);
+
+  const [isEditPODialogOpen, setIsEditPODialogOpen] = useState(false);
+  const [isSubmittingEditPO, setIsSubmittingEditPO] = useState(false);
+
+  const editPOForm = useForm<EditPOFormData>({
+    resolver: zodResolver(editPOFormSchema),
+  });
+
+  const { fields: editPODetailFields, append: appendEditPODetail, remove: removeEditPODetail } = useFieldArray({
+    control: editPOForm.control,
+    name: "details",
+  });
+  const { fields: editPOAdditionalCostFields, append: appendEditPOAdditionalCost, remove: removeEditPOAdditionalCost } = useFieldArray({
+    control: editPOForm.control,
+    name: "additionalCosts",
+  });
+
 
   const fetchPOData = useCallback(async () => {
     if (!purchaseOrderId || !appUser) return;
@@ -60,14 +113,64 @@ export default function PurchaseOrderDetailPage() {
     try {
       await updatePurchaseOrderStatus(purchaseOrderId, newStatus, currentUser.uid);
       toast({ title: `PO Status Updated to ${newStatus}`, description: `Purchase Order status successfully changed.` });
-      fetchPOData(); 
+      fetchPOData();
     } catch (error: any) {
       console.error(`Error changing PO status to ${newStatus}:`, error);
       toast({ title: "Update Failed", description: error.message || `Could not change PO status to ${newStatus}.`, variant: "destructive" });
     }
     setIsUpdating(false);
   };
-  
+
+  const handleOpenEditPODialog = () => {
+    if (!purchaseOrder) return;
+    editPOForm.reset({
+      notes: purchaseOrder.notes || "",
+      expectedDeliveryDate: purchaseOrder.expectedDeliveryDate?.toDate(),
+      additionalCosts: purchaseOrder.additionalCosts?.map(ac => ({...ac, amount: Number(ac.amount)})) || [],
+      details: purchaseOrder.details?.map(d => ({
+        id: d.id, // Keep if needed for direct subcollection item updates (not used if deleting all)
+        productId: d.productId,
+        productName: d.productName,
+        orderedQuantity: d.orderedQuantity,
+        unitPrice: d.unitPrice,
+        notes: d.notes || "",
+      })) || [],
+    });
+    setIsEditPODialogOpen(true);
+  };
+
+  const handleEditPOSubmit = async (data: EditPOFormData) => {
+    if (!purchaseOrder || !currentUser) return;
+    setIsSubmittingEditPO(true);
+
+    const payload: UpdatePOWithChangesData = {
+      notes: data.notes,
+      expectedDeliveryDate: data.expectedDeliveryDate ? Timestamp.fromDate(data.expectedDeliveryDate) : undefined,
+      additionalCosts: data.additionalCosts || [],
+      details: data.details.map(d => ({ // Ensure structure matches service
+        productId: d.productId,
+        productName: d.productName,
+        orderedQuantity: d.orderedQuantity,
+        unitPrice: d.unitPrice,
+        notes: d.notes || "",
+      })),
+    };
+
+    try {
+      await updatePurchaseOrderDetailsAndCosts(purchaseOrderId, payload);
+      // After successful data update, trigger status change to ConfirmedBySupplier
+      await handleStatusChange("ConfirmedBySupplier"); // This will also trigger requisition updates
+      toast({ title: "PO Updated & Confirmed", description: "Purchase Order details updated and confirmed with supplier." });
+      setIsEditPODialogOpen(false);
+      fetchPOData(); // Re-fetch to show latest data and status
+    } catch (error: any) {
+      console.error("Error updating PO with supplier changes:", error);
+      toast({ title: "Update Failed", description: error.message || "Could not update Purchase Order.", variant: "destructive" });
+    }
+    setIsSubmittingEditPO(false);
+  };
+
+
   const formatTimestampDate = (timestamp?: Timestamp | null): string => {
     if (!timestamp) return "N/A";
     let date: Date;
@@ -80,17 +183,17 @@ export default function PurchaseOrderDetailPage() {
     }
     return isValid(date) ? format(date, "PPP") : "Invalid Date";
   };
-  
+
   const getStatusBadgeVariant = (status?: PurchaseOrderStatus) => {
     if (!status) return "secondary";
     switch (status) {
       case "Pending": return "outline";
       case "SentToSupplier": return "default";
       case "ChangesProposedBySupplier": return "default";
-      case "ConfirmedBySupplier": return "default"; 
+      case "ConfirmedBySupplier": return "default";
       case "RejectedBySupplier": return "destructive";
-      case "Partially Received": return "default"; 
-      case "Completed": return "default"; 
+      case "Partially Received": return "default";
+      case "Completed": return "default";
       case "Canceled": return "destructive";
       default: return "secondary";
     }
@@ -159,7 +262,7 @@ export default function PurchaseOrderDetailPage() {
               <>
                 <Button onClick={() => handleStatusChange("ConfirmedBySupplier")} disabled={isUpdating} variant="default" className="bg-teal-500 hover:bg-teal-600">
                   {isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.Check className="mr-2 h-4 w-4" />}
-                  Record Supplier Confirmation
+                  Confirm PO (as is)
                 </Button>
                 <Button onClick={() => handleStatusChange("RejectedBySupplier")} disabled={isUpdating} variant="destructive">
                   {isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.X className="mr-2 h-4 w-4" />}
@@ -173,17 +276,17 @@ export default function PurchaseOrderDetailPage() {
             )}
             {canActOnProposedChanges && (
                 <>
-                    <Button onClick={() => handleStatusChange("ConfirmedBySupplier")} disabled={isUpdating} variant="default" className="bg-teal-500 hover:bg-teal-600">
-                        {isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.Check className="mr-2 h-4 w-4" />}
-                        Accept Changes & Confirm PO
+                    <Button onClick={handleOpenEditPODialog} disabled={isUpdating || isSubmittingEditPO} variant="default" className="bg-blue-500 hover:bg-blue-600">
+                      <Icons.Edit className="mr-2 h-4 w-4" />
+                      Edit PO & Confirm
                     </Button>
-                    <Button onClick={() => handleStatusChange("ConfirmedBySupplier")} disabled={isUpdating} variant="outline" className="border-blue-500 text-blue-600 hover:bg-blue-50">
-                        {/* For now, this also just confirms. Future: uses original details if edited PO is a concept. */}
-                        Proceed with Original PO
+                    <Button onClick={() => handleStatusChange("ConfirmedBySupplier")} disabled={isUpdating} variant="outline" className="border-teal-500 text-teal-600 hover:bg-teal-50">
+                        {isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.Check className="mr-2 h-4 w-4" />}
+                        Confirm Original PO
                     </Button>
                     <Button onClick={() => handleStatusChange("RejectedBySupplier")} disabled={isUpdating} variant="destructive">
                         {isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.X className="mr-2 h-4 w-4" />}
-                        Reject PO (Due to Changes)
+                        Reject PO
                     </Button>
                 </>
             )}
@@ -193,8 +296,8 @@ export default function PurchaseOrderDetailPage() {
               </Button>
             )}
              {canMarkCompleted && (
-                <Button 
-                    onClick={() => handleStatusChange("Completed")} 
+                <Button
+                    onClick={() => handleStatusChange("Completed")}
                     disabled={isUpdating}
                     variant="default"
                     className="bg-green-500 hover:bg-green-600 text-white"
@@ -215,8 +318,8 @@ export default function PurchaseOrderDetailPage() {
                   <AlertDialogHeader>
                     <AlertDialogTitle>Are you sure you want to cancel this Purchase Order?</AlertDialogTitle>
                     <AlertDialogDescription>
-                      This action will mark the PO as 'Canceled'. 
-                      {purchaseOrder.status === "Pending" || purchaseOrder.status === "SentToSupplier" || purchaseOrder.status === "ChangesProposedBySupplier" ? " Pending quantities on the requisition will be adjusted." : " Quantities on the requisition may need manual review if already confirmed by supplier."}
+                      This action will mark the PO as 'Canceled'.
+                      If canceled before 'ConfirmedBySupplier', pending quantities on the requisition will be adjusted.
                     </AlertDialogDescription>
                   </AlertDialogHeader>
                   <AlertDialogFooter>
@@ -260,7 +363,7 @@ export default function PurchaseOrderDetailPage() {
             </div>
             <div className="flex justify-between"><span className="text-muted-foreground">Created By:</span><span className="font-medium">{purchaseOrder.creationUserName || purchaseOrder.creationUserId}</span></div>
             {purchaseOrder.completionDate && (<div className="flex justify-between"><span className="text-muted-foreground">Completion Date:</span><span className="font-medium">{formatTimestampDate(purchaseOrder.completionDate)}</span></div>)}
-            
+
             <Separator />
             <div className="flex justify-between"><span className="text-muted-foreground">Products Subtotal:</span><span className="font-medium">${Number(purchaseOrder.productsSubtotal || 0).toFixed(2)}</span></div>
             {purchaseOrder.additionalCosts && purchaseOrder.additionalCosts.length > 0 && (
@@ -292,7 +395,7 @@ export default function PurchaseOrderDetailPage() {
           </CardHeader>
           <CardContent>
             {purchaseOrder.details && purchaseOrder.details.length > 0 ? (
-              <ScrollArea className="h-[calc(100vh-22rem)]"> 
+              <ScrollArea className="h-[calc(100vh-22rem)]">
                 <Table>
                   <TableHeader>
                     <TableRow>
@@ -324,7 +427,115 @@ export default function PurchaseOrderDetailPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Edit PO Dialog */}
+      <Dialog open={isEditPODialogOpen} onOpenChange={setIsEditPODialogOpen}>
+        <DialogContent className="sm:max-w-3xl flex flex-col max-h-[90vh]">
+          <Form {...editPOForm}>
+            <form onSubmit={editPOForm.handleSubmit(handleEditPOSubmit)} className="flex flex-col flex-grow min-h-0">
+              <DialogHeader>
+                <ShadDialogTitle className="font-headline">Edit Purchase Order Details (Supplier Feedback)</ShadDialogTitle>
+                <DialogDescription>
+                  Modify quantities, prices, costs, or notes based on supplier's proposed changes.
+                  Saving will confirm the PO with these new details.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="flex-grow overflow-y-auto min-h-0 py-4 pr-2 space-y-4">
+                <FormField
+                  control={editPOForm.control}
+                  name="expectedDeliveryDate"
+                  render={({ field }) => (
+                    <FormItem className="flex flex-col">
+                      <FormLabel>New Expected Delivery Date (Optional)</FormLabel>
+                      <Popover>
+                        <PopoverTrigger asChild>
+                          <FormControl>
+                            <Button variant={"outline"} className={cn("pl-3 text-left font-normal w-full", !field.value && "text-muted-foreground")}>
+                              {field.value ? format(field.value, "PPP") : <span>Pick a date</span>}
+                              <Icons.Calendar className="ml-auto h-4 w-4 opacity-50" />
+                            </Button>
+                          </FormControl>
+                        </PopoverTrigger>
+                        <PopoverContent className="w-auto p-0" align="start">
+                          <Calendar mode="single" selected={field.value} onSelect={field.onChange} initialFocus />
+                        </PopoverContent>
+                      </Popover>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={editPOForm.control}
+                  name="notes"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>PO Notes (Updated)</FormLabel>
+                      <FormControl><Textarea {...field} placeholder="Enter updated notes for the PO" /></FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <Card>
+                  <CardHeader className="p-2"><CardTitle className="text-md">Product Details (Editable)</CardTitle></CardHeader>
+                  <CardContent className="p-2 space-y-3">
+                    {editPODetailFields.map((item, index) => (
+                      <div key={item.id} className="p-3 border rounded-md space-y-2 bg-muted/30">
+                        <h4 className="font-semibold text-sm">{editPOForm.getValues(`details.${index}.productName`)}</h4>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                          <FormField
+                            control={editPOForm.control}
+                            name={`details.${index}.orderedQuantity`}
+                            render={({ field }) => (<FormItem><FormLabel className="text-xs">New Qty*</FormLabel><FormControl><Input type="number" {...field} className="h-8 text-sm" /></FormControl><FormMessage className="text-xs" /></FormItem>)}
+                          />
+                          <FormField
+                            control={editPOForm.control}
+                            name={`details.${index}.unitPrice`}
+                            render={({ field }) => (<FormItem><FormLabel className="text-xs">New Price*</FormLabel><FormControl><Input type="number" step="0.01" {...field} className="h-8 text-sm" /></FormControl><FormMessage className="text-xs" /></FormItem>)}
+                          />
+                        </div>
+                        <FormField
+                          control={editPOForm.control}
+                          name={`details.${index}.notes`}
+                          render={({ field }) => (<FormItem><FormLabel className="text-xs">Item Notes</FormLabel><FormControl><Textarea {...field} rows={1} className="text-sm" /></FormControl><FormMessage className="text-xs" /></FormItem>)}
+                        />
+                      </div>
+                    ))}
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardHeader className="p-2 flex flex-row items-center justify-between">
+                    <CardTitle className="text-md">Additional Costs (Editable)</CardTitle>
+                    <Button type="button" variant="outline" size="sm" onClick={() => appendEditPOAdditionalCost({ description: "", amount: 0, type: "other" })}>
+                      <Icons.Add className="mr-1 h-3 w-3" /> Add Cost
+                    </Button>
+                  </CardHeader>
+                  <CardContent className="p-2 space-y-2">
+                    {editPOAdditionalCostFields.map((item, index) => (
+                      <div key={item.id} className="p-2 border rounded-md space-y-2 bg-muted/30 relative">
+                        <Button type="button" variant="ghost" size="icon" className="absolute top-1 right-1 h-5 w-5" onClick={() => removeEditPOAdditionalCost(index)}><Icons.Delete className="h-3 w-3 text-destructive" /></Button>
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-2 items-end">
+                          <FormField control={editPOForm.control} name={`additionalCosts.${index}.description`} render={({ field }) => (<FormItem><FormLabel className="text-xs">Desc*</FormLabel><FormControl><Input {...field} className="h-8 text-sm" /></FormControl><FormMessage className="text-xs" /></FormItem>)} />
+                          <FormField control={editPOForm.control} name={`additionalCosts.${index}.amount`} render={({ field }) => (<FormItem><FormLabel className="text-xs">Amount*</FormLabel><FormControl><Input type="number" step="0.01" {...field} className="h-8 text-sm" /></FormControl><FormMessage className="text-xs" /></FormItem>)} />
+                          <FormField control={editPOForm.control} name={`additionalCosts.${index}.type`} render={({ field }) => (<FormItem><FormLabel className="text-xs">Type*</FormLabel><Select onValueChange={field.onChange} value={field.value}><FormControl><SelectTrigger className="h-8 text-sm"><SelectValue placeholder="Type" /></SelectTrigger></FormControl><SelectContent>{QUOTATION_ADDITIONAL_COST_TYPES.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}</SelectContent></Select><FormMessage className="text-xs" /></FormItem>)} />
+                        </div>
+                      </div>
+                    ))}
+                    {editPOAdditionalCostFields.length === 0 && <p className="text-xs text-muted-foreground p-2">No additional costs.</p>}
+                  </CardContent>
+                </Card>
+                 {editPOForm.formState.errors.root && <p className="text-sm font-medium text-destructive">{editPOForm.formState.errors.root.message}</p>}
+              </div>
+              <DialogFooter className="pt-4 flex-shrink-0 border-t">
+                <DialogClose asChild><Button type="button" variant="outline">Cancel</Button></DialogClose>
+                <Button type="submit" disabled={isSubmittingEditPO}>
+                  {isSubmittingEditPO ? <Icons.Logo className="animate-spin" /> : "Save Changes & Confirm PO"}
+                </Button>
+              </DialogFooter>
+            </form>
+          </Form>
+        </DialogContent>
+      </Dialog>
+
     </>
   );
 }
-    
