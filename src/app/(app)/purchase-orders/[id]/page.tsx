@@ -25,7 +25,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { useForm, useFieldArray, Controller, useWatch } from "react-hook-form";
+import { useForm, useFieldArray, Controller, useWatch, type Control, type UseFormSetValue } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -71,7 +71,7 @@ const recordReceiptItemSchema = z.object({
   qtyDamagedReceived: z.coerce.number().min(0,"Damaged Qty must be non-negative.").default(0),
   qtyOtherReceived: z.coerce.number().min(0,"Other Qty must be non-negative.").default(0),
   notesForOther: z.string().optional(),
-  qtyDeclaredMissing: z.coerce.number().min(0,"Missing Qty must be non-negative.").default(0), // Will be auto-calculated but still part of the form data
+  qtyDeclaredMissing: z.coerce.number().min(0,"Missing Qty must be non-negative.").default(0),
   notesForMissing: z.string().optional(),
   lineItemNotes: z.string().optional(),
 }).superRefine((data, ctx) => {
@@ -82,10 +82,6 @@ const recordReceiptItemSchema = z.object({
             message: `Total physically received (${totalPhysicallyReceived}) cannot exceed outstanding quantity (${data.outstandingQuantity}).`,
         });
     }
-    // qtyDeclaredMissing is now auto-calculated. If totalPhysicallyReceived is valid, 
-    // qtyDeclaredMissing will be outstandingQuantity - totalPhysicallyReceived, which will be >= 0.
-    // The overall check for totalAccountedFor <= outstandingQuantity is implicitly handled.
-
     if (data.qtyOtherReceived > 0 && (!data.notesForOther || data.notesForOther.trim() === "")) {
       ctx.addIssue({
         path: ["notesForOther"],
@@ -106,7 +102,7 @@ const recordReceiptFormSchema = z.object({
             item.qtyOkReceived > 0 || 
             item.qtyDamagedReceived > 0 || 
             item.qtyOtherReceived > 0 ||
-            item.qtyDeclaredMissing > 0 // Still check if missing is > 0 for form submission
+            item.qtyDeclaredMissing > 0 
         );
         if (!anyQuantityEntered) {
              ctx.addIssue({
@@ -119,14 +115,15 @@ const recordReceiptFormSchema = z.object({
 
 type RecordReceiptFormData = z.infer<typeof recordReceiptFormSchema>;
 
-
 // Helper component for auto-calculating missing quantity
 const ReceiptItemMissingCalculator = ({
   control,
+  setValue,
   index,
   outstandingQuantity,
 }: {
-  control: any; // Control<RecordReceiptFormData>
+  control: Control<RecordReceiptFormData>;
+  setValue: UseFormSetValue<RecordReceiptFormData>;
   index: number;
   outstandingQuantity: number;
 }) => {
@@ -151,15 +148,11 @@ const ReceiptItemMissingCalculator = ({
     const totalPhysicallyReceived = numOk + numDamaged + numOther;
     const calculatedMissing = Math.max(0, outstandingQuantity - totalPhysicallyReceived);
     
-    // Only set value if it's different to avoid infinite loops if setValue itself triggers a re-render that re-runs useEffect
-    const currentMissingVal = control.getValues(`itemsToProcess.${index}.qtyDeclaredMissing`);
-    if (currentMissingVal !== calculatedMissing) {
-        control.setValue(`itemsToProcess.${index}.qtyDeclaredMissing`, calculatedMissing, { shouldValidate: true });
-    }
+    setValue(`itemsToProcess.${index}.qtyDeclaredMissing`, calculatedMissing, { shouldValidate: true });
 
-  }, [qtyOkReceived, qtyDamagedReceived, qtyOtherReceived, outstandingQuantity, index, control]);
+  }, [qtyOkReceived, qtyDamagedReceived, qtyOtherReceived, outstandingQuantity, index, setValue]);
 
-  return null; // This component doesn't render anything itself
+  return null;
 };
 
 
@@ -246,17 +239,16 @@ export default function PurchaseOrderDetailPage() {
 
   const handleOpenEditPODialog = () => {
     if (!purchaseOrder) return;
-    // Determine which set of details to use for pre-filling the form
     const sourceData = (purchaseOrder.status === 'ChangesProposedBySupplier' && purchaseOrder.originalDetails) 
-      ? purchaseOrder // If already in ChangesProposed (and original snap exists), this is for re-editing the proposal
-      : purchaseOrder; // Otherwise, edit the current live details
+      ? purchaseOrder 
+      : purchaseOrder; 
 
     editPOForm.reset({
       notes: sourceData.notes || "",
       expectedDeliveryDate: sourceData.expectedDeliveryDate?.toDate(),
       additionalCosts: sourceData.additionalCosts?.map(ac => ({...ac, amount: Number(ac.amount)})) || [],
       details: sourceData.details?.map(d => ({
-        id: d.id, // Important for potential future updates where individual detail items might be patched
+        id: d.id, 
         productId: d.productId,
         productName: d.productName,
         orderedQuantity: d.orderedQuantity,
@@ -285,13 +277,11 @@ export default function PurchaseOrderDetailPage() {
     };
 
     try {
-      // This service function will now snapshot original details if they don't exist yet
       await updatePurchaseOrderDetailsAndCosts(purchaseOrderId, payload);
       toast({ title: "Supplier's Proposal Recorded", description: "PO details updated. Now awaiting internal review." });
-      // Transition status to PendingInternalReview AFTER data is saved
       await handleStatusChange("PendingInternalReview"); 
       setIsEditPODialogOpen(false);
-      fetchPOData(); // Re-fetch to get the latest PO with originalDetails if snapshot
+      fetchPOData(); 
     } catch (error: any) {
       console.error("Error updating PO with supplier changes:", error);
       toast({ title: "Update Failed", description: error.message || "Could not update Purchase Order.", variant: "destructive" });
@@ -311,21 +301,24 @@ export default function PurchaseOrderDetailPage() {
 
         const itemsForReceiptProcessing = purchaseOrder.details
             .filter(d => d.orderedQuantity > (d.receivedQuantity || 0))
-            .map(d => ({
-                productId: d.productId,
-                productName: d.productName,
-                poDetailId: d.id,
-                orderedQuantity: d.orderedQuantity,
-                alreadyReceivedQuantity: d.receivedQuantity || 0,
-                outstandingQuantity: d.orderedQuantity - (d.receivedQuantity || 0),
-                qtyOkReceived: 0, // Default values for the form
-                qtyDamagedReceived: 0,
-                qtyOtherReceived: 0,
-                notesForOther: "",
-                qtyDeclaredMissing: d.orderedQuantity - (d.receivedQuantity || 0), // Auto-calc initial missing
-                notesForMissing: "",
-                lineItemNotes: "",
-            }));
+            .map(d => {
+                const outstanding = d.orderedQuantity - (d.receivedQuantity || 0);
+                return {
+                    productId: d.productId,
+                    productName: d.productName,
+                    poDetailId: d.id,
+                    orderedQuantity: d.orderedQuantity,
+                    alreadyReceivedQuantity: d.receivedQuantity || 0,
+                    outstandingQuantity: outstanding,
+                    qtyOkReceived: 0,
+                    qtyDamagedReceived: 0,
+                    qtyOtherReceived: 0,
+                    notesForOther: "",
+                    qtyDeclaredMissing: outstanding, 
+                    notesForMissing: "",
+                    lineItemNotes: "",
+                };
+            });
 
         if (itemsForReceiptProcessing.length === 0) {
             toast({ title: "No Items to Receive", description: "All items on this PO have been fully received or accounted for.", variant: "default" });
@@ -386,9 +379,8 @@ export default function PurchaseOrderDetailPage() {
     });
     
     if (servicePayloadItems.length === 0 && data.itemsToProcess.every(itp => itp.qtyDeclaredMissing === itp.outstandingQuantity && itp.outstandingQuantity > 0)) {
-        // This case handles if ALL outstanding items are declared missing without any physical receipt
-        // It's a valid scenario to just record discrepancies.
-    } else if (servicePayloadItems.filter(spi => spi.itemStatus !== "Missing").length === 0 && !data.itemsToProcess.some(itp => itp.qtyDeclaredMissing > 0 && itp.qtyDeclaredMissing < itp.outstandingQuantity)) {
+      // Valid case: all items are declared missing
+    } else if (servicePayloadItems.filter(spi => spi.itemStatus !== "Missing").length === 0 && !data.itemsToProcess.some(itp => itp.qtyDeclaredMissing > 0 && itp.qtyDeclaredMissing < itp.outstandingQuantity && itp.qtyDeclaredMissing > 0 )) {
         receiptForm.setError("itemsToProcess", { type: "manual", message: "No quantities were entered for receipt or discrepancy." });
         setIsSubmittingReceipt(false);
         return;
@@ -555,6 +547,7 @@ export default function PurchaseOrderDetailPage() {
             )}
 
             {showRecordReceipt && (<Button onClick={handleOpenReceiptDialog} disabled={isUpdating || isLoadingWarehouses} variant="default"><Icons.Package className="mr-2 h-4 w-4" /> Record Receipt</Button>)}
+            
             {showRecordSupplierSolution && (<Button onClick={handleOpenSupplierSolutionDialog} disabled={isUpdating} variant="outline" className="border-yellow-500 text-yellow-600 hover:bg-yellow-50"><Icons.Edit className="mr-2 h-4 w-4" /> Record Supplier Solution</Button>)}
             
             {showCancelPO && (<AlertDialog><AlertDialogTrigger asChild><Button variant="destructive" disabled={isUpdating}>{isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.Delete className="mr-2 h-4 w-4" />}Cancel PO</Button></AlertDialogTrigger><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Are you sure you want to cancel this Purchase Order?</AlertDialogTitle><AlertDialogDescription>This action will mark the PO as 'Canceled'. If canceled before supplier confirmation, pending quantities on the requisition will be adjusted.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Keep PO</AlertDialogCancel><AlertDialogAction onClick={() => handleStatusChange("Canceled")} className="bg-destructive hover:bg-destructive/90">Confirm Cancellation</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>)}
@@ -564,23 +557,15 @@ export default function PurchaseOrderDetailPage() {
         }
       />
 
-      {(poStatus === "ChangesProposedBySupplier" || poStatus === "PendingInternalReview") && !purchaseOrder.originalDetails && (
-        <Card className="my-4 border-l-4 border-blue-500">
+      {(poStatus === "ChangesProposedBySupplier") && !purchaseOrder.originalDetails && (
+        <Card className="my-4 border-l-4 border-orange-500">
           <CardHeader>
-            <CardTitle className="text-lg font-semibold text-blue-700">Review Supplier Communication</CardTitle>
+            <CardTitle className="text-lg font-semibold text-orange-700">Review Supplier Communication</CardTitle>
           </CardHeader>
           <CardContent>
             <p className="text-sm text-muted-foreground">
-              {poStatus === "ChangesProposedBySupplier" && "The supplier may have proposed changes. Use 'Record Supplier's Proposal & Review' to input these changes for formal review."}
-              {poStatus === "PendingInternalReview" && "The supplier's proposed changes have been recorded. Review the details below."}
+              The supplier may have proposed changes. Use 'Record Supplier's Proposal & Review' to input these changes for formal review.
             </p>
-            <p className="text-sm text-muted-foreground mt-2">
-              <em>A detailed side-by-side comparison of original vs. proposed changes is planned for a future update. For now, please compare with the supplier's direct communication if status is 'ChangesProposedBySupplier', or use the comparison view below if available.</em>
-            </p>
-             {/* Conditional rendering for side-by-side comparison */}
-            {purchaseOrder.status === "PendingInternalReview" && purchaseOrder.originalDetails && (
-                <p className="mt-2 text-sm text-primary">Use the "Original vs. Proposed Order Comparison" section below to review changes.</p>
-            )}
           </CardContent>
         </Card>
       )}
@@ -593,7 +578,6 @@ export default function PurchaseOrderDetailPage() {
           </CardHeader>
           <CardContent className="space-y-6">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              {/* Original Order Column */}
               <div className="space-y-4 p-4 border rounded-md bg-muted/30">
                 <h3 className="text-lg font-semibold text-muted-foreground">Original Order</h3>
                 <div><strong className="text-sm">Original Notes:</strong><p className="text-sm whitespace-pre-wrap">{purchaseOrder.originalNotes || "N/A"}</p></div>
@@ -613,7 +597,6 @@ export default function PurchaseOrderDetailPage() {
                 </div>
               </div>
 
-              {/* Supplier's Proposed Order Column (Current PO Data) */}
               <div className="space-y-4 p-4 border rounded-md">
                 <h3 className="text-lg font-semibold text-primary">Supplier's Proposed Order (Current)</h3>
                 <div><strong className="text-sm">Proposed Notes:</strong><p className="text-sm whitespace-pre-wrap">{purchaseOrder.notes || "N/A"}</p></div>
@@ -714,7 +697,7 @@ export default function PurchaseOrderDetailPage() {
                     const outstandingQty = item.orderedQuantity - item.alreadyReceivedQuantity;
                     return (
                       <Card key={item.id} className="p-3 bg-muted/30">
-                        <ReceiptItemMissingCalculator control={receiptForm.control} index={index} outstandingQuantity={outstandingQty} />
+                        <ReceiptItemMissingCalculator control={receiptForm.control} setValue={receiptForm.setValue} index={index} outstandingQuantity={outstandingQty} />
                         <CardTitle className="text-base mb-2">{item.productName}</CardTitle>
                         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end mb-3">
                           <div><FormLabel className="text-xs">Ordered</FormLabel><Input type="text" value={item.orderedQuantity} readOnly disabled className="h-8 text-sm bg-muted/50" /></div>
@@ -724,7 +707,7 @@ export default function PurchaseOrderDetailPage() {
                         
                         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 items-start">
                             <FormField control={receiptForm.control} name={`itemsToProcess.${index}.qtyOkReceived`} render={({ field }) => (
-                                <FormItem><FormLabel className="text-xs">Qty OK Received*</FormLabel><FormControl><Input type="number" {...field} className="h-8 text-sm" min={0} max={outstandingQty} /></FormControl><FormMessage className="text-xs" /></FormItem>
+                                <FormItem><FormLabel className="text-xs">Qty OK Received*</FormLabel><FormControl><Input type="number" {...field} className="h-8 text-sm" min={0} /></FormControl><FormMessage className="text-xs" /></FormItem>
                             )} />
                             <FormField control={receiptForm.control} name={`itemsToProcess.${index}.qtyDamagedReceived`} render={({ field }) => (
                                 <FormItem><FormLabel className="text-xs">Qty Damaged*</FormLabel><FormControl><Input type="number" {...field} className="h-8 text-sm" min={0} /></FormControl><FormMessage className="text-xs" /></FormItem>
