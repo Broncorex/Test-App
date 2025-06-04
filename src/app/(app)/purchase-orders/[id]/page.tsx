@@ -223,11 +223,10 @@ export default function PurchaseOrderDetailPage() {
 
     try {
       await updatePurchaseOrderDetailsAndCosts(purchaseOrderId, payload);
-      // After saving changes, transition to PendingInternalReview
+      toast({ title: "Supplier's Proposal Recorded", description: "PO details updated." });
       await handleStatusChange("PendingInternalReview"); 
-      toast({ title: "Supplier's Proposal Recorded", description: "PO details updated with supplier's proposal. Now pending internal review." });
       setIsEditPODialogOpen(false);
-      // fetchPOData(); // fetchPOData is called by handleStatusChange
+      // fetchPOData is called by handleStatusChange
     } catch (error: any) {
       console.error("Error updating PO with supplier changes:", error);
       toast({ title: "Update Failed", description: error.message || "Could not update Purchase Order.", variant: "destructive" });
@@ -395,13 +394,13 @@ export default function PurchaseOrderDetailPage() {
               <>
                 <Button onClick={() => handleStatusChange("ConfirmedBySupplier")} disabled={isUpdating} variant="default" className="bg-teal-500 hover:bg-teal-600">{isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.Check className="mr-2 h-4 w-4" />}Supplier Confirmed Original</Button>
                 <Button onClick={() => handleStatusChange("RejectedBySupplier")} disabled={isUpdating} variant="destructive">{isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.X className="mr-2 h-4 w-4" />}Supplier Rejected</Button>
-                <Button onClick={() => handleStatusChange("ChangesProposedBySupplier")} disabled={isUpdating} variant="outline" className="border-orange-500 text-orange-600 hover:bg-orange-50">{isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.Edit className="mr-2 h-4 w-4" />}Supplier Proposed Changes</Button>
+                <Button onClick={() => handleStatusChange("ChangesProposedBySupplier")} disabled={isUpdating} variant="outline" className="border-orange-500 text-orange-600 hover:bg-orange-50">{isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.Edit className="mr-2 h-4 w-4" />}Log Supplier Changes</Button>
               </>
             )}
 
             {showChangesProposedActions && (
                 <>
-                    <Button onClick={handleOpenEditPODialog} disabled={isUpdating || isSubmittingEditPO} variant="default" className="bg-blue-500 hover:bg-blue-600"><Icons.Edit className="mr-2 h-4 w-4" />Record Supplier's Proposal & Review</Button>
+                    <Button onClick={handleOpenEditPODialog} disabled={isUpdating || isSubmittingEditPO} variant="default" className="bg-blue-500 hover:bg-blue-600"><Icons.Edit className="mr-2 h-4 w-4" />Record Supplier's Proposal &amp; Review</Button>
                     <Button onClick={() => handleStatusChange("ConfirmedBySupplier")} disabled={isUpdating} variant="outline" className="border-teal-500 text-teal-600 hover:bg-teal-50">{isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.Check className="mr-2 h-4 w-4" />}Supplier Agrees to Original Terms</Button>
                     <Button onClick={() => handleStatusChange("RejectedBySupplier")} disabled={isUpdating} variant="destructive">{isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.X className="mr-2 h-4 w-4" />}Reject Supplier's Proposal</Button>
                 </>
@@ -433,7 +432,7 @@ export default function PurchaseOrderDetailPage() {
           </CardHeader>
           <CardContent>
             <p className="text-sm text-muted-foreground">
-              The supplier may have proposed changes to this order, or you may be in the process of recording them.
+              The supplier may have proposed changes to this order, or you may be in the process of reviewing them.
               Currently, the displayed details reflect the latest saved version of the PO.
             </p>
             <p className="text-sm text-muted-foreground mt-2">
