@@ -25,7 +25,7 @@ import type {
   QuotationAdditionalCost,
   Supplier,
   User as AppUser,
-  SupplierSolutionType,
+  SupplierSolutionType, 
 } from "@/types";
 import { getSupplierById } from "./supplierService";
 import { getUserById } from "./userService";
@@ -142,18 +142,15 @@ const getPODetails = async (poId: string): Promise<PurchaseOrderDetail[]> => {
   } as PurchaseOrderDetail));
 };
 
-// New function to get PO details within a transaction by getting all documents individually
 const getPODetailsInTransaction = async (poId: string, transaction: any): Promise<PurchaseOrderDetail[]> => {
-  // First, get the collection reference outside the transaction to get document IDs
   const detailsCollectionRef = collection(db, `purchaseOrders/${poId}/details`);
-  const q = query(detailsCollectionRef, orderBy("productName")); // It's okay to query outside transaction for IDs
-  const snapshot = await getDocs(q); // This read is outside the transaction
+  const q = query(detailsCollectionRef, orderBy("productName"));
+  const snapshot = await getDocs(q); 
   
-  // Then get each document within the transaction
   const details: PurchaseOrderDetail[] = [];
   for (const docSnap of snapshot.docs) {
     const detailRef = doc(db, `purchaseOrders/${poId}/details`, docSnap.id);
-    const transactionSnap = await transaction.get(detailRef); // This read is inside the transaction
+    const transactionSnap = await transaction.get(detailRef);
     if (transactionSnap.exists()) {
       details.push({ 
         id: transactionSnap.id, 
@@ -161,8 +158,6 @@ const getPODetailsInTransaction = async (poId: string, transaction: any): Promis
       } as PurchaseOrderDetail);
     }
   }
-  
-  // Sort by productName as the original query intended (since transaction.get order is not guaranteed)
   return details.sort((a, b) => a.productName.localeCompare(b.productName));
 };
 
@@ -305,7 +300,7 @@ export const updatePurchaseOrderDetailsAndCosts = async (
       totalAmount: newTotalAmount,
       updatedAt: Timestamp.now(),
     };
-    
+
     if (!currentPOData.originalDetails && (currentPOData.status === "ChangesProposedBySupplier" || currentPOData.status === "SentToSupplier")) {
       const originalDetailsSnapshot = await getPODetailsInTransaction(poId, transaction); 
       mainPOUpdateData.originalDetails = originalDetailsSnapshot;
@@ -319,8 +314,7 @@ export const updatePurchaseOrderDetailsAndCosts = async (
     transaction.update(poRef, mainPOUpdateData);
 
     const detailsCollectionRef = collection(poRef, "details");
-    const oldDetailsQ = query(detailsCollectionRef);
-    const oldDetailsSnap = await getDocs(oldDetailsQ); 
+    const oldDetailsSnap = await getDocs(query(detailsCollectionRef)); 
     
     for (const docSnap of oldDetailsSnap.docs) {
       transaction.delete(docSnap.ref);
@@ -376,7 +370,7 @@ export const updatePurchaseOrderStatus = async (
       (newStatus === "Canceled" && (originalStatus === "Pending" || originalStatus === "SentToSupplier" || originalStatus === "ChangesProposedBySupplier" || originalStatus === "PendingInternalReview")) ||
       (newStatus === "RejectedBySupplier" && (originalStatus === "SentToSupplier" || originalStatus === "ChangesProposedBySupplier" || originalStatus === "PendingInternalReview"))
     ) {
-    if (originalPO.details && originalPO.details.length > 0) { // Check if details exist
+    if (originalPO.details && originalPO.details.length > 0) {
         await handleRequisitionUpdateForPOCancellation(originalPO.originRequisitionId, originalPO.details, userId);
     } else {
         console.warn(`PO ${poId} details not found or empty when attempting to update requisition for Canceled/RejectedBySupplier status. Requisition may not be correctly updated.`);
@@ -386,38 +380,58 @@ export const updatePurchaseOrderStatus = async (
   await updateDoc(poRef, updateData);
 };
 
-// New function to record supplier solution
 export interface RecordSupplierSolutionData {
   supplierAgreedSolutionType: SupplierSolutionType;
   supplierAgreedSolutionDetails: string;
-  // Potentially other fields based on solution type, e.g., discountAmount, newETA
 }
 
 export const recordSupplierSolution = async (
   poId: string,
   solutionData: RecordSupplierSolutionData,
-  userId: string
+  userId: string 
 ): Promise<void> => {
   const poRef = doc(db, "purchaseOrders", poId);
   const now = Timestamp.now();
 
-  // For now, just update the notes and type.
-  // More complex logic for adjusting PO items based on solution type will be added.
   const updatePayload: Partial<PurchaseOrder> = {
     supplierAgreedSolutionType: solutionData.supplierAgreedSolutionType,
     supplierAgreedSolutionDetails: solutionData.supplierAgreedSolutionDetails,
     updatedAt: now,
-    // Status change will be handled separately based on the solution type.
   };
 
-  // Placeholder: Based on solutionData.supplierAgreedSolutionType,
-  // you might adjust PO details, costs, or status here within a transaction.
-  // E.g., if type is "CreditPartialCharge", you'd update PO line items.
-  // E.g., if type is "FutureDelivery", you might change status to "AwaitingFutureDelivery".
+  // Determine new status based on solution type
+  let newStatus: PurchaseOrderStatus | undefined = undefined;
+  switch (solutionData.supplierAgreedSolutionType) {
+    case "FutureDelivery":
+      newStatus = "AwaitingFutureDelivery";
+      break;
+    case "CreditPartialCharge":
+    case "DiscountForImperfection":
+    case "Other": // Assuming "Other" also implies some form of resolution leading to completion
+      newStatus = "Completed";
+      updatePayload.completionDate = now; // Mark as completed if not already
+      break;
+  }
 
-  console.log("Placeholder: recordSupplierSolution - PO would be updated with solution details.", updatePayload);
+  if (newStatus) {
+    updatePayload.status = newStatus;
+  }
+  
+  // Note: For "CreditPartialCharge" or "DiscountForImperfection",
+  // this Stage 1 implementation does NOT automatically adjust PO line items or totals.
+  // It's assumed the user will manually adjust the PO via the "Record Supplier's Proposal & Review" flow
+  // if precise financial changes are needed on the PO document itself, then use this "Record Solution" to finalize.
+  // Or, the solution is purely textual for now, and financial reconciliation happens outside this system for these cases.
+
   await updateDoc(poRef, updatePayload);
-  // After this, the page might trigger another status update if needed.
+
+  // If the solution resulted in the PO being "Completed", we might need to trigger
+  // a final update to the requisition, similar to how PO confirmation does,
+  // especially if this "solution" implies no more items will be received.
+  // This part needs careful consideration based on how `receivedQuantity` vs `orderedQuantity`
+  // should be interpreted after a solution is recorded.
+  // For now, we'll assume that if a PO moves to "Completed" via a solution,
+  // the requisition quantities were already handled or the solution means no further action on them.
 };
 
     

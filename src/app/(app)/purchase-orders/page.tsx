@@ -103,8 +103,8 @@ export default function PurchaseOrdersPage() {
       case "PendingInternalReview": return "default";
       case "ConfirmedBySupplier": return "default";
       case "RejectedBySupplier": return "destructive";
-      case "PartiallyDelivered": return "default"; // Changed
-      case "AwaitingFutureDelivery": return "default"; // New
+      case "PartiallyDelivered": return "default"; 
+      case "AwaitingFutureDelivery": return "default"; 
       case "Completed": return "default";
       case "Canceled": return "destructive";
       default: return "secondary";
@@ -117,8 +117,8 @@ export default function PurchaseOrdersPage() {
       case "ChangesProposedBySupplier": return "bg-orange-400 hover:bg-orange-500 text-black";
       case "PendingInternalReview": return "bg-purple-500 hover:bg-purple-600 text-white";
       case "ConfirmedBySupplier": return "bg-teal-500 hover:bg-teal-600 text-white";
-      case "PartiallyDelivered": return "bg-yellow-500 hover:bg-yellow-600 text-black"; // Changed
-      case "AwaitingFutureDelivery": return "bg-cyan-500 hover:bg-cyan-600 text-white"; // New
+      case "PartiallyDelivered": return "bg-yellow-500 hover:bg-yellow-600 text-black"; 
+      case "AwaitingFutureDelivery": return "bg-cyan-500 hover:bg-cyan-600 text-white"; 
       case "Completed": return "bg-green-500 hover:bg-green-600 text-white";
       default: return "";
     }

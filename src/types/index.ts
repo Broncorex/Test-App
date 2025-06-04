@@ -45,11 +45,11 @@ export interface Product {
   updatedAt: Timestamp;
   createdBy: string;
   isActive: boolean;
-  category?: string; // from mock data, consider removing if not used from DB
-  quantity?: number; // from mock data, stock is in stockItems
-  price?: number;    // from mock data, product has basePrice/sellingPrice
-  warehouseId?: string; // from mock data, product itself isn't in a warehouse
-  lastUpdated?: string | Timestamp; // from mock data
+  category?: string; 
+  quantity?: number; 
+  price?: number;    
+  warehouseId?: string; 
+  lastUpdated?: string | Timestamp; 
 }
 
 
@@ -79,29 +79,29 @@ export type StockMovementType =
 export interface StockMovement {
   id: string;
   productId: string;
-  productName?: string; // Denormalized
+  productName?: string; 
   warehouseId: string;
-  warehouseName?: string; // Denormalized
+  warehouseName?: string; 
   type: StockMovementType;
   quantityChanged: number;
   quantityBefore: number;
   quantityAfter: number;
   movementDate: Timestamp;
-  userId?: string; // User who performed/triggered the action
-  userName?: string; // Denormalized
-  reason: string; // Required
-  notes: string; // Required
-  relatedDocumentId?: string; // Required, e.g., orderId, transferId
-  supplierId?: string; // Required for INBOUND_PO
+  userId?: string; 
+  userName?: string; 
+  reason: string; 
+  notes: string; 
+  relatedDocumentId?: string; 
+  supplierId?: string; 
 }
 
 export interface StockItem {
-  id?: string; // productId_warehouseId
+  id?: string; 
   productId: string;
   warehouseId: string;
   quantity: number;
   lastStockUpdate: Timestamp;
-  updatedBy: string; // User UID
+  updatedBy: string; 
 }
 
 export interface User {
@@ -113,7 +113,7 @@ export interface User {
   createdAt: Timestamp | Date;
   isActive: boolean;
   createdBy?: string;
-  name?: string; // Potentially redundant with displayName
+  name?: string; 
   assignedWarehouseIds?: string[];
 }
 
@@ -147,7 +147,7 @@ export const REQUISITION_STATUSES = ["Pending Quotation", "Quoted", "PO in Progr
 export type RequisitionStatus = typeof REQUISITION_STATUSES[number];
 
 export interface RequiredProduct {
-  id: string; // Subcollection document ID
+  id: string; 
   productId: string;
   productName: string;
   requiredQuantity: number;
@@ -205,7 +205,7 @@ export interface QuotationAdditionalCost {
 }
 
 export interface QuotationDetail {
-  id: string; // Subcollection document ID
+  id: string; 
   productId: string;
   productName: string;
   requiredQuantity: number;
@@ -246,49 +246,49 @@ export const PURCHASE_ORDER_STATUSES = [
   "PendingInternalReview",
   "ConfirmedBySupplier",
   "RejectedBySupplier",
-  "PartiallyDelivered", // Renamed from PartiallyReceived
-  "AwaitingFutureDelivery", // New status
+  "PartiallyDelivered",
+  "AwaitingFutureDelivery", 
   "Completed",
   "Canceled"
 ] as const;
 export type PurchaseOrderStatus = typeof PURCHASE_ORDER_STATUSES[number];
 
-export type SupplierSolutionType = "CreditPartialCharge" | "DiscountForImperfection" | "FutureDelivery" | "Other";
+export const SUPPLIER_SOLUTION_TYPES = ["CreditPartialCharge", "DiscountForImperfection", "FutureDelivery", "Other"] as const;
+export type SupplierSolutionType = typeof SUPPLIER_SOLUTION_TYPES[number];
 
 
 export interface PurchaseOrderDetail {
-  id: string; // Firestore document ID for the subcollection item
+  id: string; 
   productId: string;
-  productName: string; // Denormalized
+  productName: string; 
   orderedQuantity: number;
-  receivedQuantity: number; // Default 0, updated during receipt
-  unitPrice: number; // Price agreed upon in the PO
-  subtotal: number; // orderedQuantity * unitPrice
-  notes: string; // Item-specific notes for the PO
+  receivedQuantity: number; 
+  unitPrice: number; 
+  subtotal: number; 
+  notes: string; 
 }
 
 export interface PurchaseOrder {
-  id: string; // Firestore document ID (purchaseOrderId)
+  id: string; 
   supplierId: string;
-  supplierName?: string; // Denormalized
-  originRequisitionId: string; // Link back to the requisition
-  quotationReferenceId?: string | null; // Optional link to specific quotation
+  supplierName?: string; 
+  originRequisitionId: string; 
+  quotationReferenceId?: string | null; 
   orderDate: Timestamp;
   expectedDeliveryDate: Timestamp;
   status: PurchaseOrderStatus;
-  productsSubtotal: number; // Sum of all detail subtotals
-  additionalCosts: QuotationAdditionalCost[]; // Re-using type for consistency
-  totalAmount: number; // productsSubtotal + sum of additionalCosts
-  creationUserId: string; // User who created/finalized the PO from requisition
-  creationUserName?: string; // Denormalized
-  completionDate?: Timestamp | null; // When PO status becomes "Completed" or "Canceled"
-  notes: string; // General notes for the PO
+  productsSubtotal: number; 
+  additionalCosts: QuotationAdditionalCost[]; 
+  totalAmount: number; 
+  creationUserId: string; 
+  creationUserName?: string; 
+  completionDate?: Timestamp | null; 
+  notes: string; 
   createdAt: Timestamp;
   updatedAt: Timestamp;
-  createdBy: string; // User UID (often same as creationUserId)
-  details?: PurchaseOrderDetail[]; // Populated after fetching subcollection
+  createdBy: string; 
+  details?: PurchaseOrderDetail[]; 
 
-  // Fields for original PO snapshot
   originalDetails?: PurchaseOrderDetail[];
   originalAdditionalCosts?: QuotationAdditionalCost[];
   originalProductsSubtotal?: number;
@@ -296,37 +296,35 @@ export interface PurchaseOrder {
   originalNotes?: string;
   originalExpectedDeliveryDate?: Timestamp | null;
 
-  // Fields for supplier solution
   supplierAgreedSolutionType?: SupplierSolutionType;
   supplierAgreedSolutionDetails?: string;
 }
 
-// --- Receipt Types ---
 export const RECEIPT_ITEM_STATUSES = ["Ok", "Damaged", "Missing", "Other"] as const;
 export type ReceiptItemStatus = typeof RECEIPT_ITEM_STATUSES[number];
 
 export interface ReceivedItem {
-  id: string; // Firestore document ID for the subcollection item
+  id: string; 
   productId: string;
-  productName: string; // Denormalized
+  productName: string; 
   quantityReceived: number;
   itemStatus: ReceiptItemStatus;
   notes: string;
 }
 
 export interface Receipt {
-  id: string; // Firestore document ID (receiptId)
+  id: string; 
   purchaseOrderId: string;
   receiptDate: Timestamp;
-  receivingUserId: string; // User who recorded the receipt
-  receivingUserName?: string; // Denormalized
+  receivingUserId: string; 
+  receivingUserName?: string; 
   targetWarehouseId: string;
-  targetWarehouseName?: string; // Denormalized
+  targetWarehouseName?: string; 
   notes: string;
   createdAt: Timestamp;
   updatedAt: Timestamp;
-  createdBy: string; // User UID (often same as receivingUserId)
-  receivedItems?: ReceivedItem[]; // Populated after fetching subcollection
+  createdBy: string; 
+  receivedItems?: ReceivedItem[]; 
 }
 
     

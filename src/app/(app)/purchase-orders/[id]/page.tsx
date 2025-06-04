@@ -9,9 +9,9 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth-store";
-import { getPurchaseOrderById, updatePurchaseOrderStatus, updatePurchaseOrderDetailsAndCosts, type UpdatePOWithChangesData, recordSupplierSolution } from "@/services/purchaseOrderService";
+import { getPurchaseOrderById, updatePurchaseOrderStatus, updatePurchaseOrderDetailsAndCosts, type UpdatePOWithChangesData, recordSupplierSolution, type RecordSupplierSolutionData } from "@/services/purchaseOrderService";
 import type { PurchaseOrder, PurchaseOrderStatus, PurchaseOrderDetail, QuotationAdditionalCost, Warehouse as AppWarehouse, User as AppUser, SupplierSolutionType } from "@/types";
-import { QUOTATION_ADDITIONAL_COST_TYPES, PURCHASE_ORDER_STATUSES, RECEIPT_ITEM_STATUSES } from "@/types"; 
+import { QUOTATION_ADDITIONAL_COST_TYPES, PURCHASE_ORDER_STATUSES, RECEIPT_ITEM_STATUSES, SUPPLIER_SOLUTION_TYPES } from "@/types"; 
 import { Timestamp } from "firebase/firestore";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
@@ -115,7 +115,14 @@ const recordReceiptFormSchema = z.object({
 
 type RecordReceiptFormData = z.infer<typeof recordReceiptFormSchema>;
 
-// Helper component for auto-calculating missing quantity
+const supplierSolutionFormSchema = z.object({
+  solutionType: z.enum(SUPPLIER_SOLUTION_TYPES, { required_error: "Supplier solution type is required."}),
+  solutionDetails: z.string().min(10, "Please provide at least 10 characters of detail for the solution."),
+  // Future: Add conditional fields based on solutionType
+});
+type SupplierSolutionFormData = z.infer<typeof supplierSolutionFormSchema>;
+
+
 const ReceiptItemMissingCalculator = ({
   control,
   setValue,
@@ -182,12 +189,6 @@ export default function PurchaseOrderDetailPage() {
   const editPOForm = useForm<EditPOFormData>({
     resolver: zodResolver(editPOFormSchema),
   });
-  const { fields: editPODetailFields, append: appendEditPODetail, remove: removeEditPODetail } = useFieldArray({
-    control: editPOForm.control, name: "details",
-  });
-  const { fields: editPOAdditionalCostFields, append: appendEditPOAdditionalCost, remove: removeEditPOAdditionalCost } = useFieldArray({
-    control: editPOForm.control, name: "additionalCosts",
-  });
 
   const receiptForm = useForm<RecordReceiptFormData>({
     resolver: zodResolver(recordReceiptFormSchema),
@@ -200,6 +201,11 @@ export default function PurchaseOrderDetailPage() {
   const { fields: receiptItemsFields, replace: replaceReceiptItems } = useFieldArray({
     control: receiptForm.control, name: "itemsToProcess"
   });
+  
+  const supplierSolutionForm = useForm<SupplierSolutionFormData>({
+    resolver: zodResolver(supplierSolutionFormSchema),
+  });
+
 
   const fetchPOData = useCallback(async () => {
     if (!purchaseOrderId || !appUser) return;
@@ -239,7 +245,7 @@ export default function PurchaseOrderDetailPage() {
 
   const handleOpenEditPODialog = () => {
     if (!purchaseOrder) return;
-    const sourceData = (purchaseOrder.status === 'ChangesProposedBySupplier' && purchaseOrder.originalDetails) 
+    const sourceData = (purchaseOrder.status === 'PendingInternalReview' && purchaseOrder.originalDetails) 
       ? purchaseOrder 
       : purchaseOrder; 
 
@@ -310,7 +316,7 @@ export default function PurchaseOrderDetailPage() {
                     orderedQuantity: d.orderedQuantity,
                     alreadyReceivedQuantity: d.receivedQuantity || 0,
                     outstandingQuantity: outstanding,
-                    qtyOkReceived: 0,
+                    qtyOkReceived: 0, 
                     qtyDamagedReceived: 0,
                     qtyOtherReceived: 0,
                     notesForOther: "",
@@ -379,8 +385,8 @@ export default function PurchaseOrderDetailPage() {
     });
     
     if (servicePayloadItems.length === 0 && data.itemsToProcess.every(itp => itp.qtyDeclaredMissing === itp.outstandingQuantity && itp.outstandingQuantity > 0)) {
-      // Valid case: all items are declared missing
-    } else if (servicePayloadItems.filter(spi => spi.itemStatus !== "Missing").length === 0 && !data.itemsToProcess.some(itp => itp.qtyDeclaredMissing > 0 && itp.qtyDeclaredMissing < itp.outstandingQuantity && itp.qtyDeclaredMissing > 0 )) {
+       // This is a valid case: all items are declared missing.
+    } else if (servicePayloadItems.filter(spi => spi.itemStatus !== "Missing").length === 0 && !data.itemsToProcess.some(itp => itp.qtyDeclaredMissing > 0 && itp.qtyDeclaredMissing <= itp.outstandingQuantity)) {
         receiptForm.setError("itemsToProcess", { type: "manual", message: "No quantities were entered for receipt or discrepancy." });
         setIsSubmittingReceipt(false);
         return;
@@ -408,11 +414,33 @@ export default function PurchaseOrderDetailPage() {
     }
     setIsSubmittingReceipt(false);
   };
-
+  
   const handleOpenSupplierSolutionDialog = () => {
-    console.log("Open Supplier Solution Dialog - Placeholder");
-    toast({ title: "Feature Pending", description: "Recording supplier solutions for discrepancies is coming soon!", variant: "default" });
-    // setIsSupplierSolutionDialogOpen(true); // To be implemented
+    if (!purchaseOrder) return;
+    supplierSolutionForm.reset({
+        solutionType: purchaseOrder.supplierAgreedSolutionType || undefined,
+        solutionDetails: purchaseOrder.supplierAgreedSolutionDetails || "",
+    });
+    setIsSupplierSolutionDialogOpen(true);
+  };
+  
+  const onSupplierSolutionSubmit = async (data: SupplierSolutionFormData) => {
+    if (!purchaseOrder || !currentUser) return;
+    setIsSubmittingSolution(true);
+    try {
+        const payload: RecordSupplierSolutionData = {
+            supplierAgreedSolutionType: data.solutionType,
+            supplierAgreedSolutionDetails: data.solutionDetails,
+        };
+        await recordSupplierSolution(purchaseOrderId, payload, currentUser.uid);
+        toast({ title: "Supplier Solution Recorded", description: `Solution '${data.solutionType}' has been recorded for this PO.`});
+        setIsSupplierSolutionDialogOpen(false);
+        fetchPOData(); // Refetch PO to reflect new status and solution details
+    } catch (error: any) {
+        console.error("Error recording supplier solution:", error);
+        toast({ title: "Solution Update Failed", description: error.message || "Could not record supplier solution.", variant: "destructive"});
+    }
+    setIsSubmittingSolution(false);
   };
 
 
@@ -472,7 +500,7 @@ export default function PurchaseOrderDetailPage() {
   const showPendingInternalReviewActions = canManagePO && poStatus === "PendingInternalReview";
   
   const showRecordReceipt = canManagePO && (poStatus === "ConfirmedBySupplier" || poStatus === "PartiallyDelivered" || poStatus === "AwaitingFutureDelivery");
-  const showRecordSupplierSolution = canManagePO && poStatus === "PartiallyDelivered";
+  const showRecordSupplierSolutionButton = canManagePO && poStatus === "PartiallyDelivered";
 
   const showCancelPO = canManagePO && !["Completed", "Canceled", "RejectedBySupplier", "PartiallyDelivered", "AwaitingFutureDelivery"].includes(poStatus);
 
@@ -548,7 +576,7 @@ export default function PurchaseOrderDetailPage() {
 
             {showRecordReceipt && (<Button onClick={handleOpenReceiptDialog} disabled={isUpdating || isLoadingWarehouses} variant="default"><Icons.Package className="mr-2 h-4 w-4" /> Record Receipt</Button>)}
             
-            {showRecordSupplierSolution && (<Button onClick={handleOpenSupplierSolutionDialog} disabled={isUpdating} variant="outline" className="border-yellow-500 text-yellow-600 hover:bg-yellow-50"><Icons.Edit className="mr-2 h-4 w-4" /> Record Supplier Solution</Button>)}
+            {showRecordSupplierSolutionButton && (<Button onClick={handleOpenSupplierSolutionDialog} disabled={isUpdating || isSubmittingSolution} variant="outline" className="border-yellow-500 text-yellow-600 hover:bg-yellow-50"><Icons.Edit className="mr-2 h-4 w-4" /> Record Supplier Solution</Button>)}
             
             {showCancelPO && (<AlertDialog><AlertDialogTrigger asChild><Button variant="destructive" disabled={isUpdating}>{isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.Delete className="mr-2 h-4 w-4" />}Cancel PO</Button></AlertDialogTrigger><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Are you sure you want to cancel this Purchase Order?</AlertDialogTitle><AlertDialogDescription>This action will mark the PO as 'Canceled'. If canceled before supplier confirmation, pending quantities on the requisition will be adjusted.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Keep PO</AlertDialogCancel><AlertDialogAction onClick={() => handleStatusChange("Canceled")} className="bg-destructive hover:bg-destructive/90">Confirm Cancellation</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>)}
             
@@ -557,7 +585,7 @@ export default function PurchaseOrderDetailPage() {
         }
       />
 
-      {(poStatus === "ChangesProposedBySupplier") && !purchaseOrder.originalDetails && (
+      {(poStatus === "ChangesProposedBySupplier" || poStatus === "PendingInternalReview") && !purchaseOrder.originalDetails && (
         <Card className="my-4 border-l-4 border-orange-500">
           <CardHeader>
             <CardTitle className="text-lg font-semibold text-orange-700">Review Supplier Communication</CardTitle>
@@ -565,6 +593,7 @@ export default function PurchaseOrderDetailPage() {
           <CardContent>
             <p className="text-sm text-muted-foreground">
               The supplier may have proposed changes. Use 'Record Supplier's Proposal & Review' to input these changes for formal review.
+              A detailed side-by-side comparison view is planned for a future update.
             </p>
           </CardContent>
         </Card>
@@ -658,7 +687,7 @@ export default function PurchaseOrderDetailPage() {
       </div>
 
       <Dialog open={isEditPODialogOpen} onOpenChange={setIsEditPODialogOpen}>
-        <DialogContent className="sm:max-w-3xl flex flex-col max-h-[90vh]"><Form {...editPOForm}><form onSubmit={editPOForm.handleSubmit(handleEditPOSubmit)} className="flex flex-col flex-grow min-h-0"><DialogHeader><ShadDialogTitle className="font-headline">Record Supplier's Proposed Changes</ShadDialogTitle><DialogDescription>Modify quantities, prices, costs, or notes based on supplier's proposal. Saving will update the PO to 'Pending Internal Review'.</DialogDescription></DialogHeader><div className="flex-grow overflow-y-auto min-h-0 py-4 pr-2 space-y-4"><FormField control={editPOForm.control} name="expectedDeliveryDate" render={({ field }) => (<FormItem className="flex flex-col"><FormLabel>New Expected Delivery Date (Optional)</FormLabel><Popover><PopoverTrigger asChild><FormControl><Button variant={"outline"} className={cn("pl-3 text-left font-normal w-full", !field.value && "text-muted-foreground")}>{field.value ? format(field.value, "PPP") : <span>Pick a date</span>}<Icons.Calendar className="ml-auto h-4 w-4 opacity-50" /></Button></FormControl></PopoverTrigger><PopoverContent className="w-auto p-0" align="start"><Calendar mode="single" selected={field.value} onSelect={field.onChange} initialFocus /></PopoverContent></Popover><FormMessage /></FormItem>)} /><FormField control={editPOForm.control} name="notes" render={({ field }) => (<FormItem><FormLabel>PO Notes (Updated)</FormLabel><FormControl><Textarea {...field} placeholder="Enter updated notes for the PO" /></FormControl><FormMessage /></FormItem>)} /><Card><CardHeader className="p-2"><CardTitle className="text-md">Product Details (Editable)</CardTitle></CardHeader><CardContent className="p-2 space-y-3">{editPODetailFields.map((item, index) => (<div key={item.id} className="p-3 border rounded-md space-y-2 bg-muted/30"><h4 className="font-semibold text-sm">{editPOForm.getValues(`details.${index}.productName`)}</h4><div className="grid grid-cols-1 md:grid-cols-2 gap-3"><FormField control={editPOForm.control} name={`details.${index}.orderedQuantity`} render={({ field }) => (<FormItem><FormLabel className="text-xs">New Qty*</FormLabel><FormControl><Input type="number" {...field} className="h-8 text-sm" /></FormControl><FormMessage className="text-xs" /></FormItem>)} /><FormField control={editPOForm.control} name={`details.${index}.unitPrice`} render={({ field }) => (<FormItem><FormLabel className="text-xs">New Price*</FormLabel><FormControl><Input type="number" step="0.01" {...field} className="h-8 text-sm" /></FormControl><FormMessage className="text-xs" /></FormItem>)} /></div><FormField control={editPOForm.control} name={`details.${index}.notes`} render={({ field }) => (<FormItem><FormLabel className="text-xs">Item Notes</FormLabel><FormControl><Textarea {...field} rows={1} className="text-sm" /></FormControl><FormMessage className="text-xs" /></FormItem>)} /></div>))}</CardContent></Card><Card><CardHeader className="p-2 flex flex-row items-center justify-between"><CardTitle className="text-md">Additional Costs (Editable)</CardTitle><Button type="button" variant="outline" size="sm" onClick={() => appendEditPOAdditionalCost({ description: "", amount: 0, type: "other" })}><Icons.Add className="mr-1 h-3 w-3" /> Add Cost</Button></CardHeader><CardContent className="p-2 space-y-2">{editPOAdditionalCostFields.map((item, index) => (<div key={item.id} className="p-2 border rounded-md space-y-2 bg-muted/30 relative"><Button type="button" variant="ghost" size="icon" className="absolute top-1 right-1 h-5 w-5" onClick={() => removeEditPOAdditionalCost(index)}><Icons.Delete className="h-3 w-3 text-destructive" /></Button><div className="grid grid-cols-1 md:grid-cols-3 gap-2 items-end"><FormField control={editPOForm.control} name={`additionalCosts.${index}.description`} render={({ field }) => (<FormItem><FormLabel className="text-xs">Desc*</FormLabel><FormControl><Input {...field} className="h-8 text-sm" /></FormControl><FormMessage className="text-xs" /></FormItem>)} /><FormField control={editPOForm.control} name={`additionalCosts.${index}.amount`} render={({ field }) => (<FormItem><FormLabel className="text-xs">Amount*</FormLabel><FormControl><Input type="number" step="0.01" {...field} className="h-8 text-sm" /></FormControl><FormMessage className="text-xs" /></FormItem>)} /><FormField control={editPOForm.control} name={`additionalCosts.${index}.type`} render={({ field }) => (<FormItem><FormLabel className="text-xs">Type*</FormLabel><Select onValueChange={field.onChange} value={field.value}><FormControl><SelectTrigger className="h-8 text-sm"><SelectValue placeholder="Type" /></SelectTrigger></FormControl><SelectContent>{QUOTATION_ADDITIONAL_COST_TYPES.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}</SelectContent></Select><FormMessage className="text-xs" /></FormItem>)} /></div></div>))}{editPOAdditionalCostFields.length === 0 && <p className="text-xs text-muted-foreground p-2">No additional costs.</p>}</CardContent></Card>{editPOForm.formState.errors.root && <p className="text-sm font-medium text-destructive">{editPOForm.formState.errors.root.message}</p>}</div><DialogFooter className="pt-4 flex-shrink-0 border-t"><DialogClose asChild><Button type="button" variant="outline">Cancel</Button></DialogClose><Button type="submit" disabled={isSubmittingEditPO}>{isSubmittingEditPO ? <Icons.Logo className="animate-spin" /> : "Save Proposal & Review"}</Button></DialogFooter></form></Form></DialogContent>
+        <DialogContent className="sm:max-w-3xl flex flex-col max-h-[90vh]"><Form {...editPOForm}><form onSubmit={editPOForm.handleSubmit(handleEditPOSubmit)} className="flex flex-col flex-grow min-h-0"><DialogHeader><ShadDialogTitle className="font-headline">Record Supplier's Proposed Changes</ShadDialogTitle><DialogDescription>Modify quantities, prices, costs, or notes based on supplier's proposal. Saving will update the PO to 'Pending Internal Review'.</DialogDescription></DialogHeader><div className="flex-grow overflow-y-auto min-h-0 py-4 pr-2 space-y-4"><FormField control={editPOForm.control} name="expectedDeliveryDate" render={({ field }) => (<FormItem className="flex flex-col"><FormLabel>New Expected Delivery Date (Optional)</FormLabel><Popover><PopoverTrigger asChild><FormControl><Button variant={"outline"} className={cn("pl-3 text-left font-normal w-full", !field.value && "text-muted-foreground")}>{field.value ? format(field.value, "PPP") : <span>Pick a date</span>}<Icons.Calendar className="ml-auto h-4 w-4 opacity-50" /></Button></FormControl></PopoverTrigger><PopoverContent className="w-auto p-0" align="start"><Calendar mode="single" selected={field.value} onSelect={field.onChange} initialFocus /></PopoverContent></Popover><FormMessage /></FormItem>)} /><FormField control={editPOForm.control} name="notes" render={({ field }) => (<FormItem><FormLabel>PO Notes (Updated)</FormLabel><FormControl><Textarea {...field} placeholder="Enter updated notes for the PO" /></FormControl><FormMessage /></FormItem>)} /><Card><CardHeader className="p-2"><CardTitle className="text-md">Product Details (Editable)</CardTitle></CardHeader><CardContent className="p-2 space-y-3">{editPOForm.getValues('details')?.map((item, index) => (<div key={item.id || item.productId} className="p-3 border rounded-md space-y-2 bg-muted/30"><h4 className="font-semibold text-sm">{editPOForm.getValues(`details.${index}.productName`)}</h4><div className="grid grid-cols-1 md:grid-cols-2 gap-3"><FormField control={editPOForm.control} name={`details.${index}.orderedQuantity`} render={({ field }) => (<FormItem><FormLabel className="text-xs">New Qty*</FormLabel><FormControl><Input type="number" {...field} className="h-8 text-sm" /></FormControl><FormMessage className="text-xs" /></FormItem>)} /><FormField control={editPOForm.control} name={`details.${index}.unitPrice`} render={({ field }) => (<FormItem><FormLabel className="text-xs">New Price*</FormLabel><FormControl><Input type="number" step="0.01" {...field} className="h-8 text-sm" /></FormControl><FormMessage className="text-xs" /></FormItem>)} /></div><FormField control={editPOForm.control} name={`details.${index}.notes`} render={({ field }) => (<FormItem><FormLabel className="text-xs">Item Notes</FormLabel><FormControl><Textarea {...field} rows={1} className="text-sm" /></FormControl><FormMessage className="text-xs" /></FormItem>)} /></div>))}</CardContent></Card><Card><CardHeader className="p-2 flex flex-row items-center justify-between"><CardTitle className="text-md">Additional Costs (Editable)</CardTitle><Button type="button" variant="outline" size="sm" onClick={() => editPOForm.setValue('additionalCosts', [...(editPOForm.getValues('additionalCosts') || []), { description: "", amount: 0, type: "other" }])}><Icons.Add className="mr-1 h-3 w-3" /> Add Cost</Button></CardHeader><CardContent className="p-2 space-y-2">{editPOForm.getValues('additionalCosts')?.map((item, index) => (<div key={index} className="p-2 border rounded-md space-y-2 bg-muted/30 relative"><Button type="button" variant="ghost" size="icon" className="absolute top-1 right-1 h-5 w-5" onClick={() => editPOForm.setValue('additionalCosts', editPOForm.getValues('additionalCosts')?.filter((_, i) => i !== index) || []) }><Icons.Delete className="h-3 w-3 text-destructive" /></Button><div className="grid grid-cols-1 md:grid-cols-3 gap-2 items-end"><FormField control={editPOForm.control} name={`additionalCosts.${index}.description`} render={({ field }) => (<FormItem><FormLabel className="text-xs">Desc*</FormLabel><FormControl><Input {...field} className="h-8 text-sm" /></FormControl><FormMessage className="text-xs" /></FormItem>)} /><FormField control={editPOForm.control} name={`additionalCosts.${index}.amount`} render={({ field }) => (<FormItem><FormLabel className="text-xs">Amount*</FormLabel><FormControl><Input type="number" step="0.01" {...field} className="h-8 text-sm" /></FormControl><FormMessage className="text-xs" /></FormItem>)} /><FormField control={editPOForm.control} name={`additionalCosts.${index}.type`} render={({ field }) => (<FormItem><FormLabel className="text-xs">Type*</FormLabel><Select onValueChange={field.onChange} value={field.value}><FormControl><SelectTrigger className="h-8 text-sm"><SelectValue placeholder="Type" /></SelectTrigger></FormControl><SelectContent>{QUOTATION_ADDITIONAL_COST_TYPES.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}</SelectContent></Select><FormMessage className="text-xs" /></FormItem>)} /></div></div>))}{editPOForm.getValues('additionalCosts')?.length === 0 && <p className="text-xs text-muted-foreground p-2">No additional costs.</p>}</CardContent></Card>{editPOForm.formState.errors.root && <p className="text-sm font-medium text-destructive">{editPOForm.formState.errors.root.message}</p>}</div><DialogFooter className="pt-4 flex-shrink-0 border-t"><DialogClose asChild><Button type="button" variant="outline">Cancel</Button></DialogClose><Button type="submit" disabled={isSubmittingEditPO}>{isSubmittingEditPO ? <Icons.Logo className="animate-spin" /> : "Save Proposal & Review"}</Button></DialogFooter></form></Form></DialogContent>
       </Dialog>
 
       <Dialog open={isReceiptDialogOpen} onOpenChange={setIsReceiptDialogOpen}>
@@ -696,7 +725,7 @@ export default function PurchaseOrderDetailPage() {
                   {receiptItemsFields.map((item, index) => {
                     const outstandingQty = item.orderedQuantity - item.alreadyReceivedQuantity;
                     return (
-                      <Card key={item.id} className="p-3 bg-muted/30">
+                      <Card key={item.poDetailId} className="p-3 bg-muted/30">
                         <ReceiptItemMissingCalculator control={receiptForm.control} setValue={receiptForm.setValue} index={index} outstandingQuantity={outstandingQty} />
                         <CardTitle className="text-base mb-2">{item.productName}</CardTitle>
                         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end mb-3">
@@ -747,10 +776,71 @@ export default function PurchaseOrderDetailPage() {
           </Form>
         </DialogContent>
       </Dialog>
+
+      <Dialog open={isSupplierSolutionDialogOpen} onOpenChange={setIsSupplierSolutionDialogOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <Form {...supplierSolutionForm}>
+            <form onSubmit={supplierSolutionForm.handleSubmit(onSupplierSolutionSubmit)} className="space-y-4">
+              <DialogHeader>
+                <ShadDialogTitle className="font-headline">Record Supplier Solution</ShadDialogTitle>
+                <DialogDescription>
+                  Document the agreed solution for discrepancies in PO: {purchaseOrder?.id.substring(0,8)}...
+                </DialogDescription>
+              </DialogHeader>
+              <div className="py-4 space-y-4">
+                <FormField
+                  control={supplierSolutionForm.control}
+                  name="solutionType"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Solution Type *</FormLabel>
+                      <Select onValueChange={field.onChange} defaultValue={field.value}>
+                        <FormControl>
+                          <SelectTrigger>
+                            <SelectValue placeholder="Select solution type" />
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent>
+                          {SUPPLIER_SOLUTION_TYPES.map(type => (
+                            <SelectItem key={type} value={type}>{type.replace(/([A-Z])/g, ' $1').trim()}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={supplierSolutionForm.control}
+                  name="solutionDetails"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Solution Details *</FormLabel>
+                      <FormControl>
+                        <Textarea
+                          placeholder="Describe the agreed solution, e.g., credit amount, discount terms, new ETA for missing items."
+                          rows={4}
+                          {...field}
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                 {/* Future: Add conditional fields here based on selected solutionType */}
+              </div>
+              <DialogFooter>
+                <DialogClose asChild><Button type="button" variant="outline">Cancel</Button></DialogClose>
+                <Button type="submit" disabled={isSubmittingSolution}>
+                  {isSubmittingSolution ? <Icons.Logo className="animate-spin" /> : "Save Solution"}
+                </Button>
+              </DialogFooter>
+            </form>
+          </Form>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }
 
-    
-    
     
