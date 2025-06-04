@@ -66,53 +66,55 @@ const recordReceiptItemSchema = z.object({
   orderedQuantity: z.number(),
   alreadyReceivedQuantity: z.number(),
   outstandingQuantity: z.number(),
-  quantityReceivedThisTime: z.coerce.number()
-    .min(0, "Quantity received must be non-negative."),
-  itemStatus: z.enum(RECEIPT_ITEM_STATUSES),
-  itemNotes: z.string().optional(),
-}).refine((data, ctx) => {
-    if (data.quantityReceivedThisTime > data.outstandingQuantity) {
+  
+  qtyOkReceived: z.coerce.number().min(0,"OK Qty must be non-negative.").default(0),
+  qtyDamagedReceived: z.coerce.number().min(0,"Damaged Qty must be non-negative.").default(0),
+  qtyOtherReceived: z.coerce.number().min(0,"Other Qty must be non-negative.").default(0),
+  notesForOther: z.string().optional(),
+  qtyDeclaredMissing: z.coerce.number().min(0,"Missing Qty must be non-negative.").default(0),
+  notesForMissing: z.string().optional(),
+  lineItemNotes: z.string().optional(),
+}).superRefine((data, ctx) => {
+    const totalPhysicallyReceived = data.qtyOkReceived + data.qtyDamagedReceived + data.qtyOtherReceived;
+    if (totalPhysicallyReceived > data.outstandingQuantity) {
         ctx.addIssue({
-            path: ["quantityReceivedThisTime"],
-            message: `Cannot receive ${data.quantityReceivedThisTime}. Max outstanding is ${data.outstandingQuantity}.`,
+            path: ["qtyOkReceived"], // Could be any of the received fields
+            message: `Total physically received (${totalPhysicallyReceived}) cannot exceed outstanding quantity (${data.outstandingQuantity}).`,
         });
-        return false;
     }
-    if (data.quantityReceivedThisTime > 0 && data.itemStatus === "Missing") {
+    const totalAccountedFor = totalPhysicallyReceived + data.qtyDeclaredMissing;
+     if (totalAccountedFor > data.outstandingQuantity) {
         ctx.addIssue({
-            path: ["itemStatus"],
-            message: `Cannot mark as 'Missing' if quantity > 0 is received. Use 'Ok', 'Damaged', or 'Other'.`,
+            path: ["qtyDeclaredMissing"], // Or any other field contributing to totalAccountedFor
+            message: `Total accounted for items (${totalAccountedFor}) cannot exceed outstanding quantity (${data.outstandingQuantity}). Consider reducing declared missing or received quantities.`,
         });
-        return false;
     }
-    if (data.quantityReceivedThisTime === 0 && data.itemStatus !== "Missing") {
-        // Allow 0 quantity only if status is "Missing", otherwise it should have a quantity or be a discrepancy handled differently.
-        // For now, this simplifies, but a more complex logic could allow 0 for 'Ok' if it's just to confirm no receipt this time.
-        // Let's adjust this to allow 0 if the intent is to just record a status like 'Missing' for an item not received at all this time.
+    if (data.qtyOtherReceived > 0 && (!data.notesForOther || data.notesForOther.trim() === "")) {
+      ctx.addIssue({
+        path: ["notesForOther"],
+        message: "Notes are required if 'Other' quantity is greater than 0.",
+      });
     }
-    return true;
-}, "Invalid quantity or status combination.");
+});
 
 
 const recordReceiptFormSchema = z.object({
   receiptDate: z.date({ required_error: "Receipt date is required." }),
   targetWarehouseId: z.string().min(1, "Target warehouse is required."),
-  notes: z.string().optional(),
-  itemsToReceive: z.array(recordReceiptItemSchema)
+  overallReceiptNotes: z.string().optional(),
+  itemsToProcess: z.array(recordReceiptItemSchema)
     .min(1, "At least one item must be specified for receipt.")
     .superRefine((items, ctx) => {
-        let totalQuantityReceivedThisTime = 0;
-        items.forEach(item => {
-            totalQuantityReceivedThisTime += item.quantityReceivedThisTime;
-        });
-        // Check if any item has quantity > 0 OR if all items are marked "Missing"
-        const anyItemHasPositiveQuantity = items.some(item => item.quantityReceivedThisTime > 0);
-        const allItemsMarkedMissingWithZeroQty = items.every(item => item.itemStatus === "Missing" && item.quantityReceivedThisTime === 0);
-
-        if (!anyItemHasPositiveQuantity && !allItemsMarkedMissingWithZeroQty) {
+        const anyQuantityEntered = items.some(item => 
+            item.qtyOkReceived > 0 || 
+            item.qtyDamagedReceived > 0 || 
+            item.qtyOtherReceived > 0 ||
+            item.qtyDeclaredMissing > 0
+        );
+        if (!anyQuantityEntered) {
              ctx.addIssue({
-                path: ["itemsToReceive"], 
-                message: "Either receive a quantity > 0 for at least one item, or mark all unreceived items as 'Missing'.",
+                path: [], // Root of the array
+                message: "Please enter received, damaged, other, or missing quantities for at least one item.",
             });
         }
     }),
@@ -140,7 +142,6 @@ export default function PurchaseOrderDetailPage() {
   const [isLoadingWarehouses, setIsLoadingWarehouses] = useState(false);
   const [isSubmittingReceipt, setIsSubmittingReceipt] = useState(false);
 
-  // State for Supplier Solution Dialog (to be implemented later)
   const [isSupplierSolutionDialogOpen, setIsSupplierSolutionDialogOpen] = useState(false);
   const [isSubmittingSolution, setIsSubmittingSolution] = useState(false);
 
@@ -159,11 +160,12 @@ export default function PurchaseOrderDetailPage() {
     resolver: zodResolver(recordReceiptFormSchema),
     defaultValues: {
       receiptDate: new Date(),
-      itemsToReceive: [],
+      itemsToProcess: [],
+      overallReceiptNotes: "",
     }
   });
   const { fields: receiptItemsFields, replace: replaceReceiptItems } = useFieldArray({
-    control: receiptForm.control, name: "itemsToReceive"
+    control: receiptForm.control, name: "itemsToProcess"
   });
 
   const fetchPOData = useCallback(async () => {
@@ -244,6 +246,7 @@ export default function PurchaseOrderDetailPage() {
       toast({ title: "Supplier's Proposal Recorded", description: "PO details updated. Now awaiting internal review." });
       await handleStatusChange("PendingInternalReview"); 
       setIsEditPODialogOpen(false);
+      fetchPOData();
     } catch (error: any) {
       console.error("Error updating PO with supplier changes:", error);
       toast({ title: "Update Failed", description: error.message || "Could not update Purchase Order.", variant: "destructive" });
@@ -261,7 +264,7 @@ export default function PurchaseOrderDetailPage() {
         }
         setAvailableWarehouses(activeWarehouses);
 
-        const itemsForReceipt = purchaseOrder.details
+        const itemsForReceiptProcessing = purchaseOrder.details
             .filter(d => d.orderedQuantity > (d.receivedQuantity || 0))
             .map(d => ({
                 productId: d.productId,
@@ -270,21 +273,25 @@ export default function PurchaseOrderDetailPage() {
                 orderedQuantity: d.orderedQuantity,
                 alreadyReceivedQuantity: d.receivedQuantity || 0,
                 outstandingQuantity: d.orderedQuantity - (d.receivedQuantity || 0),
-                quantityReceivedThisTime: 0, 
-                itemStatus: "Ok" as const,
-                itemNotes: "",
+                qtyOkReceived: 0,
+                qtyDamagedReceived: 0,
+                qtyOtherReceived: 0,
+                notesForOther: "",
+                qtyDeclaredMissing: 0,
+                notesForMissing: "",
+                lineItemNotes: "",
             }));
 
-        if (itemsForReceipt.length === 0) {
-            toast({ title: "No Items to Receive", description: "All items on this PO have been fully received.", variant: "default" });
+        if (itemsForReceiptProcessing.length === 0) {
+            toast({ title: "No Items to Receive", description: "All items on this PO have been fully received or accounted for.", variant: "default" });
             return;
         }
         
         receiptForm.reset({
             receiptDate: new Date(),
             targetWarehouseId: activeWarehouses.find(wh => wh.isDefault)?.id || (activeWarehouses.length > 0 ? activeWarehouses[0].id : ""),
-            notes: "",
-            itemsToReceive: itemsForReceipt,
+            overallReceiptNotes: "",
+            itemsToProcess: itemsForReceiptProcessing,
         });
         setIsReceiptDialogOpen(true);
 
@@ -299,9 +306,42 @@ export default function PurchaseOrderDetailPage() {
     if (!purchaseOrder || !currentUser) return;
     setIsSubmittingReceipt(true);
 
-    const itemsToActuallyProcess = data.itemsToReceive.filter(item => item.quantityReceivedThisTime > 0 || item.itemStatus === "Missing");
-    if (itemsToActuallyProcess.length === 0) {
-        receiptForm.setError("itemsToReceive", { type: "manual", message: "Receive at least one item or mark items as missing." });
+    const servicePayloadItems: CreateReceiptServiceData['itemsToReceive'] = [];
+    data.itemsToProcess.forEach(item => {
+        if (item.qtyOkReceived > 0) {
+            servicePayloadItems.push({
+                productId: item.productId, productName: item.productName, poDetailId: item.poDetailId,
+                quantityReceived: item.qtyOkReceived, itemStatus: "Ok", itemNotes: item.lineItemNotes || "",
+                currentPOReceivedQuantity: item.alreadyReceivedQuantity, poOrderedQuantity: item.orderedQuantity
+            });
+        }
+        if (item.qtyDamagedReceived > 0) {
+            servicePayloadItems.push({
+                productId: item.productId, productName: item.productName, poDetailId: item.poDetailId,
+                quantityReceived: item.qtyDamagedReceived, itemStatus: "Damaged", itemNotes: item.lineItemNotes || "",
+                currentPOReceivedQuantity: item.alreadyReceivedQuantity, poOrderedQuantity: item.orderedQuantity
+            });
+        }
+        if (item.qtyOtherReceived > 0) {
+            servicePayloadItems.push({
+                productId: item.productId, productName: item.productName, poDetailId: item.poDetailId,
+                quantityReceived: item.qtyOtherReceived, itemStatus: "Other", 
+                itemNotes: `${item.notesForOther || ''}${item.lineItemNotes ? (item.notesForOther ? '; ' : '') + item.lineItemNotes : ''}`.trim(),
+                currentPOReceivedQuantity: item.alreadyReceivedQuantity, poOrderedQuantity: item.orderedQuantity
+            });
+        }
+        if (item.qtyDeclaredMissing > 0) { // "Missing" items are recorded with quantity 0 for actual stock adjustment
+            servicePayloadItems.push({
+                productId: item.productId, productName: item.productName, poDetailId: item.poDetailId,
+                quantityReceived: 0, itemStatus: "Missing", 
+                itemNotes: `${item.notesForMissing || ''}${item.lineItemNotes ? (item.notesForMissing ? '; ' : '') + item.lineItemNotes : ''}`.trim(),
+                currentPOReceivedQuantity: item.alreadyReceivedQuantity, poOrderedQuantity: item.orderedQuantity
+            });
+        }
+    });
+    
+    if (servicePayloadItems.length === 0) {
+        receiptForm.setError("itemsToProcess", { type: "manual", message: "No quantities were entered for receipt or discrepancy." });
         setIsSubmittingReceipt(false);
         return;
     }
@@ -311,22 +351,12 @@ export default function PurchaseOrderDetailPage() {
         receiptDate: Timestamp.fromDate(data.receiptDate),
         receivingUserId: currentUser.uid,
         targetWarehouseId: data.targetWarehouseId,
-        notes: data.notes || "",
-        itemsToReceive: itemsToActuallyProcess.map(item => ({
-            productId: item.productId,
-            productName: item.productName,
-            quantityReceived: item.quantityReceivedThisTime,
-            itemStatus: item.itemStatus,
-            itemNotes: item.itemNotes || "",
-            poDetailId: item.poDetailId,
-            currentPOReceivedQuantity: item.alreadyReceivedQuantity,
-            poOrderedQuantity: item.orderedQuantity,
-        })),
+        notes: data.overallReceiptNotes || "",
+        itemsToReceive: servicePayloadItems,
     };
 
     try {
         await createReceipt(payload);
-        // updatePOStatusAfterReceipt will be called by the page after successful createReceipt
         await updatePOStatusAfterReceipt(purchaseOrder.id, currentUser.uid);
         toast({ title: "Receipt Recorded", description: "Stock receipt successfully recorded. PO status updated." });
         setIsReceiptDialogOpen(false);
@@ -339,10 +369,9 @@ export default function PurchaseOrderDetailPage() {
   };
 
   const handleOpenSupplierSolutionDialog = () => {
-    // This will be implemented in a subsequent phase.
-    console.log("Open Supplier Solution Dialog - TBD");
+    console.log("Open Supplier Solution Dialog - Placeholder");
     toast({ title: "Feature Pending", description: "Recording supplier solutions for discrepancies is coming soon!", variant: "default" });
-    // setIsSupplierSolutionDialogOpen(true);
+    // setIsSupplierSolutionDialogOpen(true); // To be implemented
   };
 
 
@@ -364,8 +393,8 @@ export default function PurchaseOrderDetailPage() {
       case "PendingInternalReview": return "default";
       case "ConfirmedBySupplier": return "default";
       case "RejectedBySupplier": return "destructive";
-      case "PartiallyDelivered": return "default"; // Changed
-      case "AwaitingFutureDelivery": return "default"; // New
+      case "PartiallyDelivered": return "default"; 
+      case "AwaitingFutureDelivery": return "default"; 
       case "Completed": return "default";
       case "Canceled": return "destructive";
       default: return "secondary";
@@ -379,8 +408,8 @@ export default function PurchaseOrderDetailPage() {
       case "ChangesProposedBySupplier": return "bg-orange-400 hover:bg-orange-500 text-black";
       case "PendingInternalReview": return "bg-purple-500 hover:bg-purple-600 text-white";
       case "ConfirmedBySupplier": return "bg-teal-500 hover:bg-teal-600 text-white";
-      case "PartiallyDelivered": return "bg-yellow-500 hover:bg-yellow-600 text-black"; // Changed
-      case "AwaitingFutureDelivery": return "bg-cyan-500 hover:bg-cyan-600 text-white"; // New
+      case "PartiallyDelivered": return "bg-yellow-500 hover:bg-yellow-600 text-black"; 
+      case "AwaitingFutureDelivery": return "bg-cyan-500 hover:bg-cyan-600 text-white"; 
       case "Completed": return "bg-green-500 hover:bg-green-600 text-white";
       default: return "";
     }
@@ -456,7 +485,7 @@ export default function PurchaseOrderDetailPage() {
               <>
                 <Button onClick={() => handleStatusChange("ConfirmedBySupplier")} disabled={isUpdating} variant="default" className="bg-teal-500 hover:bg-teal-600">{isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.Check className="mr-2 h-4 w-4" />}Record Supplier Confirmation</Button>
                 <Button onClick={() => handleStatusChange("RejectedBySupplier")} disabled={isUpdating} variant="destructive">{isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.X className="mr-2 h-4 w-4" />}Record Supplier Rejection</Button>
-                <Button onClick={() => handleOpenEditPODialog()} disabled={isUpdating || isSubmittingEditPO} variant="outline" className="border-orange-500 text-orange-600 hover:bg-orange-50">{isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.Edit className="mr-2 h-4 w-4" />}Record Supplier's Proposal & Review</Button>
+                <Button onClick={handleOpenEditPODialog} disabled={isUpdating || isSubmittingEditPO} variant="outline" className="border-orange-500 text-orange-600 hover:bg-orange-50">{isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.Edit className="mr-2 h-4 w-4" />}Record Supplier's Proposal & Review</Button>
               </>
             )}
 
@@ -597,7 +626,7 @@ export default function PurchaseOrderDetailPage() {
       </Dialog>
 
       <Dialog open={isReceiptDialogOpen} onOpenChange={setIsReceiptDialogOpen}>
-        <DialogContent className="sm:max-w-3xl md:max-w-4xl flex flex-col max-h-[90vh]">
+        <DialogContent className="sm:max-w-3xl md:max-w-4xl lg:max-w-5xl flex flex-col max-h-[90vh]">
           <Form {...receiptForm}>
             <form onSubmit={receiptForm.handleSubmit(onReceiptSubmit)} className="flex flex-col flex-grow min-h-0">
               <DialogHeader>
@@ -624,41 +653,51 @@ export default function PurchaseOrderDetailPage() {
                         </FormItem>
                     )} />
                   </div>
-                  <FormField control={receiptForm.control} name="notes" render={({ field }) => (<FormItem><FormLabel>Overall Receipt Notes</FormLabel><FormControl><Textarea placeholder="e.g., Delivery condition, driver info" {...field} /></FormControl><FormMessage /></FormItem>)} />
+                  <FormField control={receiptForm.control} name="overallReceiptNotes" render={({ field }) => (<FormItem><FormLabel>Overall Receipt Notes</FormLabel><FormControl><Textarea placeholder="e.g., Delivery condition, driver info" {...field} /></FormControl><FormMessage /></FormItem>)} />
                   
                   <Separator />
-                  <h3 className="text-md font-semibold">Items to Receive:</h3>
+                  <h3 className="text-md font-semibold">Items to Process:</h3>
                   {receiptItemsFields.map((item, index) => {
                     const outstandingQty = item.orderedQuantity - item.alreadyReceivedQuantity;
                     return (
                       <Card key={item.id} className="p-3 bg-muted/30">
                         <CardTitle className="text-base mb-2">{item.productName}</CardTitle>
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end mb-3">
                           <div><FormLabel className="text-xs">Ordered</FormLabel><Input type="text" value={item.orderedQuantity} readOnly disabled className="h-8 text-sm bg-muted/50" /></div>
                           <div><FormLabel className="text-xs">Already Received</FormLabel><Input type="text" value={item.alreadyReceivedQuantity} readOnly disabled className="h-8 text-sm bg-muted/50" /></div>
                           <div><FormLabel className="text-xs">Outstanding</FormLabel><Input type="text" value={outstandingQty} readOnly disabled className="h-8 text-sm bg-muted/50 font-semibold" /></div>
                         </div>
-                        <Separator className="my-3" />
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                          <FormField control={receiptForm.control} name={`itemsToReceive.${index}.quantityReceivedThisTime`} render={({ field }) => (
-                              <FormItem><FormLabel className="text-xs">Quantity Received Now *</FormLabel><FormControl><Input type="number" {...field} className="h-8 text-sm" min={0} max={outstandingQty} /></FormControl><FormMessage className="text-xs" /></FormItem>
-                          )} />
-                          <FormField control={receiptForm.control} name={`itemsToReceive.${index}.itemStatus`} render={({ field }) => (
-                            <FormItem><FormLabel className="text-xs">Item Status *</FormLabel>
-                              <Select onValueChange={field.onChange} value={field.value}><FormControl><SelectTrigger className="h-8 text-sm"><SelectValue placeholder="Status" /></SelectTrigger></FormControl>
-                                <SelectContent>{RECEIPT_ITEM_STATUSES.map(s => (<SelectItem key={s} value={s}>{s}</SelectItem>))}</SelectContent>
-                              </Select><FormMessage className="text-xs" />
-                            </FormItem>
-                          )} />
+                        
+                        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 items-start">
+                            <FormField control={receiptForm.control} name={`itemsToProcess.${index}.qtyOkReceived`} render={({ field }) => (
+                                <FormItem><FormLabel className="text-xs">Qty OK Received*</FormLabel><FormControl><Input type="number" {...field} className="h-8 text-sm" min={0} max={outstandingQty} /></FormControl><FormMessage className="text-xs" /></FormItem>
+                            )} />
+                            <FormField control={receiptForm.control} name={`itemsToProcess.${index}.qtyDamagedReceived`} render={({ field }) => (
+                                <FormItem><FormLabel className="text-xs">Qty Damaged*</FormLabel><FormControl><Input type="number" {...field} className="h-8 text-sm" min={0} /></FormControl><FormMessage className="text-xs" /></FormItem>
+                            )} />
+                            <FormField control={receiptForm.control} name={`itemsToProcess.${index}.qtyDeclaredMissing`} render={({ field }) => (
+                                <FormItem><FormLabel className="text-xs">Qty Declared Missing*</FormLabel><FormControl><Input type="number" {...field} className="h-8 text-sm" min={0} /></FormControl><FormMessage className="text-xs" /></FormItem>
+                            )} />
                         </div>
-                         <FormField control={receiptForm.control} name={`itemsToReceive.${index}.itemNotes`} render={({ field }) => (
-                              <FormItem className="mt-2"><FormLabel className="text-xs">Item Notes</FormLabel><FormControl><Textarea rows={1} {...field} className="text-sm" placeholder="e.g., Batch number, expiry, specific defect if damaged" /></FormControl><FormMessage className="text-xs" /></FormItem>
-                          )} />
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-2 items-start">
+                             <FormField control={receiptForm.control} name={`itemsToProcess.${index}.qtyOtherReceived`} render={({ field }) => (
+                                <FormItem><FormLabel className="text-xs">Qty Other Status*</FormLabel><FormControl><Input type="number" {...field} className="h-8 text-sm" min={0} /></FormControl><FormMessage className="text-xs" /></FormItem>
+                            )} />
+                             <FormField control={receiptForm.control} name={`itemsToProcess.${index}.notesForOther`} render={({ field }) => (
+                                <FormItem><FormLabel className="text-xs">Notes for "Other" Qty</FormLabel><FormControl><Textarea rows={1} {...field} className="text-sm" placeholder="Specify reason if 'Other' > 0" /></FormControl><FormMessage className="text-xs" /></FormItem>
+                            )} />
+                        </div>
+                        <FormField control={receiptForm.control} name={`itemsToProcess.${index}.notesForMissing`} render={({ field }) => (
+                            <FormItem className="mt-2"><FormLabel className="text-xs">Notes for Missing Items</FormLabel><FormControl><Textarea rows={1} {...field} className="text-sm" placeholder="Reason if 'Missing' > 0 (e.g. Backordered)" /></FormControl><FormMessage className="text-xs" /></FormItem>
+                        )} />
+                        <FormField control={receiptForm.control} name={`itemsToProcess.${index}.lineItemNotes`} render={({ field }) => (
+                            <FormItem className="mt-2"><FormLabel className="text-xs">General Item Notes</FormLabel><FormControl><Textarea rows={1} {...field} className="text-sm" placeholder="e.g., Batch number, expiry" /></FormControl><FormMessage className="text-xs" /></FormItem>
+                        )} />
                       </Card>
                     );
                   })}
-                  {receiptForm.formState.errors.itemsToReceive && typeof receiptForm.formState.errors.itemsToReceive.message === 'string' && (<p className="text-sm font-medium text-destructive">{receiptForm.formState.errors.itemsToReceive.message}</p>)}
-                  {(receiptForm.formState.errors.itemsToReceive as any)?.root?.message && (<p className="text-sm font-medium text-destructive">{(receiptForm.formState.errors.itemsToReceive as any)?.root?.message}</p>)}
+                  {receiptForm.formState.errors.itemsToProcess && typeof receiptForm.formState.errors.itemsToProcess.message === 'string' && (<p className="text-sm font-medium text-destructive">{receiptForm.formState.errors.itemsToProcess.message}</p>)}
+                  {(receiptForm.formState.errors.itemsToProcess as any)?.root?.message && (<p className="text-sm font-medium text-destructive">{(receiptForm.formState.errors.itemsToProcess as any)?.root?.message}</p>)}
                 </div>
               </ScrollArea>
               <DialogFooter className="pt-4 flex-shrink-0 border-t mt-auto">
