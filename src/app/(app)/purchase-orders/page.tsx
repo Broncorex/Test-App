@@ -99,6 +99,7 @@ export default function PurchaseOrdersPage() {
     switch (status) {
       case "Pending": return "outline";
       case "SentToSupplier": return "default";
+      case "ChangesProposedBySupplier": return "default";
       case "ConfirmedBySupplier": return "default";
       case "RejectedBySupplier": return "destructive";
       case "Partially Received": return "default";
@@ -111,6 +112,7 @@ export default function PurchaseOrdersPage() {
     if (!status) return "";
     switch (status) {
       case "SentToSupplier": return "bg-blue-500 hover:bg-blue-600 text-white";
+      case "ChangesProposedBySupplier": return "bg-orange-400 hover:bg-orange-500 text-black";
       case "ConfirmedBySupplier": return "bg-teal-500 hover:bg-teal-600 text-white";
       case "Partially Received": return "bg-yellow-400 hover:bg-yellow-500 text-black";
       case "Completed": return "bg-green-500 hover:bg-green-600 text-white";

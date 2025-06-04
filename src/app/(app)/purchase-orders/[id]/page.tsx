@@ -10,7 +10,6 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth-store";
 import { getPurchaseOrderById, updatePurchaseOrderStatus } from "@/services/purchaseOrderService";
-// updateRequisitionStateAfterPOSent is no longer directly called here, but via updatePurchaseOrderStatus
 import type { PurchaseOrder, PurchaseOrderStatus, PurchaseOrderDetail, QuotationAdditionalCost } from "@/types";
 import { Timestamp } from "firebase/firestore";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -86,11 +85,12 @@ export default function PurchaseOrderDetailPage() {
     if (!status) return "secondary";
     switch (status) {
       case "Pending": return "outline";
-      case "SentToSupplier": return "default"; // Blue
-      case "ConfirmedBySupplier": return "default"; // Green
+      case "SentToSupplier": return "default";
+      case "ChangesProposedBySupplier": return "default";
+      case "ConfirmedBySupplier": return "default"; 
       case "RejectedBySupplier": return "destructive";
-      case "Partially Received": return "default"; // Yellow
-      case "Completed": return "default"; // Green
+      case "Partially Received": return "default"; 
+      case "Completed": return "default"; 
       case "Canceled": return "destructive";
       default: return "secondary";
     }
@@ -100,6 +100,7 @@ export default function PurchaseOrderDetailPage() {
     if (!status) return "";
     switch (status) {
       case "SentToSupplier": return "bg-blue-500 hover:bg-blue-600 text-white";
+      case "ChangesProposedBySupplier": return "bg-orange-400 hover:bg-orange-500 text-black";
       case "ConfirmedBySupplier": return "bg-teal-500 hover:bg-teal-600 text-white";
       case "Partially Received": return "bg-yellow-400 hover:bg-yellow-500 text-black";
       case "Completed": return "bg-green-500 hover:bg-green-600 text-white";
@@ -127,10 +128,19 @@ export default function PurchaseOrderDetailPage() {
   }
 
   const canManagePO = role === 'admin' || role === 'superadmin';
-  const canSendToSupplier = canManagePO && purchaseOrder.status === "Pending";
-  const canRecordSupplierResponse = canManagePO && purchaseOrder.status === "SentToSupplier";
-  const canCancel = canManagePO && ["Pending", "SentToSupplier", "ConfirmedBySupplier"].includes(purchaseOrder.status);
-  const canRecordReceipt = canManagePO && ["ConfirmedBySupplier", "Partially Received"].includes(purchaseOrder.status);
+  const isPending = purchaseOrder.status === "Pending";
+  const isSentToSupplier = purchaseOrder.status === "SentToSupplier";
+  const isChangesProposed = purchaseOrder.status === "ChangesProposedBySupplier";
+  const isConfirmedBySupplier = purchaseOrder.status === "ConfirmedBySupplier";
+  const isPartiallyReceived = purchaseOrder.status === "Partially Received";
+
+  const canSendToSupplier = canManagePO && isPending;
+  const canRecordSupplierInitialResponse = canManagePO && isSentToSupplier;
+  const canActOnProposedChanges = canManagePO && isChangesProposed;
+  const canCancel = canManagePO && ["Pending", "SentToSupplier", "ChangesProposedBySupplier", "ConfirmedBySupplier"].includes(purchaseOrder.status);
+  const canRecordReceipt = canManagePO && (isConfirmedBySupplier || isPartiallyReceived);
+  const canMarkCompleted = canManagePO && (isConfirmedBySupplier || isPartiallyReceived);
+
 
   return (
     <>
@@ -145,7 +155,7 @@ export default function PurchaseOrderDetailPage() {
                 Send to Supplier
               </Button>
             )}
-            {canRecordSupplierResponse && (
+            {canRecordSupplierInitialResponse && (
               <>
                 <Button onClick={() => handleStatusChange("ConfirmedBySupplier")} disabled={isUpdating} variant="default" className="bg-teal-500 hover:bg-teal-600">
                   {isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.Check className="mr-2 h-4 w-4" />}
@@ -155,12 +165,43 @@ export default function PurchaseOrderDetailPage() {
                   {isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.X className="mr-2 h-4 w-4" />}
                   Record Supplier Rejection
                 </Button>
+                <Button onClick={() => handleStatusChange("ChangesProposedBySupplier")} disabled={isUpdating} variant="outline" className="border-orange-500 text-orange-600 hover:bg-orange-50">
+                  {isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.Edit className="mr-2 h-4 w-4" />}
+                  Log Supplier Changes
+                </Button>
               </>
+            )}
+            {canActOnProposedChanges && (
+                <>
+                    <Button onClick={() => handleStatusChange("ConfirmedBySupplier")} disabled={isUpdating} variant="default" className="bg-teal-500 hover:bg-teal-600">
+                        {isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.Check className="mr-2 h-4 w-4" />}
+                        Accept Changes & Confirm PO
+                    </Button>
+                    <Button onClick={() => handleStatusChange("ConfirmedBySupplier")} disabled={isUpdating} variant="outline" className="border-blue-500 text-blue-600 hover:bg-blue-50">
+                        {/* For now, this also just confirms. Future: uses original details if edited PO is a concept. */}
+                        Proceed with Original PO
+                    </Button>
+                    <Button onClick={() => handleStatusChange("RejectedBySupplier")} disabled={isUpdating} variant="destructive">
+                        {isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.X className="mr-2 h-4 w-4" />}
+                        Reject PO (Due to Changes)
+                    </Button>
+                </>
             )}
             {canRecordReceipt && (
               <Button onClick={() => toast({ title: "Feature Coming Soon", description: "Detailed stock receipt registration will be available soon."})} disabled={isUpdating} variant="outline">
                 <Icons.Package className="mr-2 h-4 w-4" /> Record Receipt
               </Button>
+            )}
+             {canMarkCompleted && (
+                <Button 
+                    onClick={() => handleStatusChange("Completed")} 
+                    disabled={isUpdating}
+                    variant="default"
+                    className="bg-green-500 hover:bg-green-600 text-white"
+                >
+                    {isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.Check className="mr-2 h-4 w-4" />}
+                    Mark as Fully Received/Completed
+                </Button>
             )}
             {canCancel && (
               <AlertDialog>
@@ -175,7 +216,7 @@ export default function PurchaseOrderDetailPage() {
                     <AlertDialogTitle>Are you sure you want to cancel this Purchase Order?</AlertDialogTitle>
                     <AlertDialogDescription>
                       This action will mark the PO as 'Canceled'. 
-                      {purchaseOrder.status === "Pending" || purchaseOrder.status === "SentToSupplier" ? " Pending quantities on the requisition will be adjusted." : " Quantities on the requisition may need manual review if already confirmed by supplier."}
+                      {purchaseOrder.status === "Pending" || purchaseOrder.status === "SentToSupplier" || purchaseOrder.status === "ChangesProposedBySupplier" ? " Pending quantities on the requisition will be adjusted." : " Quantities on the requisition may need manual review if already confirmed by supplier."}
                     </AlertDialogDescription>
                   </AlertDialogHeader>
                   <AlertDialogFooter>
@@ -286,5 +327,4 @@ export default function PurchaseOrderDetailPage() {
     </>
   );
 }
-
     

@@ -228,27 +228,16 @@ export const updatePurchaseOrderStatus = async (
   userId: string 
 ): Promise<void> => {
   const poRef = doc(db, "purchaseOrders", poId);
-  const poSnap = await getDoc(poRef); // Get current PO data before update
+  const poSnap = await getDoc(poRef); 
 
   if (!poSnap.exists()) {
     throw new Error(`Purchase Order ${poId} not found during status update.`);
   }
-  const currentPOData = poSnap.data() as PurchaseOrder;
-  const originalStatus = currentPOData.status;
-
-  let poDetailsForRequisitionUpdate: PurchaseOrderDetail[] | undefined;
-
-  // Fetch details if needed for requisition updates
-  if (
-    newStatus === "ConfirmedBySupplier" ||
-    newStatus === "RejectedBySupplier" ||
-    (newStatus === "Canceled" && (originalStatus === "Pending" || originalStatus === "SentToSupplier"))
-  ) {
-    poDetailsForRequisitionUpdate = await getPODetails(poId);
-    if (!poDetailsForRequisitionUpdate) {
-        throw new Error(`Details for PO ${poId} could not be fetched for requisition update.`);
-    }
+  const currentPO = await getPurchaseOrderById(poId); // Fetches with details
+  if (!currentPO) {
+    throw new Error(`Purchase Order ${poId} could not be fully fetched for status update.`);
   }
+  const originalStatus = currentPO.status;
 
   const updateData: Partial<PurchaseOrder> = {
     status: newStatus,
@@ -262,14 +251,16 @@ export const updatePurchaseOrderStatus = async (
   await updateDoc(poRef, updateData);
 
   // After successfully updating PO status, update requisition based on new status
-  if (newStatus === "ConfirmedBySupplier" && poDetailsForRequisitionUpdate) {
-    await updateRequisitionQuantitiesPostConfirmation(currentPOData.originRequisitionId, poDetailsForRequisitionUpdate, userId);
+  if (newStatus === "ConfirmedBySupplier" && currentPO.details) {
+    // This handles transitions from Pending, SentToSupplier, or ChangesProposedBySupplier to ConfirmedBySupplier
+    await updateRequisitionQuantitiesPostConfirmation(currentPO.originRequisitionId, currentPO.details, userId);
   } else if (
-      (newStatus === "Canceled" && (originalStatus === "Pending" || originalStatus === "SentToSupplier") && poDetailsForRequisitionUpdate) ||
-      (newStatus === "RejectedBySupplier" && poDetailsForRequisitionUpdate)
+      (newStatus === "Canceled" && (originalStatus === "Pending" || originalStatus === "SentToSupplier" || originalStatus === "ChangesProposedBySupplier") && currentPO.details) ||
+      (newStatus === "RejectedBySupplier" && currentPO.details) // Also applies if PO is directly rejected
     ) {
-    await handleRequisitionUpdateForPOCancellation(currentPOData.originRequisitionId, poDetailsForRequisitionUpdate, userId);
+    await handleRequisitionUpdateForPOCancellation(currentPO.originRequisitionId, currentPO.details, userId);
   }
+  // Other status transitions (e.g., to Partially Received, Completed) might have their own requisition implications later.
 };
 
     

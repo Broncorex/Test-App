@@ -231,6 +231,7 @@ export interface Quotation {
 export const PURCHASE_ORDER_STATUSES = [
   "Pending",
   "SentToSupplier",
+  "ChangesProposedBySupplier", // New status
   "ConfirmedBySupplier",
   "RejectedBySupplier",
   "Partially Received",
@@ -272,5 +273,4 @@ export interface PurchaseOrder {
   // Subcollection 'details' will hold PurchaseOrderDetail items
   details?: PurchaseOrderDetail[]; // Populated after fetching subcollection
 }
-
     
