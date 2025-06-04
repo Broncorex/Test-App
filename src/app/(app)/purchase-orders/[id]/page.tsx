@@ -188,11 +188,15 @@ export default function PurchaseOrderDetailPage() {
 
   const handleOpenEditPODialog = () => {
     if (!purchaseOrder) return;
+    // If originalDetails exist and status is 'PendingInternalReview', default form to the proposed (current) details
+    // If status is 'ChangesProposedBySupplier', default to current (original) details for editing into proposed
+    const sourceData = (purchaseOrder.status === 'PendingInternalReview' && purchaseOrder.originalDetails) ? purchaseOrder : purchaseOrder;
+
     editPOForm.reset({
-      notes: purchaseOrder.notes || "",
-      expectedDeliveryDate: purchaseOrder.expectedDeliveryDate?.toDate(),
-      additionalCosts: purchaseOrder.additionalCosts?.map(ac => ({...ac, amount: Number(ac.amount)})) || [],
-      details: purchaseOrder.details?.map(d => ({
+      notes: sourceData.notes || "",
+      expectedDeliveryDate: sourceData.expectedDeliveryDate?.toDate(),
+      additionalCosts: sourceData.additionalCosts?.map(ac => ({...ac, amount: Number(ac.amount)})) || [],
+      details: sourceData.details?.map(d => ({
         id: d.id,
         productId: d.productId,
         productName: d.productName,
@@ -224,6 +228,7 @@ export default function PurchaseOrderDetailPage() {
     try {
       await updatePurchaseOrderDetailsAndCosts(purchaseOrderId, payload);
       toast({ title: "Supplier's Proposal Recorded", description: "PO details updated." });
+      // Status change to PendingInternalReview is now separate
       await handleStatusChange("PendingInternalReview"); 
       setIsEditPODialogOpen(false);
       // fetchPOData is called by handleStatusChange
@@ -380,6 +385,42 @@ export default function PurchaseOrderDetailPage() {
   const showRecordReceipt = canManagePO && (poStatus === "ConfirmedBySupplier" || poStatus === "PartiallyReceived");
   const showMarkCompleted = canManagePO && (poStatus === "ConfirmedBySupplier" || poStatus === "PartiallyReceived");
 
+  const renderComparisonTable = (originalItems: PurchaseOrderDetail[], proposedItems: PurchaseOrderDetail[], itemType: "Details" | "Costs") => (
+    <Table>
+      <TableHeader><TableRow><TableHead>Product</TableHead><TableHead className="text-right">Orig. Qty</TableHead><TableHead className="text-right">Prop. Qty</TableHead><TableHead className="text-right">Orig. Price</TableHead><TableHead className="text-right">Prop. Price</TableHead><TableHead>Notes (Proposed)</TableHead></TableRow></TableHeader>
+      <TableBody>
+        {/* Merge and display logic needed here - simplified for now */}
+        {proposedItems.map(pItem => {
+          const oItem = originalItems.find(oi => oi.productId === pItem.productId);
+          return (
+            <TableRow key={pItem.productId}>
+              <TableCell>{pItem.productName}</TableCell>
+              <TableCell className="text-right">{oItem?.orderedQuantity || 'N/A'}</TableCell>
+              <TableCell className="text-right">{pItem.orderedQuantity}</TableCell>
+              <TableCell className="text-right">${(oItem?.unitPrice || 0).toFixed(2)}</TableCell>
+              <TableCell className="text-right">${(pItem.unitPrice || 0).toFixed(2)}</TableCell>
+              <TableCell className="text-xs max-w-[150px] truncate" title={pItem.notes}>{pItem.notes || "N/A"}</TableCell>
+            </TableRow>
+          );
+        })}
+      </TableBody>
+    </Table>
+  );
+   const renderAdditionalCostsTable = (costs: QuotationAdditionalCost[]) => (
+    <Table>
+        <TableHeader><TableRow><TableHead>Description</TableHead><TableHead>Type</TableHead><TableHead className="text-right">Amount</TableHead></TableRow></TableHeader>
+        <TableBody>
+            {costs.length > 0 ? costs.map((cost, index) => (
+                <TableRow key={index}>
+                    <TableCell>{cost.description}</TableCell>
+                    <TableCell>{cost.type}</TableCell>
+                    <TableCell className="text-right">${Number(cost.amount).toFixed(2)}</TableCell>
+                </TableRow>
+            )) : <TableRow><TableCell colSpan={3} className="text-center text-muted-foreground">No additional costs</TableCell></TableRow>}
+        </TableBody>
+    </Table>
+  );
+
 
   return (
     <>
@@ -392,15 +433,15 @@ export default function PurchaseOrderDetailPage() {
             
             {showSentToSupplierActions && (
               <>
-                <Button onClick={() => handleStatusChange("ConfirmedBySupplier")} disabled={isUpdating} variant="default" className="bg-teal-500 hover:bg-teal-600">{isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.Check className="mr-2 h-4 w-4" />}Supplier Confirmed Original</Button>
-                <Button onClick={() => handleStatusChange("RejectedBySupplier")} disabled={isUpdating} variant="destructive">{isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.X className="mr-2 h-4 w-4" />}Supplier Rejected</Button>
+                <Button onClick={() => handleStatusChange("ConfirmedBySupplier")} disabled={isUpdating} variant="default" className="bg-teal-500 hover:bg-teal-600">{isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.Check className="mr-2 h-4 w-4" />}Record Supplier Confirmation</Button>
+                <Button onClick={() => handleStatusChange("RejectedBySupplier")} disabled={isUpdating} variant="destructive">{isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.X className="mr-2 h-4 w-4" />}Record Supplier Rejection</Button>
                 <Button onClick={() => handleStatusChange("ChangesProposedBySupplier")} disabled={isUpdating} variant="outline" className="border-orange-500 text-orange-600 hover:bg-orange-50">{isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.Edit className="mr-2 h-4 w-4" />}Log Supplier Changes</Button>
               </>
             )}
 
             {showChangesProposedActions && (
                 <>
-                    <Button onClick={handleOpenEditPODialog} disabled={isUpdating || isSubmittingEditPO} variant="default" className="bg-blue-500 hover:bg-blue-600"><Icons.Edit className="mr-2 h-4 w-4" />Record Supplier's Proposal &amp; Review</Button>
+                    <Button onClick={handleOpenEditPODialog} disabled={isUpdating || isSubmittingEditPO} variant="default" className="bg-blue-500 hover:bg-blue-600"><Icons.Edit className="mr-2 h-4 w-4" />Record Supplier's Proposal & Review</Button>
                     <Button onClick={() => handleStatusChange("ConfirmedBySupplier")} disabled={isUpdating} variant="outline" className="border-teal-500 text-teal-600 hover:bg-teal-50">{isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.Check className="mr-2 h-4 w-4" />}Supplier Agrees to Original Terms</Button>
                     <Button onClick={() => handleStatusChange("RejectedBySupplier")} disabled={isUpdating} variant="destructive">{isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.X className="mr-2 h-4 w-4" />}Reject Supplier's Proposal</Button>
                 </>
@@ -425,24 +466,77 @@ export default function PurchaseOrderDetailPage() {
         }
       />
 
-      {(poStatus === "ChangesProposedBySupplier" || poStatus === "PendingInternalReview") && (
+      {(poStatus === "ChangesProposedBySupplier" || poStatus === "PendingInternalReview") && !purchaseOrder.originalDetails && (
         <Card className="my-4 border-l-4 border-blue-500">
           <CardHeader>
-            <CardTitle className="text-lg font-semibold text-blue-700">Review Supplier Changes</CardTitle>
+            <CardTitle className="text-lg font-semibold text-blue-700">Review Supplier Communication</CardTitle>
           </CardHeader>
           <CardContent>
             <p className="text-sm text-muted-foreground">
-              The supplier may have proposed changes to this order, or you may be in the process of reviewing them.
-              Currently, the displayed details reflect the latest saved version of the PO.
+              {poStatus === "ChangesProposedBySupplier" && "The supplier may have proposed changes. Use 'Record Supplier's Proposal & Review' to input these changes for formal review."}
+              {poStatus === "PendingInternalReview" && "The supplier's proposed changes have been recorded. Review the details below."}
             </p>
             <p className="text-sm text-muted-foreground mt-2">
-              <em>A detailed side-by-side comparison of original vs. proposed changes is planned for a future update. For now, please compare with the supplier's direct communication.</em>
+              <em>A detailed side-by-side comparison of original vs. proposed changes is planned for a future update. For now, please compare with the supplier's direct communication if status is 'ChangesProposedBySupplier', or use the comparison view below if available.</em>
             </p>
           </CardContent>
         </Card>
       )}
 
-      <div className="grid gap-6 md:grid-cols-3">
+      {purchaseOrder.status === "PendingInternalReview" && purchaseOrder.originalDetails && (
+        <Card className="my-6">
+          <CardHeader>
+            <CardTitle className="font-headline text-xl">Original vs. Proposed Order Comparison</CardTitle>
+            <CardDescription>Review the differences between the original order and the supplier's proposed changes.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {/* Original Order Column */}
+              <div className="space-y-4 p-4 border rounded-md bg-muted/30">
+                <h3 className="text-lg font-semibold text-muted-foreground">Original Order</h3>
+                <div><strong className="text-sm">Original Notes:</strong><p className="text-sm whitespace-pre-wrap">{purchaseOrder.originalNotes || "N/A"}</p></div>
+                <div><strong className="text-sm">Original Expected Delivery:</strong><p className="text-sm">{formatTimestampDate(purchaseOrder.originalExpectedDeliveryDate)}</p></div>
+                <Separator />
+                <h4 className="text-md font-semibold">Original Items:</h4>
+                {purchaseOrder.originalDetails && purchaseOrder.originalDetails.length > 0 ? (
+                  renderComparisonTable(purchaseOrder.originalDetails, purchaseOrder.originalDetails, "Details")
+                ) : <p className="text-sm text-muted-foreground">No original items recorded.</p>}
+                <Separator />
+                 <h4 className="text-md font-semibold">Original Additional Costs:</h4>
+                {renderAdditionalCostsTable(purchaseOrder.originalAdditionalCosts || [])}
+                <Separator />
+                <div className="text-right space-y-1 mt-2">
+                    <p className="text-sm">Original Subtotal: <strong className="font-mono">${(purchaseOrder.originalProductsSubtotal || 0).toFixed(2)}</strong></p>
+                    <p className="text-sm">Original Total: <strong className="font-mono">${(purchaseOrder.originalTotalAmount || 0).toFixed(2)}</strong></p>
+                </div>
+              </div>
+
+              {/* Supplier's Proposed Order Column (Current PO Data) */}
+              <div className="space-y-4 p-4 border rounded-md">
+                <h3 className="text-lg font-semibold text-primary">Supplier's Proposed Order (Current)</h3>
+                <div><strong className="text-sm">Proposed Notes:</strong><p className="text-sm whitespace-pre-wrap">{purchaseOrder.notes || "N/A"}</p></div>
+                <div><strong className="text-sm">Proposed Expected Delivery:</strong><p className="text-sm">{formatTimestampDate(purchaseOrder.expectedDeliveryDate)}</p></div>
+                <Separator />
+                <h4 className="text-md font-semibold">Proposed Items:</h4>
+                {purchaseOrder.details && purchaseOrder.details.length > 0 ? (
+                   renderComparisonTable(purchaseOrder.originalDetails || [], purchaseOrder.details, "Details")
+                ) : <p className="text-sm text-muted-foreground">No proposed items recorded.</p>}
+                 <Separator />
+                <h4 className="text-md font-semibold">Proposed Additional Costs:</h4>
+                {renderAdditionalCostsTable(purchaseOrder.additionalCosts || [])}
+                <Separator />
+                 <div className="text-right space-y-1 mt-2">
+                    <p className="text-sm">Proposed Subtotal: <strong className="font-mono">${(purchaseOrder.productsSubtotal || 0).toFixed(2)}</strong></p>
+                    <p className="text-sm font-bold">Proposed Total: <strong className="font-mono text-lg">${(purchaseOrder.totalAmount || 0).toFixed(2)}</strong></p>
+                </div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+
+      <div className="grid gap-6 md:grid-cols-3 mt-6">
         <Card className="md:col-span-1"><CardHeader><CardTitle className="font-headline">PO Summary</CardTitle></CardHeader>
           <CardContent className="space-y-3 text-sm">
             <div className="flex justify-between"><span className="text-muted-foreground">PO ID:</span><span className="font-medium truncate max-w-[150px]">{purchaseOrder.id}</span></div>
@@ -464,7 +558,7 @@ export default function PurchaseOrderDetailPage() {
             <div className="flex justify-between"><span className="text-muted-foreground">Last Updated:</span><span className="font-medium">{formatTimestampDate(purchaseOrder.updatedAt)}</span></div>
           </CardContent>
         </Card>
-        <Card className="md:col-span-2"><CardHeader><CardTitle className="font-headline">Ordered Products</CardTitle><CardDescription>List of products included in this purchase order.</CardDescription></CardHeader>
+        <Card className="md:col-span-2"><CardHeader><CardTitle className="font-headline">Ordered Products (Current State)</CardTitle><CardDescription>List of products reflecting current PO details.</CardDescription></CardHeader>
           <CardContent>
             {purchaseOrder.details && purchaseOrder.details.length > 0 ? (<ScrollArea className="h-[calc(100vh-22rem)]"><Table><TableHeader><TableRow><TableHead>Product Name</TableHead><TableHead className="text-right">Ordered Qty</TableHead><TableHead className="text-right">Unit Price</TableHead><TableHead className="text-right">Subtotal</TableHead><TableHead className="text-right">Received Qty</TableHead><TableHead>Item Notes</TableHead></TableRow></TableHeader><TableBody>{purchaseOrder.details.map((item) => (<TableRow key={item.id || item.productId}><TableCell className="font-medium">{item.productName}</TableCell><TableCell className="text-right">{item.orderedQuantity}</TableCell><TableCell className="text-right">${Number(item.unitPrice).toFixed(2)}</TableCell><TableCell className="text-right font-semibold">${(Number(item.orderedQuantity) * Number(item.unitPrice)).toFixed(2)}</TableCell><TableCell className="text-right">{item.receivedQuantity || 0}</TableCell><TableCell className="whitespace-pre-wrap text-xs max-w-[150px] truncate" title={item.notes}>{item.notes || "N/A"}</TableCell></TableRow>))}</TableBody></Table></ScrollArea>) : (<p>No products listed for this purchase order.</p>)}
           </CardContent>

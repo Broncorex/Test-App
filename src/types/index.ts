@@ -243,7 +243,7 @@ export const PURCHASE_ORDER_STATUSES = [
   "Pending",
   "SentToSupplier",
   "ChangesProposedBySupplier",
-  "PendingInternalReview", // New status
+  "PendingInternalReview",
   "ConfirmedBySupplier",
   "RejectedBySupplier",
   "PartiallyReceived",
@@ -283,6 +283,14 @@ export interface PurchaseOrder {
   updatedAt: Timestamp;
   createdBy: string; // User UID (often same as creationUserId)
   details?: PurchaseOrderDetail[]; // Populated after fetching subcollection
+
+  // Fields for original PO snapshot
+  originalDetails?: PurchaseOrderDetail[];
+  originalAdditionalCosts?: QuotationAdditionalCost[];
+  originalProductsSubtotal?: number;
+  originalTotalAmount?: number;
+  originalNotes?: string;
+  originalExpectedDeliveryDate?: Timestamp | null;
 }
 
 // --- Receipt Types ---

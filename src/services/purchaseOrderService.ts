@@ -130,12 +130,20 @@ export const createPurchaseOrder = async (
   return purchaseOrderRef.id;
 };
 
-const getPODetails = async (poId: string): Promise<PurchaseOrderDetail[]> => {
+const getPODetails = async (poId: string, transaction?: any): Promise<PurchaseOrderDetail[]> => {
   const detailsCollectionRef = collection(db, `purchaseOrders/${poId}/details`);
   const q = query(detailsCollectionRef, orderBy("productName"));
-  const snapshot = await getDocs(q);
-  return snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() } as PurchaseOrderDetail));
+  
+  let snapshot;
+  if (transaction) {
+    snapshot = await transaction.get(query(detailsCollectionRef, orderBy("productName")));
+  } else {
+    snapshot = await getDocs(q);
+  }
+  
+  return snapshot.docs.map((docSnap: QueryDocumentSnapshot<DocumentData>) => ({ id: docSnap.id, ...docSnap.data() } as PurchaseOrderDetail));
 };
+
 
 export const getPurchaseOrderById = async (id: string): Promise<PurchaseOrder | null> => {
   if (!id) return null;
@@ -229,6 +237,7 @@ export interface UpdatePOWithChangesData {
   expectedDeliveryDate?: Timestamp;
   additionalCosts: QuotationAdditionalCost[];
   details: Array<{
+    // id?: string; // Keep existing ID if updating, or undefined if new
     productId: string;
     productName: string;
     orderedQuantity: number;
@@ -241,7 +250,6 @@ export const updatePurchaseOrderDetailsAndCosts = async (
   poId: string,
   data: UpdatePOWithChangesData
 ): Promise<void> => {
-  // Pre-fetch product details to validate outside transaction if possible
   for (const detail of data.details) {
     const product = await getProductById(detail.productId);
     if (!product || !product.isActive) {
@@ -278,10 +286,23 @@ export const updatePurchaseOrderDetailsAndCosts = async (
       totalAmount: newTotalAmount,
       updatedAt: Timestamp.now(),
     };
+
+    // Snapshot original data if this is the first time changes are being proposed
+    // This logic assumes that if `originalDetails` is not set, we should snapshot.
+    if (!currentPOData.originalDetails && (currentPOData.status === "ChangesProposedBySupplier" || currentPOData.status === "SentToSupplier")) {
+      const originalDetailsSnapshot = await getPODetails(poId, transaction); // Fetch current details within transaction
+      mainPOUpdateData.originalDetails = originalDetailsSnapshot;
+      mainPOUpdateData.originalAdditionalCosts = currentPOData.additionalCosts;
+      mainPOUpdateData.originalProductsSubtotal = currentPOData.productsSubtotal;
+      mainPOUpdateData.originalTotalAmount = currentPOData.totalAmount;
+      mainPOUpdateData.originalNotes = currentPOData.notes;
+      mainPOUpdateData.originalExpectedDeliveryDate = currentPOData.expectedDeliveryDate;
+    }
+    
     transaction.update(poRef, mainPOUpdateData);
 
     const detailsCollectionRef = collection(poRef, "details");
-    const oldDetailsSnap = await getDocs(query(detailsCollectionRef)); 
+    const oldDetailsSnap = await transaction.get(query(detailsCollectionRef));
     
     oldDetailsSnap.docs.forEach(docSnap => transaction.delete(docSnap.ref));
 
@@ -310,7 +331,6 @@ export const updatePurchaseOrderStatus = async (
   const poRef = doc(db, "purchaseOrders", poId);
   const now = Timestamp.now();
   
-  // Fetch current PO details *before* updating status, for requisition adjustments.
   const originalPO = await getPurchaseOrderById(poId); 
   if (!originalPO) {
     throw new Error(`Purchase Order ${poId} not found for status update.`);
@@ -326,11 +346,19 @@ export const updatePurchaseOrderStatus = async (
     updateData.completionDate = now;
   }
 
-  await updateDoc(poRef, updateData);
-
-  // After successfully updating PO status, update requisition based on new status
+  // If moving to ConfirmedBySupplier, or being Canceled/Rejected before confirmation,
+  // the requisition needs updating.
   if (newStatus === "ConfirmedBySupplier" && originalPO.details) {
-    await updateRequisitionQuantitiesPostConfirmation(originalPO.originRequisitionId, originalPO.details, userId);
+    // Important: updateRequisitionQuantitiesPostConfirmation expects the LATEST PO details.
+    // If this status update happens AFTER changes were saved to the PO (e.g., via updatePurchaseOrderDetailsAndCosts),
+    // then getPurchaseOrderById will fetch the LATEST data.
+    const potentiallyUpdatedPO = await getPurchaseOrderById(poId); // Re-fetch to ensure latest details
+    if (potentiallyUpdatedPO && potentiallyUpdatedPO.details) {
+      await updateRequisitionQuantitiesPostConfirmation(poId, userId);
+    } else {
+      console.error("Failed to get updated PO details for requisition update.");
+      // Potentially throw an error or handle gracefully
+    }
   } else if (
       (newStatus === "Canceled" && (originalStatus === "Pending" || originalStatus === "SentToSupplier" || originalStatus === "ChangesProposedBySupplier" || originalStatus === "PendingInternalReview")) ||
       (newStatus === "RejectedBySupplier" && (originalStatus === "SentToSupplier" || originalStatus === "ChangesProposedBySupplier" || originalStatus === "PendingInternalReview"))
@@ -339,6 +367,7 @@ export const updatePurchaseOrderStatus = async (
         await handleRequisitionUpdateForPOCancellation(originalPO.originRequisitionId, originalPO.details, userId);
     }
   }
-};
 
+  await updateDoc(poRef, updateData);
+};
     
