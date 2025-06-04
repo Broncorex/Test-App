@@ -277,26 +277,21 @@ export const updatePurchaseOrderDetailsAndCosts = async (
       productsSubtotal: newProductsSubtotal,
       totalAmount: newTotalAmount,
       updatedAt: Timestamp.now(),
-      // Status is NOT changed here. It's changed by updatePurchaseOrderStatus
     };
     transaction.update(poRef, mainPOUpdateData);
 
     const detailsCollectionRef = collection(poRef, "details");
-    const oldDetailsSnap = await getDocs(query(detailsCollectionRef)); // Fetch outside transaction, or use transaction.get if needed
+    const oldDetailsSnap = await getDocs(query(detailsCollectionRef)); 
     
-    // To perform deletions within a transaction, you usually fetch refs first or query within.
-    // For simplicity in this example, let's assume we can get refs to delete.
-    // A more robust way is query within transaction or pass IDs to delete.
-    // Here, we will delete all and re-add for simplicity of example.
     oldDetailsSnap.docs.forEach(docSnap => transaction.delete(docSnap.ref));
 
     data.details.forEach(newDetailData => {
-      const detailRef = doc(detailsCollectionRef); // New doc ref for each detail
+      const detailRef = doc(detailsCollectionRef); 
       const poDetail: Omit<PurchaseOrderDetail, "id"> = {
         productId: newDetailData.productId,
         productName: newDetailData.productName,
         orderedQuantity: newDetailData.orderedQuantity,
-        receivedQuantity: 0, // Reset received quantity if PO is re-confirmed with changes
+        receivedQuantity: 0, 
         unitPrice: newDetailData.unitPrice,
         subtotal: newDetailData.orderedQuantity * newDetailData.unitPrice,
         notes: newDetailData.notes,
@@ -313,36 +308,37 @@ export const updatePurchaseOrderStatus = async (
   userId: string
 ): Promise<void> => {
   const poRef = doc(db, "purchaseOrders", poId);
-
-  // Fetch current PO details to pass to requisition updates if needed
-  // This is crucial if the update involves requisition quantities.
-  const currentPO = await getPurchaseOrderById(poId);
-  if (!currentPO) {
-    throw new Error(`Purchase Order ${poId} could not be fully fetched for status update.`);
+  const now = Timestamp.now();
+  
+  // Fetch current PO details *before* updating status, for requisition adjustments.
+  const originalPO = await getPurchaseOrderById(poId); 
+  if (!originalPO) {
+    throw new Error(`Purchase Order ${poId} not found for status update.`);
   }
-  const originalStatus = currentPO.status;
+  const originalStatus = originalPO.status;
 
   const updateData: Partial<PurchaseOrder> = {
     status: newStatus,
-    updatedAt: Timestamp.now(),
+    updatedAt: now,
   };
 
-  if ((newStatus === "Completed" || newStatus === "Canceled" || newStatus === "RejectedBySupplier") && !currentPO.completionDate) {
-    updateData.completionDate = Timestamp.now();
+  if ((newStatus === "Completed" || newStatus === "Canceled" || newStatus === "RejectedBySupplier") && !originalPO.completionDate) {
+    updateData.completionDate = now;
   }
 
   await updateDoc(poRef, updateData);
 
   // After successfully updating PO status, update requisition based on new status
-  if (newStatus === "ConfirmedBySupplier" && currentPO.details) {
-    // This handles transitions from Pending, SentToSupplier, or ChangesProposedBySupplier to ConfirmedBySupplier
-    // It will use the LATEST PO details (which might have just been updated if coming from ChangesProposed)
-    await updateRequisitionQuantitiesPostConfirmation(poId, userId);
+  if (newStatus === "ConfirmedBySupplier" && originalPO.details) {
+    await updateRequisitionQuantitiesPostConfirmation(originalPO.originRequisitionId, originalPO.details, userId);
   } else if (
-      ((newStatus === "Canceled" && (originalStatus === "Pending" || originalStatus === "SentToSupplier" || originalStatus === "ChangesProposedBySupplier")) ||
-       (newStatus === "RejectedBySupplier")) && // Also applies if PO is directly rejected from SentToSupplier or ChangesProposed
-       currentPO.details
+      (newStatus === "Canceled" && (originalStatus === "Pending" || originalStatus === "SentToSupplier" || originalStatus === "ChangesProposedBySupplier" || originalStatus === "PendingInternalReview")) ||
+      (newStatus === "RejectedBySupplier" && (originalStatus === "SentToSupplier" || originalStatus === "ChangesProposedBySupplier" || originalStatus === "PendingInternalReview"))
     ) {
-    await handleRequisitionUpdateForPOCancellation(currentPO.originRequisitionId, currentPO.details, userId);
+    if (originalPO.details) {
+        await handleRequisitionUpdateForPOCancellation(originalPO.originRequisitionId, originalPO.details, userId);
+    }
   }
 };
+
+    

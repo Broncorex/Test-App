@@ -91,7 +91,7 @@ export interface StockMovement {
   userName?: string; // Denormalized
   reason: string; // Required
   notes: string; // Required
-  relatedDocumentId?: string; // Required, e.g., PO ID, Transfer ID
+  relatedDocumentId?: string; // Required, e.g., orderId, transferId
   supplierId?: string; // Required for INBOUND_PO
 }
 
@@ -243,9 +243,10 @@ export const PURCHASE_ORDER_STATUSES = [
   "Pending",
   "SentToSupplier",
   "ChangesProposedBySupplier",
+  "PendingInternalReview", // New status
   "ConfirmedBySupplier",
   "RejectedBySupplier",
-  "PartiallyReceived", // Renamed from "Partially Received" for consistency
+  "PartiallyReceived",
   "Completed",
   "Canceled"
 ] as const;

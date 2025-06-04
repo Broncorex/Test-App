@@ -69,11 +69,7 @@ const recordReceiptItemSchema = z.object({
   quantityReceivedThisTime: z.coerce.number()
     .min(0, "Quantity received must be non-negative.")
     .refine((val, ctx) => {
-        // Access sibling outstandingQuantity for max validation
-        // This requires passing the full item data to the refinement or getting it from context
-        // For simplicity, we'll assume a way to access `outstandingQuantity` or validate it at a higher level.
-        // A common pattern is to refine the parent array.
-        return true; // Placeholder, refinement at array level
+        return true; 
     }, "Cannot receive more than outstanding."),
   itemStatus: z.enum(RECEIPT_ITEM_STATUSES),
   itemNotes: z.string().optional(),
@@ -104,7 +100,7 @@ const recordReceiptFormSchema = z.object({
         });
         if (totalReceivedThisTime <= 0) {
             ctx.addIssue({
-                path: ["itemsToReceive"], // General error for the array
+                path: ["itemsToReceive"], 
                 message: "At least one item must have a received quantity greater than zero.",
             });
         }
@@ -227,10 +223,11 @@ export default function PurchaseOrderDetailPage() {
 
     try {
       await updatePurchaseOrderDetailsAndCosts(purchaseOrderId, payload);
-      await handleStatusChange("ConfirmedBySupplier");
-      toast({ title: "PO Updated & Confirmed", description: "Purchase Order details updated and confirmed with supplier." });
+      // After saving changes, transition to PendingInternalReview
+      await handleStatusChange("PendingInternalReview"); 
+      toast({ title: "Supplier's Proposal Recorded", description: "PO details updated with supplier's proposal. Now pending internal review." });
       setIsEditPODialogOpen(false);
-      fetchPOData();
+      // fetchPOData(); // fetchPOData is called by handleStatusChange
     } catch (error: any) {
       console.error("Error updating PO with supplier changes:", error);
       toast({ title: "Update Failed", description: error.message || "Could not update Purchase Order.", variant: "destructive" });
@@ -257,7 +254,7 @@ export default function PurchaseOrderDetailPage() {
                 orderedQuantity: d.orderedQuantity,
                 alreadyReceivedQuantity: d.receivedQuantity || 0,
                 outstandingQuantity: d.orderedQuantity - (d.receivedQuantity || 0),
-                quantityReceivedThisTime: 0, // Default to 0 for input
+                quantityReceivedThisTime: 0, 
                 itemStatus: "Ok" as const,
                 itemNotes: "",
             }));
@@ -313,10 +310,10 @@ export default function PurchaseOrderDetailPage() {
 
     try {
         await createReceipt(payload);
-        await updatePOStatusAfterReceipt(purchaseOrder.id); // Service to re-evaluate PO status
+        await updatePOStatusAfterReceipt(purchaseOrder.id); 
         toast({ title: "Receipt Recorded", description: "Stock receipt successfully recorded." });
         setIsReceiptDialogOpen(false);
-        fetchPOData(); // Refresh PO data
+        fetchPOData(); 
     } catch (error: any) {
         console.error("Error recording receipt:", error);
         toast({ title: "Receipt Failed", description: error.message || "Could not record receipt.", variant: "destructive" });
@@ -329,7 +326,7 @@ export default function PurchaseOrderDetailPage() {
     if (!timestamp) return "N/A";
     let date: Date;
     if (timestamp instanceof Timestamp) date = timestamp.toDate();
-    else if (typeof timestamp === 'string') date = parseISO(timestamp); // Handles ISO strings if any
+    else if (typeof timestamp === 'string') date = parseISO(timestamp); 
     else return "Invalid Date Object";
     return isValid(date) ? format(date, "PPP") : "Invalid Date";
   };
@@ -340,6 +337,7 @@ export default function PurchaseOrderDetailPage() {
       case "Pending": return "outline";
       case "SentToSupplier": return "default";
       case "ChangesProposedBySupplier": return "default";
+      case "PendingInternalReview": return "default";
       case "ConfirmedBySupplier": return "default";
       case "RejectedBySupplier": return "destructive";
       case "PartiallyReceived": return "default";
@@ -354,6 +352,7 @@ export default function PurchaseOrderDetailPage() {
     switch (status) {
       case "SentToSupplier": return "bg-blue-500 hover:bg-blue-600 text-white";
       case "ChangesProposedBySupplier": return "bg-orange-400 hover:bg-orange-500 text-black";
+      case "PendingInternalReview": return "bg-purple-500 hover:bg-purple-600 text-white";
       case "ConfirmedBySupplier": return "bg-teal-500 hover:bg-teal-600 text-white";
       case "PartiallyReceived": return "bg-yellow-400 hover:bg-yellow-500 text-black";
       case "Completed": return "bg-green-500 hover:bg-green-600 text-white";
@@ -369,18 +368,19 @@ export default function PurchaseOrderDetailPage() {
   }
 
   const canManagePO = role === 'admin' || role === 'superadmin';
-  const isPending = purchaseOrder.status === "Pending";
-  const isSentToSupplier = purchaseOrder.status === "SentToSupplier";
-  const isChangesProposed = purchaseOrder.status === "ChangesProposedBySupplier";
-  const isConfirmedBySupplier = purchaseOrder.status === "ConfirmedBySupplier";
-  const isPartiallyReceived = purchaseOrder.status === "PartiallyReceived";
+  const poStatus = purchaseOrder.status;
 
-  const canSendToSupplier = canManagePO && isPending;
-  const canRecordSupplierInitialResponse = canManagePO && isSentToSupplier;
-  const canActOnProposedChanges = canManagePO && isChangesProposed;
-  const canCancel = canManagePO && ["Pending", "SentToSupplier", "ChangesProposedBySupplier", "ConfirmedBySupplier"].includes(purchaseOrder.status);
-  const canRecordReceipt = canManagePO && (isConfirmedBySupplier || isPartiallyReceived);
-  const canMarkCompleted = canManagePO && (isConfirmedBySupplier || isPartiallyReceived);
+  const showSendToSupplier = canManagePO && poStatus === "Pending";
+  const showSentToSupplierActions = canManagePO && poStatus === "SentToSupplier";
+  const showChangesProposedActions = canManagePO && poStatus === "ChangesProposedBySupplier";
+  const showPendingInternalReviewActions = canManagePO && poStatus === "PendingInternalReview";
+  const showConfirmedBySupplierActions = canManagePO && poStatus === "ConfirmedBySupplier";
+  const showPartiallyReceivedActions = canManagePO && poStatus === "PartiallyReceived";
+  
+  const showCancelPO = canManagePO && ["Pending", "SentToSupplier", "ChangesProposedBySupplier", "PendingInternalReview", "ConfirmedBySupplier"].includes(poStatus);
+  const showRecordReceipt = canManagePO && (poStatus === "ConfirmedBySupplier" || poStatus === "PartiallyReceived");
+  const showMarkCompleted = canManagePO && (poStatus === "ConfirmedBySupplier" || poStatus === "PartiallyReceived");
+
 
   return (
     <>
@@ -389,28 +389,59 @@ export default function PurchaseOrderDetailPage() {
         description={`Supplier: ${purchaseOrder.supplierName || purchaseOrder.supplierId}`}
         actions={
           <div className="flex gap-2 flex-wrap">
-            {canSendToSupplier && (<Button onClick={() => handleStatusChange("SentToSupplier")} disabled={isUpdating}>{isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.Send className="mr-2 h-4 w-4" />}Send to Supplier</Button>)}
-            {canRecordSupplierInitialResponse && (
+            {showSendToSupplier && (<Button onClick={() => handleStatusChange("SentToSupplier")} disabled={isUpdating}>{isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.Send className="mr-2 h-4 w-4" />}Send to Supplier</Button>)}
+            
+            {showSentToSupplierActions && (
               <>
-                <Button onClick={() => handleStatusChange("ConfirmedBySupplier")} disabled={isUpdating} variant="default" className="bg-teal-500 hover:bg-teal-600">{isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.Check className="mr-2 h-4 w-4" />}Record Supplier Confirmation</Button>
-                <Button onClick={() => handleStatusChange("RejectedBySupplier")} disabled={isUpdating} variant="destructive">{isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.X className="mr-2 h-4 w-4" />}Record Supplier Rejection</Button>
-                <Button onClick={() => handleStatusChange("ChangesProposedBySupplier")} disabled={isUpdating} variant="outline" className="border-orange-500 text-orange-600 hover:bg-orange-50">{isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.Edit className="mr-2 h-4 w-4" />}Log Supplier Changes</Button>
+                <Button onClick={() => handleStatusChange("ConfirmedBySupplier")} disabled={isUpdating} variant="default" className="bg-teal-500 hover:bg-teal-600">{isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.Check className="mr-2 h-4 w-4" />}Supplier Confirmed Original</Button>
+                <Button onClick={() => handleStatusChange("RejectedBySupplier")} disabled={isUpdating} variant="destructive">{isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.X className="mr-2 h-4 w-4" />}Supplier Rejected</Button>
+                <Button onClick={() => handleStatusChange("ChangesProposedBySupplier")} disabled={isUpdating} variant="outline" className="border-orange-500 text-orange-600 hover:bg-orange-50">{isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.Edit className="mr-2 h-4 w-4" />}Supplier Proposed Changes</Button>
               </>
             )}
-            {canActOnProposedChanges && (
+
+            {showChangesProposedActions && (
                 <>
-                    <Button onClick={handleOpenEditPODialog} disabled={isUpdating || isSubmittingEditPO} variant="default" className="bg-blue-500 hover:bg-blue-600"><Icons.Edit className="mr-2 h-4 w-4" />Edit PO & Confirm</Button>
-                    <Button onClick={() => handleStatusChange("ConfirmedBySupplier")} disabled={isUpdating} variant="outline" className="border-teal-500 text-teal-600 hover:bg-teal-50">{isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.Check className="mr-2 h-4 w-4" />}Confirm Original PO</Button>
-                    <Button onClick={() => handleStatusChange("RejectedBySupplier")} disabled={isUpdating} variant="destructive">{isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.X className="mr-2 h-4 w-4" />}Reject PO</Button>
+                    <Button onClick={handleOpenEditPODialog} disabled={isUpdating || isSubmittingEditPO} variant="default" className="bg-blue-500 hover:bg-blue-600"><Icons.Edit className="mr-2 h-4 w-4" />Record Supplier's Proposal & Review</Button>
+                    <Button onClick={() => handleStatusChange("ConfirmedBySupplier")} disabled={isUpdating} variant="outline" className="border-teal-500 text-teal-600 hover:bg-teal-50">{isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.Check className="mr-2 h-4 w-4" />}Supplier Agrees to Original Terms</Button>
+                    <Button onClick={() => handleStatusChange("RejectedBySupplier")} disabled={isUpdating} variant="destructive">{isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.X className="mr-2 h-4 w-4" />}Reject Supplier's Proposal</Button>
                 </>
             )}
-            {canRecordReceipt && (<Button onClick={handleOpenReceiptDialog} disabled={isUpdating || isLoadingWarehouses} variant="default"><Icons.Package className="mr-2 h-4 w-4" /> Record Receipt</Button>)}
-            {canMarkCompleted && (<Button onClick={() => handleStatusChange("Completed")} disabled={isUpdating} variant="default" className="bg-green-500 hover:bg-green-600 text-white">{isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.Check className="mr-2 h-4 w-4" />}Mark as Fully Received/Completed</Button>)}
-            {canCancel && (<AlertDialog><AlertDialogTrigger asChild><Button variant="destructive" disabled={isUpdating}>{isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.Delete className="mr-2 h-4 w-4" />}Cancel PO</Button></AlertDialogTrigger><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Are you sure you want to cancel this Purchase Order?</AlertDialogTitle><AlertDialogDescription>This action will mark the PO as 'Canceled'. If canceled before supplier confirmation, pending quantities on the requisition will be adjusted.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Keep PO</AlertDialogCancel><AlertDialogAction onClick={() => handleStatusChange("Canceled")} className="bg-destructive hover:bg-destructive/90">Confirm Cancellation</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>)}
+
+            {showPendingInternalReviewActions && (
+                 <>
+                    <Button onClick={() => handleStatusChange("ConfirmedBySupplier")} disabled={isUpdating} variant="default" className="bg-teal-500 hover:bg-teal-600">{isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.Check className="mr-2 h-4 w-4" />}Confirm This Revised PO</Button>
+                    <Button onClick={() => handleStatusChange("ChangesProposedBySupplier")} disabled={isUpdating} variant="outline" className="border-orange-500 text-orange-600 hover:bg-orange-50">{isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.Edit className="mr-2 h-4 w-4" />}Needs Further Negotiation / Re-edit</Button>
+                    <Button onClick={() => handleStatusChange("RejectedBySupplier")} disabled={isUpdating} variant="destructive">{isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.X className="mr-2 h-4 w-4" />}Reject This Revised PO</Button>
+                </>
+            )}
+
+            {showRecordReceipt && (<Button onClick={handleOpenReceiptDialog} disabled={isUpdating || isLoadingWarehouses} variant="default"><Icons.Package className="mr-2 h-4 w-4" /> Record Receipt</Button>)}
+            
+            {showMarkCompleted && (<Button onClick={() => handleStatusChange("Completed")} disabled={isUpdating} variant="default" className="bg-green-500 hover:bg-green-600 text-white">{isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.Check className="mr-2 h-4 w-4" />}Mark as Fully Received/Completed</Button>)}
+            
+            {showCancelPO && (<AlertDialog><AlertDialogTrigger asChild><Button variant="destructive" disabled={isUpdating}>{isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.Delete className="mr-2 h-4 w-4" />}Cancel PO</Button></AlertDialogTrigger><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Are you sure you want to cancel this Purchase Order?</AlertDialogTitle><AlertDialogDescription>This action will mark the PO as 'Canceled'. If canceled before supplier confirmation, pending quantities on the requisition will be adjusted.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Keep PO</AlertDialogCancel><AlertDialogAction onClick={() => handleStatusChange("Canceled")} className="bg-destructive hover:bg-destructive/90">Confirm Cancellation</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>)}
+            
             <Button onClick={() => router.back()} variant="outline">Back</Button>
           </div>
         }
       />
+
+      {(poStatus === "ChangesProposedBySupplier" || poStatus === "PendingInternalReview") && (
+        <Card className="my-4 border-l-4 border-blue-500">
+          <CardHeader>
+            <CardTitle className="text-lg font-semibold text-blue-700">Review Supplier Changes</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-sm text-muted-foreground">
+              The supplier may have proposed changes to this order, or you may be in the process of recording them.
+              Currently, the displayed details reflect the latest saved version of the PO.
+            </p>
+            <p className="text-sm text-muted-foreground mt-2">
+              <em>A detailed side-by-side comparison of original vs. proposed changes is planned for a future update. For now, please compare with the supplier's direct communication.</em>
+            </p>
+          </CardContent>
+        </Card>
+      )}
 
       <div className="grid gap-6 md:grid-cols-3">
         <Card className="md:col-span-1"><CardHeader><CardTitle className="font-headline">PO Summary</CardTitle></CardHeader>
@@ -442,7 +473,7 @@ export default function PurchaseOrderDetailPage() {
       </div>
 
       <Dialog open={isEditPODialogOpen} onOpenChange={setIsEditPODialogOpen}>
-        <DialogContent className="sm:max-w-3xl flex flex-col max-h-[90vh]"><Form {...editPOForm}><form onSubmit={editPOForm.handleSubmit(handleEditPOSubmit)} className="flex flex-col flex-grow min-h-0"><DialogHeader><ShadDialogTitle className="font-headline">Edit Purchase Order Details (Supplier Feedback)</ShadDialogTitle><DialogDescription>Modify quantities, prices, costs, or notes based on supplier's proposed changes. Saving will confirm the PO with these new details.</DialogDescription></DialogHeader><div className="flex-grow overflow-y-auto min-h-0 py-4 pr-2 space-y-4"><FormField control={editPOForm.control} name="expectedDeliveryDate" render={({ field }) => (<FormItem className="flex flex-col"><FormLabel>New Expected Delivery Date (Optional)</FormLabel><Popover><PopoverTrigger asChild><FormControl><Button variant={"outline"} className={cn("pl-3 text-left font-normal w-full", !field.value && "text-muted-foreground")}>{field.value ? format(field.value, "PPP") : <span>Pick a date</span>}<Icons.Calendar className="ml-auto h-4 w-4 opacity-50" /></Button></FormControl></PopoverTrigger><PopoverContent className="w-auto p-0" align="start"><Calendar mode="single" selected={field.value} onSelect={field.onChange} initialFocus /></PopoverContent></Popover><FormMessage /></FormItem>)} /><FormField control={editPOForm.control} name="notes" render={({ field }) => (<FormItem><FormLabel>PO Notes (Updated)</FormLabel><FormControl><Textarea {...field} placeholder="Enter updated notes for the PO" /></FormControl><FormMessage /></FormItem>)} /><Card><CardHeader className="p-2"><CardTitle className="text-md">Product Details (Editable)</CardTitle></CardHeader><CardContent className="p-2 space-y-3">{editPODetailFields.map((item, index) => (<div key={item.id} className="p-3 border rounded-md space-y-2 bg-muted/30"><h4 className="font-semibold text-sm">{editPOForm.getValues(`details.${index}.productName`)}</h4><div className="grid grid-cols-1 md:grid-cols-2 gap-3"><FormField control={editPOForm.control} name={`details.${index}.orderedQuantity`} render={({ field }) => (<FormItem><FormLabel className="text-xs">New Qty*</FormLabel><FormControl><Input type="number" {...field} className="h-8 text-sm" /></FormControl><FormMessage className="text-xs" /></FormItem>)} /><FormField control={editPOForm.control} name={`details.${index}.unitPrice`} render={({ field }) => (<FormItem><FormLabel className="text-xs">New Price*</FormLabel><FormControl><Input type="number" step="0.01" {...field} className="h-8 text-sm" /></FormControl><FormMessage className="text-xs" /></FormItem>)} /></div><FormField control={editPOForm.control} name={`details.${index}.notes`} render={({ field }) => (<FormItem><FormLabel className="text-xs">Item Notes</FormLabel><FormControl><Textarea {...field} rows={1} className="text-sm" /></FormControl><FormMessage className="text-xs" /></FormItem>)} /></div>))}</CardContent></Card><Card><CardHeader className="p-2 flex flex-row items-center justify-between"><CardTitle className="text-md">Additional Costs (Editable)</CardTitle><Button type="button" variant="outline" size="sm" onClick={() => appendEditPOAdditionalCost({ description: "", amount: 0, type: "other" })}><Icons.Add className="mr-1 h-3 w-3" /> Add Cost</Button></CardHeader><CardContent className="p-2 space-y-2">{editPOAdditionalCostFields.map((item, index) => (<div key={item.id} className="p-2 border rounded-md space-y-2 bg-muted/30 relative"><Button type="button" variant="ghost" size="icon" className="absolute top-1 right-1 h-5 w-5" onClick={() => removeEditPOAdditionalCost(index)}><Icons.Delete className="h-3 w-3 text-destructive" /></Button><div className="grid grid-cols-1 md:grid-cols-3 gap-2 items-end"><FormField control={editPOForm.control} name={`additionalCosts.${index}.description`} render={({ field }) => (<FormItem><FormLabel className="text-xs">Desc*</FormLabel><FormControl><Input {...field} className="h-8 text-sm" /></FormControl><FormMessage className="text-xs" /></FormItem>)} /><FormField control={editPOForm.control} name={`additionalCosts.${index}.amount`} render={({ field }) => (<FormItem><FormLabel className="text-xs">Amount*</FormLabel><FormControl><Input type="number" step="0.01" {...field} className="h-8 text-sm" /></FormControl><FormMessage className="text-xs" /></FormItem>)} /><FormField control={editPOForm.control} name={`additionalCosts.${index}.type`} render={({ field }) => (<FormItem><FormLabel className="text-xs">Type*</FormLabel><Select onValueChange={field.onChange} value={field.value}><FormControl><SelectTrigger className="h-8 text-sm"><SelectValue placeholder="Type" /></SelectTrigger></FormControl><SelectContent>{QUOTATION_ADDITIONAL_COST_TYPES.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}</SelectContent></Select><FormMessage className="text-xs" /></FormItem>)} /></div></div>))}{editPOAdditionalCostFields.length === 0 && <p className="text-xs text-muted-foreground p-2">No additional costs.</p>}</CardContent></Card>{editPOForm.formState.errors.root && <p className="text-sm font-medium text-destructive">{editPOForm.formState.errors.root.message}</p>}</div><DialogFooter className="pt-4 flex-shrink-0 border-t"><DialogClose asChild><Button type="button" variant="outline">Cancel</Button></DialogClose><Button type="submit" disabled={isSubmittingEditPO}>{isSubmittingEditPO ? <Icons.Logo className="animate-spin" /> : "Save Changes & Confirm PO"}</Button></DialogFooter></form></Form></DialogContent>
+        <DialogContent className="sm:max-w-3xl flex flex-col max-h-[90vh]"><Form {...editPOForm}><form onSubmit={editPOForm.handleSubmit(handleEditPOSubmit)} className="flex flex-col flex-grow min-h-0"><DialogHeader><ShadDialogTitle className="font-headline">Record Supplier's Proposed Changes</ShadDialogTitle><DialogDescription>Modify quantities, prices, costs, or notes based on supplier's proposal. Saving will update the PO to 'Pending Internal Review'.</DialogDescription></DialogHeader><div className="flex-grow overflow-y-auto min-h-0 py-4 pr-2 space-y-4"><FormField control={editPOForm.control} name="expectedDeliveryDate" render={({ field }) => (<FormItem className="flex flex-col"><FormLabel>New Expected Delivery Date (Optional)</FormLabel><Popover><PopoverTrigger asChild><FormControl><Button variant={"outline"} className={cn("pl-3 text-left font-normal w-full", !field.value && "text-muted-foreground")}>{field.value ? format(field.value, "PPP") : <span>Pick a date</span>}<Icons.Calendar className="ml-auto h-4 w-4 opacity-50" /></Button></FormControl></PopoverTrigger><PopoverContent className="w-auto p-0" align="start"><Calendar mode="single" selected={field.value} onSelect={field.onChange} initialFocus /></PopoverContent></Popover><FormMessage /></FormItem>)} /><FormField control={editPOForm.control} name="notes" render={({ field }) => (<FormItem><FormLabel>PO Notes (Updated)</FormLabel><FormControl><Textarea {...field} placeholder="Enter updated notes for the PO" /></FormControl><FormMessage /></FormItem>)} /><Card><CardHeader className="p-2"><CardTitle className="text-md">Product Details (Editable)</CardTitle></CardHeader><CardContent className="p-2 space-y-3">{editPODetailFields.map((item, index) => (<div key={item.id} className="p-3 border rounded-md space-y-2 bg-muted/30"><h4 className="font-semibold text-sm">{editPOForm.getValues(`details.${index}.productName`)}</h4><div className="grid grid-cols-1 md:grid-cols-2 gap-3"><FormField control={editPOForm.control} name={`details.${index}.orderedQuantity`} render={({ field }) => (<FormItem><FormLabel className="text-xs">New Qty*</FormLabel><FormControl><Input type="number" {...field} className="h-8 text-sm" /></FormControl><FormMessage className="text-xs" /></FormItem>)} /><FormField control={editPOForm.control} name={`details.${index}.unitPrice`} render={({ field }) => (<FormItem><FormLabel className="text-xs">New Price*</FormLabel><FormControl><Input type="number" step="0.01" {...field} className="h-8 text-sm" /></FormControl><FormMessage className="text-xs" /></FormItem>)} /></div><FormField control={editPOForm.control} name={`details.${index}.notes`} render={({ field }) => (<FormItem><FormLabel className="text-xs">Item Notes</FormLabel><FormControl><Textarea {...field} rows={1} className="text-sm" /></FormControl><FormMessage className="text-xs" /></FormItem>)} /></div>))}</CardContent></Card><Card><CardHeader className="p-2 flex flex-row items-center justify-between"><CardTitle className="text-md">Additional Costs (Editable)</CardTitle><Button type="button" variant="outline" size="sm" onClick={() => appendEditPOAdditionalCost({ description: "", amount: 0, type: "other" })}><Icons.Add className="mr-1 h-3 w-3" /> Add Cost</Button></CardHeader><CardContent className="p-2 space-y-2">{editPOAdditionalCostFields.map((item, index) => (<div key={item.id} className="p-2 border rounded-md space-y-2 bg-muted/30 relative"><Button type="button" variant="ghost" size="icon" className="absolute top-1 right-1 h-5 w-5" onClick={() => removeEditPOAdditionalCost(index)}><Icons.Delete className="h-3 w-3 text-destructive" /></Button><div className="grid grid-cols-1 md:grid-cols-3 gap-2 items-end"><FormField control={editPOForm.control} name={`additionalCosts.${index}.description`} render={({ field }) => (<FormItem><FormLabel className="text-xs">Desc*</FormLabel><FormControl><Input {...field} className="h-8 text-sm" /></FormControl><FormMessage className="text-xs" /></FormItem>)} /><FormField control={editPOForm.control} name={`additionalCosts.${index}.amount`} render={({ field }) => (<FormItem><FormLabel className="text-xs">Amount*</FormLabel><FormControl><Input type="number" step="0.01" {...field} className="h-8 text-sm" /></FormControl><FormMessage className="text-xs" /></FormItem>)} /><FormField control={editPOForm.control} name={`additionalCosts.${index}.type`} render={({ field }) => (<FormItem><FormLabel className="text-xs">Type*</FormLabel><Select onValueChange={field.onChange} value={field.value}><FormControl><SelectTrigger className="h-8 text-sm"><SelectValue placeholder="Type" /></SelectTrigger></FormControl><SelectContent>{QUOTATION_ADDITIONAL_COST_TYPES.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}</SelectContent></Select><FormMessage className="text-xs" /></FormItem>)} /></div></div>))}{editPOAdditionalCostFields.length === 0 && <p className="text-xs text-muted-foreground p-2">No additional costs.</p>}</CardContent></Card>{editPOForm.formState.errors.root && <p className="text-sm font-medium text-destructive">{editPOForm.formState.errors.root.message}</p>}</div><DialogFooter className="pt-4 flex-shrink-0 border-t"><DialogClose asChild><Button type="button" variant="outline">Cancel</Button></DialogClose><Button type="submit" disabled={isSubmittingEditPO}>{isSubmittingEditPO ? <Icons.Logo className="animate-spin" /> : "Save Proposal & Review"}</Button></DialogFooter></form></Form></DialogContent>
       </Dialog>
 
       <Dialog open={isReceiptDialogOpen} onOpenChange={setIsReceiptDialogOpen}>
@@ -523,3 +554,5 @@ export default function PurchaseOrderDetailPage() {
     </>
   );
 }
+
+    
