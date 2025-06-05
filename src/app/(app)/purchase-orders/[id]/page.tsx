@@ -49,6 +49,7 @@ const editPOFormSchema = z.object({
   notes: z.string().optional(),
   expectedDeliveryDate: z.date().optional(),
   additionalCosts: z.array(z.object({
+    id: z.string().optional(), // For react-hook-form's useFieldArray
     description: z.string().min(1, "Cost description is required."),
     amount: z.coerce.number().min(0, "Cost amount must be non-negative."),
     type: z.enum(QUOTATION_ADDITIONAL_COST_TYPES),
@@ -63,19 +64,17 @@ const recordReceiptItemSchema = z.object({
   productId: z.string(),
   productName: z.string(),
   poDetailId: z.string(),
-  orderedQuantity: z.number(), // Original ordered on PO line
+  orderedQuantity: z.number(), 
   
-  // Cumulative quantities already processed on this PO line from previous receipts
   alreadyReceivedOkQuantity: z.number().default(0), 
   alreadyReceivedDamagedQuantity: z.number().default(0),
   alreadyReceivedMissingQuantity: z.number().default(0),
 
-  // Quantities being entered for THIS specific receipt event
   qtyOkReceivedThisReceipt: z.coerce.number().min(0, "OK Qty must be non-negative.").default(0),
   qtyDamagedReceivedThisReceipt: z.coerce.number().min(0, "Damaged Qty must be non-negative.").default(0),
   qtyMissingReceivedThisReceipt: z.coerce.number().min(0, "Missing Qty must be non-negative.").default(0),
   
-  lineItemNotes: z.string().optional(), // Notes for this item in this specific receipt
+  lineItemNotes: z.string().optional(), 
 }).superRefine((data, ctx) => {
     const trulyOutstandingForThisReceipt = Math.max(0, data.orderedQuantity - (data.alreadyReceivedOkQuantity + data.alreadyReceivedDamagedQuantity + data.alreadyReceivedMissingQuantity));
     const totalEnteredThisReceipt = data.qtyOkReceivedThisReceipt + data.qtyDamagedReceivedThisReceipt + data.qtyMissingReceivedThisReceipt;
@@ -144,7 +143,19 @@ export default function PurchaseOrderDetailPage() {
 
   const editPOForm = useForm<EditPOFormData>({
     resolver: zodResolver(editPOFormSchema),
+    defaultValues: {
+        notes: "",
+        expectedDeliveryDate: undefined,
+        additionalCosts: [],
+        details: [],
+    }
   });
+
+  const { fields: additionalCostFields, append: appendAdditionalCost, remove: removeAdditionalCost } = useFieldArray({
+    control: editPOForm.control,
+    name: "additionalCosts",
+  });
+
 
   const receiptForm = useForm<RecordReceiptFormData>({
     resolver: zodResolver(recordReceiptFormSchema),
@@ -228,7 +239,11 @@ export default function PurchaseOrderDetailPage() {
     const payload: UpdatePOWithChangesData = {
       notes: data.notes,
       expectedDeliveryDate: data.expectedDeliveryDate ? Timestamp.fromDate(data.expectedDeliveryDate) : undefined,
-      additionalCosts: data.additionalCosts || [],
+      additionalCosts: data.additionalCosts?.map(cost => ({ // Ensure ID is not passed if it's a new item
+        description: cost.description,
+        amount: cost.amount,
+        type: cost.type,
+      })) || [],
       details: data.details.map(d => ({
         productId: d.productId,
         productName: d.productName,
@@ -312,31 +327,19 @@ export default function PurchaseOrderDetailPage() {
         if (formItem.qtyOkReceivedThisReceipt > 0) {
             servicePayloadItems.push({
                 productId: formItem.productId, productName: formItem.productName, poDetailId: formItem.poDetailId,
-                quantityForThisStatusEntry: formItem.qtyOkReceivedThisReceipt, itemStatus: "Ok", itemNotes: formItem.lineItemNotes || "",
-                cumulativePOOkQtyBeforeThisReceipt: formItem.alreadyReceivedOkQuantity,
-                cumulativePODamagedQtyBeforeThisReceipt: formItem.alreadyReceivedDamagedQuantity,
-                cumulativePOMissingQtyBeforeThisReceipt: formItem.alreadyReceivedMissingQuantity,
-                poOrderedQuantity: formItem.orderedQuantity
+                quantityReceivedThisReceipt: formItem.qtyOkReceivedThisReceipt, itemStatus: "Ok", itemNotes: formItem.lineItemNotes || "",
             });
         }
         if (formItem.qtyDamagedReceivedThisReceipt > 0) {
              servicePayloadItems.push({
                 productId: formItem.productId, productName: formItem.productName, poDetailId: formItem.poDetailId,
-                quantityForThisStatusEntry: formItem.qtyDamagedReceivedThisReceipt, itemStatus: "Damaged", itemNotes: formItem.lineItemNotes || "",
-                cumulativePOOkQtyBeforeThisReceipt: formItem.alreadyReceivedOkQuantity,
-                cumulativePODamagedQtyBeforeThisReceipt: formItem.alreadyReceivedDamagedQuantity,
-                cumulativePOMissingQtyBeforeThisReceipt: formItem.alreadyReceivedMissingQuantity,
-                poOrderedQuantity: formItem.orderedQuantity
+                quantityReceivedThisReceipt: formItem.qtyDamagedReceivedThisReceipt, itemStatus: "Damaged", itemNotes: formItem.lineItemNotes || "",
             });
         }
         if (formItem.qtyMissingReceivedThisReceipt > 0) {
              servicePayloadItems.push({
                 productId: formItem.productId, productName: formItem.productName, poDetailId: formItem.poDetailId,
-                quantityForThisStatusEntry: formItem.qtyMissingReceivedThisReceipt, itemStatus: "Missing", itemNotes: formItem.lineItemNotes || "",
-                cumulativePOOkQtyBeforeThisReceipt: formItem.alreadyReceivedOkQuantity,
-                cumulativePODamagedQtyBeforeThisReceipt: formItem.alreadyReceivedDamagedQuantity,
-                cumulativePOMissingQtyBeforeThisReceipt: formItem.alreadyReceivedMissingQuantity,
-                poOrderedQuantity: formItem.orderedQuantity
+                quantityReceivedThisReceipt: formItem.qtyMissingReceivedThisReceipt, itemStatus: "Missing", itemNotes: formItem.lineItemNotes || "",
             });
         }
     });
@@ -346,7 +349,6 @@ export default function PurchaseOrderDetailPage() {
         setIsSubmittingReceipt(false);
         return;
     }
-
 
     const payload: CreateReceiptServiceData = {
         purchaseOrderId: purchaseOrder.id,
@@ -644,7 +646,71 @@ export default function PurchaseOrderDetailPage() {
       </div>
 
       <Dialog open={isEditPODialogOpen} onOpenChange={setIsEditPODialogOpen}>
-        <DialogContent className="sm:max-w-3xl flex flex-col max-h-[90vh]"><Form {...editPOForm}><form onSubmit={editPOForm.handleSubmit(handleEditPOSubmit)} className="flex flex-col flex-grow min-h-0"><DialogHeader><ShadDialogTitle className="font-headline">Record Supplier's Proposed Changes</ShadDialogTitle><DialogDescription>Modify quantities, prices, costs, or notes based on supplier's proposal. Saving will update the PO to 'Pending Internal Review'.</DialogDescription></DialogHeader><div className="flex-grow overflow-y-auto min-h-0 py-4 pr-2 space-y-4"><FormField control={editPOForm.control} name="expectedDeliveryDate" render={({ field }) => (<FormItem className="flex flex-col"><FormLabel>New Expected Delivery Date (Optional)</FormLabel><Popover><PopoverTrigger asChild><FormControl><Button variant={"outline"} className={cn("pl-3 text-left font-normal w-full", !field.value && "text-muted-foreground")}>{field.value ? format(field.value, "PPP") : <span>Pick a date</span>}<Icons.Calendar className="ml-auto h-4 w-4 opacity-50" /></Button></FormControl></PopoverTrigger><PopoverContent className="w-auto p-0" align="start"><Calendar mode="single" selected={field.value} onSelect={field.onChange} initialFocus /></PopoverContent></Popover><FormMessage /></FormItem>)} /><FormField control={editPOForm.control} name="notes" render={({ field }) => (<FormItem><FormLabel>PO Notes (Updated)</FormLabel><FormControl><Textarea {...field} placeholder="Enter updated notes for the PO" /></FormControl><FormMessage /></FormItem>)} /><Card><CardHeader className="p-2"><CardTitle className="text-md">Product Details (Editable)</CardTitle></CardHeader><CardContent className="p-2 space-y-3">{editPOForm.getValues('details')?.map((item, index) => (<div key={item.id || item.productId} className="p-3 border rounded-md space-y-2 bg-muted/30"><h4 className="font-semibold text-sm">{editPOForm.getValues(`details.${index}.productName`)}</h4><div className="grid grid-cols-1 md:grid-cols-2 gap-3"><FormField control={editPOForm.control} name={`details.${index}.orderedQuantity`} render={({ field }) => (<FormItem><FormLabel className="text-xs">New Qty*</FormLabel><FormControl><Input type="number" {...field} className="h-8 text-sm" /></FormControl><FormMessage className="text-xs" /></FormItem>)} /><FormField control={editPOForm.control} name={`details.${index}.unitPrice`} render={({ field }) => (<FormItem><FormLabel className="text-xs">New Price*</FormLabel><FormControl><Input type="number" step="0.01" {...field} className="h-8 text-sm" /></FormControl><FormMessage className="text-xs" /></FormItem>)} /></div><FormField control={editPOForm.control} name={`details.${index}.notes`} render={({ field }) => (<FormItem><FormLabel className="text-xs">Item Notes</FormLabel><FormControl><Textarea rows={1} {...field} className="text-sm" /></FormControl><FormMessage className="text-xs" /></FormItem>)} /></div>))}</CardContent></Card><Card><CardHeader className="p-2 flex flex-row items-center justify-between"><CardTitle className="text-md">Additional Costs (Editable)</CardTitle><Button type="button" variant="outline" size="sm" onClick={() => editPOForm.setValue('additionalCosts', [...(editPOForm.getValues('additionalCosts') || []), { description: "", amount: 0, type: "other" }])}><Icons.Add className="mr-1 h-3 w-3" /> Add Cost</Button></CardHeader><CardContent className="p-2 space-y-2">{editPOForm.getValues('additionalCosts')?.map((item, index) => (<div key={index} className="p-2 border rounded-md space-y-2 bg-muted/30 relative"><Button type="button" variant="ghost" size="icon" className="absolute top-1 right-1 h-5 w-5" onClick={() => editPOForm.setValue('additionalCosts', editPOForm.getValues('additionalCosts')?.filter((_, i) => i !== index) || []) }><Icons.Delete className="h-3 w-3 text-destructive" /></Button><div className="grid grid-cols-1 md:grid-cols-3 gap-2 items-end"><FormField control={editPOForm.control} name={`additionalCosts.${index}.description`} render={({ field }) => (<FormItem><FormLabel className="text-xs">Desc*</FormLabel><FormControl><Input {...field} className="h-8 text-sm" /></FormControl><FormMessage className="text-xs" /></FormItem>)} /><FormField control={editPOForm.control} name={`additionalCosts.${index}.amount`} render={({ field }) => (<FormItem><FormLabel className="text-xs">Amount*</FormLabel><FormControl><Input type="number" step="0.01" {...field} className="h-8 text-sm" /></FormControl><FormMessage className="text-xs" /></FormItem>)} /><FormField control={editPOForm.control} name={`additionalCosts.${index}.type`} render={({ field }) => (<FormItem><FormLabel className="text-xs">Type*</FormLabel><Select onValueChange={field.onChange} value={field.value}><FormControl><SelectTrigger className="h-8 text-sm"><SelectValue placeholder="Type" /></SelectTrigger></FormControl><SelectContent>{QUOTATION_ADDITIONAL_COST_TYPES.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}</SelectContent></Select><FormMessage className="text-xs" /></FormItem>)} /></div></div>))}{editPOForm.getValues('additionalCosts')?.length === 0 && <p className="text-xs text-muted-foreground p-2">No additional costs.</p>}</CardContent></Card>{editPOForm.formState.errors.root && <p className="text-sm font-medium text-destructive">{editPOForm.formState.errors.root.message}</p>}</div><DialogFooter className="pt-4 flex-shrink-0 border-t"><DialogClose asChild><Button type="button" variant="outline">Cancel</Button></DialogClose><Button type="submit" disabled={isSubmittingEditPO}>{isSubmittingEditPO ? <Icons.Logo className="animate-spin" /> : "Save Proposal & Review"}</Button></DialogFooter></form></Form></DialogContent>
+        <DialogContent className="sm:max-w-3xl flex flex-col max-h-[90vh]">
+          <Form {...editPOForm}>
+            <form onSubmit={editPOForm.handleSubmit(handleEditPOSubmit)} className="flex flex-col flex-grow min-h-0">
+              <DialogHeader>
+                <ShadDialogTitle className="font-headline">Record Supplier's Proposed Changes</ShadDialogTitle>
+                <DialogDescription>Modify quantities, prices, costs, or notes based on supplier's proposal. Saving will update the PO to 'Pending Internal Review'.</DialogDescription>
+              </DialogHeader>
+              <div className="flex-grow overflow-y-auto min-h-0 py-4 pr-2 space-y-4">
+                <FormField control={editPOForm.control} name="expectedDeliveryDate" render={({ field }) => (
+                    <FormItem className="flex flex-col">
+                        <FormLabel>New Expected Delivery Date (Optional)</FormLabel>
+                        <Popover><PopoverTrigger asChild><FormControl><Button variant={"outline"} className={cn("pl-3 text-left font-normal w-full", !field.value && "text-muted-foreground")}>{field.value ? format(field.value, "PPP") : <span>Pick a date</span>}<Icons.Calendar className="ml-auto h-4 w-4 opacity-50" /></Button></FormControl></PopoverTrigger><PopoverContent className="w-auto p-0" align="start"><Calendar mode="single" selected={field.value} onSelect={field.onChange} initialFocus /></PopoverContent></Popover>
+                        <FormMessage />
+                    </FormItem>
+                )} />
+                <FormField control={editPOForm.control} name="notes" render={({ field }) => (
+                    <FormItem><FormLabel>PO Notes (Updated)</FormLabel><FormControl><Textarea {...field} placeholder="Enter updated notes for the PO" /></FormControl><FormMessage /></FormItem>
+                )} />
+                <Card>
+                  <CardHeader className="p-2"><CardTitle className="text-md">Product Details (Editable)</CardTitle></CardHeader>
+                  <CardContent className="p-2 space-y-3">
+                    {editPOForm.getValues('details')?.map((item, index) => (
+                      <div key={item.id || item.productId} className="p-3 border rounded-md space-y-2 bg-muted/30">
+                        <h4 className="font-semibold text-sm">{editPOForm.getValues(`details.${index}.productName`)}</h4>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                          <FormField control={editPOForm.control} name={`details.${index}.orderedQuantity`} render={({ field }) => (<FormItem><FormLabel className="text-xs">New Qty*</FormLabel><FormControl><Input type="number" {...field} className="h-8 text-sm" /></FormControl><FormMessage className="text-xs" /></FormItem>)} />
+                          <FormField control={editPOForm.control} name={`details.${index}.unitPrice`} render={({ field }) => (<FormItem><FormLabel className="text-xs">New Price*</FormLabel><FormControl><Input type="number" step="0.01" {...field} className="h-8 text-sm" /></FormControl><FormMessage className="text-xs" /></FormItem>)} />
+                        </div>
+                        <FormField control={editPOForm.control} name={`details.${index}.notes`} render={({ field }) => (<FormItem><FormLabel className="text-xs">Item Notes</FormLabel><FormControl><Textarea rows={1} {...field} className="text-sm" /></FormControl><FormMessage className="text-xs" /></FormItem>)} />
+                      </div>
+                    ))}
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardHeader className="p-2 flex flex-row items-center justify-between">
+                    <CardTitle className="text-md">Additional Costs (Editable)</CardTitle>
+                    <Button type="button" variant="outline" size="sm" onClick={() => appendAdditionalCost({ description: "", amount: 0, type: "other" as const })}>
+                      <Icons.Add className="mr-1 h-3 w-3" /> Add Cost
+                    </Button>
+                  </CardHeader>
+                  <CardContent className="p-2 space-y-2">
+                    {additionalCostFields.map((item, index) => (
+                      <div key={item.id} className="p-2 border rounded-md space-y-2 bg-muted/30 relative">
+                        <Button type="button" variant="ghost" size="icon" className="absolute top-1 right-1 h-5 w-5" onClick={() => removeAdditionalCost(index) }>
+                          <Icons.Delete className="h-3 w-3 text-destructive" />
+                        </Button>
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-2 items-end">
+                          <FormField control={editPOForm.control} name={`additionalCosts.${index}.description`} render={({ field }) => (<FormItem><FormLabel className="text-xs">Desc*</FormLabel><FormControl><Input {...field} className="h-8 text-sm" /></FormControl><FormMessage className="text-xs" /></FormItem>)} />
+                          <FormField control={editPOForm.control} name={`additionalCosts.${index}.amount`} render={({ field }) => (<FormItem><FormLabel className="text-xs">Amount*</FormLabel><FormControl><Input type="number" step="0.01" {...field} className="h-8 text-sm" /></FormControl><FormMessage className="text-xs" /></FormItem>)} />
+                          <FormField control={editPOForm.control} name={`additionalCosts.${index}.type`} render={({ field }) => (<FormItem><FormLabel className="text-xs">Type*</FormLabel><Select onValueChange={field.onChange} value={field.value}><FormControl><SelectTrigger className="h-8 text-sm"><SelectValue placeholder="Type" /></SelectTrigger></FormControl><SelectContent>{QUOTATION_ADDITIONAL_COST_TYPES.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}</SelectContent></Select><FormMessage className="text-xs" /></FormItem>)} />
+                        </div>
+                      </div>
+                    ))}
+                    {additionalCostFields.length === 0 && <p className="text-xs text-muted-foreground p-2">No additional costs.</p>}
+                  </CardContent>
+                </Card>
+                {editPOForm.formState.errors.root && <p className="text-sm font-medium text-destructive">{editPOForm.formState.errors.root.message}</p>}
+              </div>
+              <DialogFooter className="pt-4 flex-shrink-0 border-t">
+                <DialogClose asChild><Button type="button" variant="outline">Cancel</Button></DialogClose>
+                <Button type="submit" disabled={isSubmittingEditPO}>{isSubmittingEditPO ? <Icons.Logo className="animate-spin" /> : "Save Proposal & Review"}</Button>
+              </DialogFooter>
+            </form>
+          </Form>
+        </DialogContent>
       </Dialog>
 
       <Dialog open={isReceiptDialogOpen} onOpenChange={setIsReceiptDialogOpen}>
@@ -788,5 +854,5 @@ export default function PurchaseOrderDetailPage() {
     </>
   );
 }
-
+    
     
