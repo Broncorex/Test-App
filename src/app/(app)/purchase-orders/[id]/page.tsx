@@ -12,7 +12,7 @@ import { useAuth } from "@/hooks/use-auth-store";
 import { getPurchaseOrderById, updatePurchaseOrderStatus, updatePurchaseOrderDetailsAndCosts, type UpdatePOWithChangesData, recordSupplierSolution, type RecordSupplierSolutionData } from "@/services/purchaseOrderService";
 import type { PurchaseOrder, PurchaseOrderStatus, PurchaseOrderDetail, QuotationAdditionalCost, Warehouse as AppWarehouse, User as AppUser, SupplierSolutionType } from "@/types";
 import { QUOTATION_ADDITIONAL_COST_TYPES, PURCHASE_ORDER_STATUSES, SUPPLIER_SOLUTION_TYPES } from "@/types"; 
-import { Timestamp } from "firebase/firestore";
+import { Timestamp, deleteField, runTransaction, collection as firestoreCollection, query as firestoreQuery, getDocs as firestoreGetDocs, doc as firestoreDoc } from "firebase/firestore";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Icons } from "@/components/icons";
@@ -34,6 +34,7 @@ import { Calendar } from "@/components/ui/calendar";
 import { cn } from "@/lib/utils";
 import { getActiveWarehouses } from "@/services/warehouseService";
 import { createReceipt, updatePOStatusAfterReceipt, type CreateReceiptServiceData } from "@/services/receiptService";
+import { db } from "@/lib/firebase";
 
 
 const poDetailItemSchema = z.object({
@@ -49,7 +50,7 @@ const editPOFormSchema = z.object({
   notes: z.string().optional(),
   expectedDeliveryDate: z.date().optional(),
   additionalCosts: z.array(z.object({
-    id: z.string().optional(), // For react-hook-form's useFieldArray
+    id: z.string().optional(), 
     description: z.string().min(1, "Cost description is required."),
     amount: z.coerce.number().min(0, "Cost amount must be non-negative."),
     type: z.enum(QUOTATION_ADDITIONAL_COST_TYPES),
@@ -139,6 +140,7 @@ export default function PurchaseOrderDetailPage() {
 
   const [isSupplierSolutionDialogOpen, setIsSupplierSolutionDialogOpen] = useState(false);
   const [isSubmittingSolution, setIsSubmittingSolution] = useState(false);
+  const [isAcceptOriginalConfirmOpen, setIsAcceptOriginalConfirmOpen] = useState(false);
 
 
   const editPOForm = useForm<EditPOFormData>({
@@ -239,7 +241,7 @@ export default function PurchaseOrderDetailPage() {
     const payload: UpdatePOWithChangesData = {
       notes: data.notes,
       expectedDeliveryDate: data.expectedDeliveryDate ? Timestamp.fromDate(data.expectedDeliveryDate) : undefined,
-      additionalCosts: data.additionalCosts?.map(cost => ({ // Ensure ID is not passed if it's a new item
+      additionalCosts: data.additionalCosts?.map(cost => ({
         description: cost.description,
         amount: cost.amount,
         type: cost.type,
@@ -265,6 +267,79 @@ export default function PurchaseOrderDetailPage() {
     }
     setIsSubmittingEditPO(false);
   };
+
+  const handleOpenAcceptOriginalDialog = () => {
+    setIsAcceptOriginalConfirmOpen(true);
+  };
+
+  const handleAcceptOriginalPOAndConfirm = async () => {
+    if (!purchaseOrder || !currentUser || !purchaseOrder.originalDetails) {
+        toast({ title: "Error", description: "Cannot proceed: PO data or original details missing.", variant: "destructive"});
+        return;
+    }
+    setIsUpdating(true);
+    try {
+        await runTransaction(db, async (transaction) => {
+            const poRef = firestoreDoc(db, "purchaseOrders", purchaseOrderId);
+            const poSnap = await transaction.get(poRef);
+
+            if (!poSnap.exists()) {
+                throw new Error("Purchase Order not found during transaction.");
+            }
+            const currentPOData = poSnap.data() as PurchaseOrder;
+            if (!currentPOData.originalDetails || currentPOData.originalDetails.length === 0) {
+                throw new Error("No original details found to revert to.");
+            }
+            
+            // 1. Prepare updates for the main PO document
+            const updateDataForMainPO: any = {
+                notes: currentPOData.originalNotes,
+                expectedDeliveryDate: currentPOData.originalExpectedDeliveryDate,
+                additionalCosts: currentPOData.originalAdditionalCosts || [],
+                productsSubtotal: currentPOData.originalProductsSubtotal,
+                totalAmount: currentPOData.originalTotalAmount,
+                status: "ConfirmedBySupplier" as PurchaseOrderStatus,
+                updatedAt: Timestamp.now(),
+
+                originalDetails: deleteField(),
+                originalAdditionalCosts: deleteField(),
+                originalProductsSubtotal: deleteField(),
+                originalTotalAmount: deleteField(),
+                originalNotes: deleteField(),
+                originalExpectedDeliveryDate: deleteField(),
+            };
+            transaction.update(poRef, updateDataForMainPO);
+
+            // 2. Manage the 'details' sub-collection
+            const detailsCollectionRef = firestoreCollection(db, "purchaseOrders", purchaseOrderId, "details");
+
+            // Delete current details in sub-collection
+            const currentDetailsSnapshot = await firestoreGetDocs(firestoreQuery(detailsCollectionRef)); 
+            currentDetailsSnapshot.forEach(docSnap => {
+                transaction.delete(docSnap.ref);
+            });
+
+            // Add original details back to sub-collection as new documents
+            for (const originalDetailItem of currentPOData.originalDetails) {
+                const { id: oldDocId, ...detailDataToSet } = originalDetailItem; 
+                const newDetailRef = firestoreDoc(firestoreCollection(db, "purchaseOrders", purchaseOrderId, "details"));
+                transaction.set(newDetailRef, detailDataToSet);
+            }
+        });
+
+        // After transaction succeeds
+        await updateRequisitionQuantitiesPostConfirmation(purchaseOrderId, currentUser.uid);
+        toast({ title: "Original PO Confirmed", description: "Purchase Order reverted to original terms and confirmed." });
+        fetchPOData();
+        setIsAcceptOriginalConfirmOpen(false);
+
+    } catch (error: any) {
+        console.error("Error accepting original PO:", error);
+        toast({ title: "Update Failed", description: error.message || "Could not accept original Purchase Order.", variant: "destructive" });
+    }
+    setIsUpdating(false);
+  };
+
 
   const handleOpenReceiptDialog = async () => {
     if (!purchaseOrder || !purchaseOrder.details) return;
@@ -457,6 +532,7 @@ export default function PurchaseOrderDetailPage() {
   const showSentToSupplierActions = canManagePO && poStatus === "SentToSupplier";
   const showChangesProposedActions = canManagePO && poStatus === "ChangesProposedBySupplier";
   const showPendingInternalReviewActions = canManagePO && poStatus === "PendingInternalReview";
+  const showAcceptOriginalPOButton = canManagePO && poStatus === "PendingInternalReview" && purchaseOrder.originalDetails && purchaseOrder.originalDetails.length > 0;
   
   const showRecordReceipt = canManagePO && (poStatus === "ConfirmedBySupplier" || poStatus === "PartiallyDelivered" || poStatus === "AwaitingFutureDelivery");
   const showRecordSupplierSolutionButton = canManagePO && poStatus === "PartiallyDelivered";
@@ -527,6 +603,40 @@ export default function PurchaseOrderDetailPage() {
 
             {showPendingInternalReviewActions && (
                  <>
+                    {showAcceptOriginalPOButton && (
+                        <AlertDialog open={isAcceptOriginalConfirmOpen} onOpenChange={setIsAcceptOriginalConfirmOpen}>
+                            <AlertDialogTrigger asChild>
+                                <Button variant="outline" className="border-blue-500 text-blue-600 hover:bg-blue-50" disabled={isUpdating} onClick={handleOpenAcceptOriginalDialog}>
+                                    <Icons.Check className="mr-2 h-4 w-4" />Accept Original & Confirm
+                                </Button>
+                            </AlertDialogTrigger>
+                            <AlertDialogContent>
+                                <AlertDialogHeader>
+                                    <AlertDialogTitle>Confirm Acceptance of Original PO Terms</AlertDialogTitle>
+                                    <AlertDialogDescription>
+                                        You are about to override the supplier's proposed changes and confirm the Purchase Order based on its <strong>original</strong> terms.
+                                        <br/><br/>
+                                        Please ensure you have explicit confirmation from the supplier that they can now fulfill the original order details (quantities, prices, delivery dates, etc.) despite their previous counter-offer.
+                                        <br/><br/>
+                                        If the supplier <strong>cannot</strong> fulfill the original terms, you should either 'Reject This Revised PO' or use 'Needs Further Negotiation / Re-edit' to adjust the PO to what the supplier can actually provide.
+                                        <br/><br/>
+                                        Proceeding will:
+                                        <ul className="list-disc pl-5 mt-1 text-xs">
+                                            <li>Discard the supplier's proposed changes.</li>
+                                            <li>Set the PO status to 'ConfirmedBySupplier' based on original terms.</li>
+                                            <li>Update requisition quantities accordingly.</li>
+                                        </ul>
+                                    </AlertDialogDescription>
+                                </AlertDialogHeader>
+                                <AlertDialogFooter>
+                                    <AlertDialogCancel>Cancel</AlertDialogCancel>
+                                    <AlertDialogAction onClick={handleAcceptOriginalPOAndConfirm} disabled={isUpdating} className="bg-blue-500 hover:bg-blue-600">
+                                        {isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : null} Confirm Original & Proceed
+                                    </AlertDialogAction>
+                                </AlertDialogFooter>
+                            </AlertDialogContent>
+                        </AlertDialog>
+                    )}
                     <Button onClick={() => handleStatusChange("ConfirmedBySupplier")} disabled={isUpdating} variant="default" className="bg-teal-500 hover:bg-teal-600">{isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.Check className="mr-2 h-4 w-4" />}Confirm This Revised PO</Button>
                     <Button onClick={() => handleStatusChange("ChangesProposedBySupplier")} disabled={isUpdating} variant="outline" className="border-orange-500 text-orange-600 hover:bg-orange-50">{isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.Edit className="mr-2 h-4 w-4" />}Needs Further Negotiation / Re-edit</Button>
                     <Button onClick={() => handleStatusChange("RejectedBySupplier")} disabled={isUpdating} variant="destructive">{isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.X className="mr-2 h-4 w-4" />}Reject This Revised PO</Button>

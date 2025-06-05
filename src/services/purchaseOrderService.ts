@@ -16,6 +16,7 @@ import {
   QueryDocumentSnapshot,
   runTransaction,
   deleteDoc,
+  deleteField, 
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import type {
@@ -120,6 +121,8 @@ export const createPurchaseOrder = async (
       productName: detailData.productName,
       orderedQuantity: detailData.orderedQuantity,
       receivedQuantity: 0,
+      receivedDamagedQuantity: 0,
+      receivedMissingQuantity: 0,
       unitPrice: detailData.unitPrice,
       subtotal: detailData.orderedQuantity * detailData.unitPrice,
       notes: detailData.notes,
@@ -144,13 +147,19 @@ const getPODetails = async (poId: string): Promise<PurchaseOrderDetail[]> => {
 
 const getPODetailsInTransaction = async (poId: string, transaction: any): Promise<PurchaseOrderDetail[]> => {
   const detailsCollectionRef = collection(db, `purchaseOrders/${poId}/details`);
-  const q = query(detailsCollectionRef, orderBy("productName"));
-  const snapshot = await getDocs(q); 
+  // For transactions, it's often better to read all documents in the collection if the number is small,
+  // or have a known set of document IDs. Reading a query result within a transaction can be tricky
+  // if the query itself depends on data that might change within the transaction.
+  // For now, assuming a direct getDocs on the collection path for details.
+  // If order is strictly needed and can't be guaranteed by doc IDs, post-fetch sort might be needed.
+  const snapshot = await getDocs(query(detailsCollectionRef)); 
   
   const details: PurchaseOrderDetail[] = [];
   for (const docSnap of snapshot.docs) {
+    // In a transaction, if you've already written to a doc, subsequent gets will see that write.
+    // If not, it sees the server version at the start of the transaction.
     const detailRef = doc(db, `purchaseOrders/${poId}/details`, docSnap.id);
-    const transactionSnap = await transaction.get(detailRef);
+    const transactionSnap = await transaction.get(detailRef); // Ensure we get the transactional view
     if (transactionSnap.exists()) {
       details.push({ 
         id: transactionSnap.id, 
@@ -158,8 +167,9 @@ const getPODetailsInTransaction = async (poId: string, transaction: any): Promis
       } as PurchaseOrderDetail);
     }
   }
-  return details.sort((a, b) => a.productName.localeCompare(b.productName));
+  return details.sort((a, b) => a.productName.localeCompare(b.productName)); // Sort after fetching
 };
+
 
 export const getPurchaseOrderById = async (id: string): Promise<PurchaseOrder | null> => {
   if (!id) return null;
@@ -236,6 +246,8 @@ export const getAllPurchaseOrders = async (filters: PurchaseOrderFilters = {}): 
       const user = await getUserById(data.creationUserId);
       creationUserName = user?.displayName;
     }
+    // Details are not fetched here for performance on list view.
+    // Fetch them on demand in getPurchaseOrderById or the detail page.
     return {
       id: docSnap.id,
       ...data,
@@ -292,7 +304,7 @@ export const updatePurchaseOrderDetailsAndCosts = async (
     }
     const newTotalAmount = newProductsSubtotal + (data.additionalCosts?.reduce((sum, cost) => sum + cost.amount, 0) || 0);
 
-    const mainPOUpdateData: Partial<PurchaseOrder> = {
+    const mainPOUpdateData: Partial<PurchaseOrder> & { [key: string]: any } = { // Using any for deleteField compatibility
       notes: data.notes ?? currentPOData.notes,
       expectedDeliveryDate: data.expectedDeliveryDate ?? currentPOData.expectedDeliveryDate,
       additionalCosts: data.additionalCosts,
@@ -301,8 +313,9 @@ export const updatePurchaseOrderDetailsAndCosts = async (
       updatedAt: Timestamp.now(),
     };
 
+    // Store current details as original if not already stored
     if (!currentPOData.originalDetails && (currentPOData.status === "ChangesProposedBySupplier" || currentPOData.status === "SentToSupplier")) {
-      const originalDetailsSnapshot = await getPODetailsInTransaction(poId, transaction); 
+      const originalDetailsSnapshot = await getPODetailsInTransaction(poId, transaction);
       mainPOUpdateData.originalDetails = originalDetailsSnapshot;
       mainPOUpdateData.originalAdditionalCosts = currentPOData.additionalCosts;
       mainPOUpdateData.originalProductsSubtotal = currentPOData.productsSubtotal;
@@ -313,8 +326,10 @@ export const updatePurchaseOrderDetailsAndCosts = async (
     
     transaction.update(poRef, mainPOUpdateData);
 
+    // Delete old details and add new ones
     const detailsCollectionRef = collection(poRef, "details");
-    const oldDetailsSnap = await getDocs(query(detailsCollectionRef)); 
+    const oldDetailsQuery = query(detailsCollectionRef);
+    const oldDetailsSnap = await getDocs(oldDetailsQuery); // This read is fine before writes in tx if just for refs
     
     for (const docSnap of oldDetailsSnap.docs) {
       transaction.delete(docSnap.ref);
@@ -327,6 +342,8 @@ export const updatePurchaseOrderDetailsAndCosts = async (
         productName: newDetailData.productName,
         orderedQuantity: newDetailData.orderedQuantity,
         receivedQuantity: 0, 
+        receivedDamagedQuantity: 0,
+        receivedMissingQuantity: 0,
         unitPrice: newDetailData.unitPrice,
         subtotal: newDetailData.orderedQuantity * newDetailData.unitPrice,
         notes: newDetailData.notes,
@@ -350,7 +367,7 @@ export const updatePurchaseOrderStatus = async (
   }
   const originalStatus = originalPO.status;
 
-  const updateData: Partial<PurchaseOrder> = {
+  const updateData: Partial<PurchaseOrder> & { [key: string]: any } = {
     status: newStatus,
     updatedAt: now,
   };
@@ -359,17 +376,25 @@ export const updatePurchaseOrderStatus = async (
     updateData.completionDate = now;
   }
 
+  // If confirming, clear original details if they exist, as the current state is now the confirmed state
+  if (newStatus === "ConfirmedBySupplier" && originalPO.originalDetails) {
+    updateData.originalDetails = deleteField();
+    updateData.originalAdditionalCosts = deleteField();
+    updateData.originalProductsSubtotal = deleteField();
+    updateData.originalTotalAmount = deleteField();
+    updateData.originalNotes = deleteField();
+    updateData.originalExpectedDeliveryDate = deleteField();
+  }
+
   if (newStatus === "ConfirmedBySupplier" && originalPO.details) {
-    const potentiallyUpdatedPO = await getPurchaseOrderById(poId); 
-    if (potentiallyUpdatedPO && potentiallyUpdatedPO.details) {
-      await updateRequisitionQuantitiesPostConfirmation(poId, userId);
-    } else {
-      console.error("Failed to get updated PO details for requisition update.");
-    }
+    // Fetch potentially updated details (e.g., if a revert happened just before this call)
+    const currentDetailsForConfirmation = await getPODetails(poId);
+    await updateRequisitionQuantitiesPostConfirmation(poId, userId, currentDetailsForConfirmation);
   } else if (
       (newStatus === "Canceled" && (originalStatus === "Pending" || originalStatus === "SentToSupplier" || originalStatus === "ChangesProposedBySupplier" || originalStatus === "PendingInternalReview")) ||
       (newStatus === "RejectedBySupplier" && (originalStatus === "SentToSupplier" || originalStatus === "ChangesProposedBySupplier" || originalStatus === "PendingInternalReview"))
     ) {
+    // Use originalPO.details as these are the quantities that were *pending*
     if (originalPO.details && originalPO.details.length > 0) {
         await handleRequisitionUpdateForPOCancellation(originalPO.originRequisitionId, originalPO.details, userId);
     } else {
@@ -393,13 +418,12 @@ export const recordSupplierSolution = async (
   const poRef = doc(db, "purchaseOrders", poId);
   const now = Timestamp.now();
 
-  const updatePayload: Partial<PurchaseOrder> = {
+  const updatePayload: Partial<PurchaseOrder> & { [key: string]: any } = {
     supplierAgreedSolutionType: solutionData.supplierAgreedSolutionType,
     supplierAgreedSolutionDetails: solutionData.supplierAgreedSolutionDetails,
     updatedAt: now,
   };
 
-  // Determine new status based on solution type
   let newStatus: PurchaseOrderStatus | undefined = undefined;
   switch (solutionData.supplierAgreedSolutionType) {
     case "FutureDelivery":
@@ -407,9 +431,9 @@ export const recordSupplierSolution = async (
       break;
     case "CreditPartialCharge":
     case "DiscountForImperfection":
-    case "Other": // Assuming "Other" also implies some form of resolution leading to completion
+    case "Other": 
       newStatus = "Completed";
-      updatePayload.completionDate = now; // Mark as completed if not already
+      updatePayload.completionDate = now; 
       break;
   }
 
@@ -417,21 +441,12 @@ export const recordSupplierSolution = async (
     updatePayload.status = newStatus;
   }
   
-  // Note: For "CreditPartialCharge" or "DiscountForImperfection",
-  // this Stage 1 implementation does NOT automatically adjust PO line items or totals.
-  // It's assumed the user will manually adjust the PO via the "Record Supplier's Proposal & Review" flow
-  // if precise financial changes are needed on the PO document itself, then use this "Record Solution" to finalize.
-  // Or, the solution is purely textual for now, and financial reconciliation happens outside this system for these cases.
-
   await updateDoc(poRef, updatePayload);
 
-  // If the solution resulted in the PO being "Completed", we might need to trigger
-  // a final update to the requisition, similar to how PO confirmation does,
-  // especially if this "solution" implies no more items will be received.
-  // This part needs careful consideration based on how `receivedQuantity` vs `orderedQuantity`
-  // should be interpreted after a solution is recorded.
-  // For now, we'll assume that if a PO moves to "Completed" via a solution,
-  // the requisition quantities were already handled or the solution means no further action on them.
+  // If solution moves PO to "Completed", we might need to call updateRequisitionQuantitiesPostConfirmation
+  // to ensure all requisition states are finalized based on what was actually received vs resolved.
+  if (newStatus === "Completed") {
+      const currentDetailsForCompletion = await getPODetails(poId);
+      await updateRequisitionQuantitiesPostConfirmation(poId, userId, currentDetailsForCompletion, true /* indicate it's a final completion */);
+  }
 };
-
-    
