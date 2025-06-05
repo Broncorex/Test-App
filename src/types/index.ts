@@ -68,7 +68,9 @@ export interface Warehouse {
 }
 
 export type StockMovementType =
-  | 'INBOUND_PO'
+  | 'INBOUND_PO' // For OK items
+  | 'INBOUND_PO_DAMAGED' // For Damaged items
+  | 'PO_MISSING' // For Missing items (audit only)
   | 'INBOUND_TRANSFER'
   | 'INBOUND_ADJUSTMENT'
   | 'OUTBOUND_SALE'
@@ -84,8 +86,8 @@ export interface StockMovement {
   warehouseName?: string; 
   type: StockMovementType;
   quantityChanged: number;
-  quantityBefore: number;
-  quantityAfter: number;
+  quantityBefore: number; // For usable stock if type is INBOUND_PO, for damaged stock if INBOUND_PO_DAMAGED
+  quantityAfter: number;  // For usable stock if type is INBOUND_PO, for damaged stock if INBOUND_PO_DAMAGED
   movementDate: Timestamp;
   userId?: string; 
   userName?: string; 
@@ -99,7 +101,8 @@ export interface StockItem {
   id?: string; 
   productId: string;
   warehouseId: string;
-  quantity: number;
+  quantity: number; // Represents usable stock.
+  damagedQuantity?: number; // NEW FIELD: Represents damaged stock for this product in this warehouse.
   lastStockUpdate: Timestamp;
   updatedBy: string; 
 }
@@ -247,7 +250,8 @@ export const PURCHASE_ORDER_STATUSES = [
   "ConfirmedBySupplier",
   "RejectedBySupplier",
   "PartiallyDelivered",
-  "AwaitingFutureDelivery", 
+  "AwaitingFutureDelivery",
+  "FullyReceived", // New status
   "Completed",
   "Canceled"
 ] as const;
@@ -262,7 +266,9 @@ export interface PurchaseOrderDetail {
   productId: string;
   productName: string; 
   orderedQuantity: number;
-  receivedQuantity: number; 
+  receivedQuantity: number; // Total OK quantity received across all receipts for this PO item
+  receivedDamagedQuantity?: number; // NEW: Total DAMAGED quantity received
+  receivedMissingQuantity?: number; // NEW: Total MISSING quantity reported
   unitPrice: number; 
   subtotal: number; 
   notes: string; 
@@ -300,15 +306,15 @@ export interface PurchaseOrder {
   supplierAgreedSolutionDetails?: string;
 }
 
-export const RECEIPT_ITEM_STATUSES = ["Ok", "Damaged", "Missing", "Other"] as const;
+export const RECEIPT_ITEM_STATUSES = ["Ok", "Damaged", "Missing"] as const;
 export type ReceiptItemStatus = typeof RECEIPT_ITEM_STATUSES[number];
 
-export interface ReceivedItem {
-  id: string; 
+export interface ReceivedItem { // This is for items WITHIN a single Receipt document
+  id: string; // Sub-collection document ID
   productId: string;
   productName: string; 
-  quantityReceived: number;
-  itemStatus: ReceiptItemStatus;
+  quantityReceived: number; // This is the quantity *for this specific status* in THIS receipt.
+  itemStatus: ReceiptItemStatus; // Indicates if this quantity is OK, Damaged, or Missing.
   notes: string;
 }
 
@@ -326,5 +332,3 @@ export interface Receipt {
   createdBy: string; 
   receivedItems?: ReceivedItem[]; 
 }
-
-    

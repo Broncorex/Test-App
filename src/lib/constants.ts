@@ -1,5 +1,5 @@
 
-import type { NavItemStructure, UserRole, RequisitionStatus, PurchaseOrderStatus, QuotationStatus } from '@/types';
+import type { NavItemStructure, UserRole, RequisitionStatus, PurchaseOrderStatus, QuotationStatus, StockMovementType } from '@/types';
 import { Icons } from '@/components/icons';
 
 export const APP_NAME = "StockPilot";
@@ -10,7 +10,33 @@ export const REQUISITION_STATUSES: RequisitionStatus[] = ["Pending Quotation", "
 
 export const QUOTATION_STATUSES: QuotationStatus[] = ["Sent", "Received", "Rejected", "Awarded", "Lost", "Partially Awarded"];
 
-export const PURCHASE_ORDER_STATUSES: PurchaseOrderStatus[] = ["Pending", "Sent", "Partially Received", "Completed", "Canceled"];
+// Updated to include new PO statuses
+export const PURCHASE_ORDER_STATUSES: PurchaseOrderStatus[] = [
+  "Pending",
+  "SentToSupplier",
+  "ChangesProposedBySupplier",
+  "PendingInternalReview",
+  "ConfirmedBySupplier",
+  "RejectedBySupplier",
+  "PartiallyDelivered",
+  "AwaitingFutureDelivery",
+  "FullyReceived",
+  "Completed",
+  "Canceled"
+];
+
+// Added new stock movement types
+export const STOCK_MOVEMENT_TYPES: StockMovementType[] = [
+  'INBOUND_PO',
+  'INBOUND_PO_DAMAGED',
+  'PO_MISSING',
+  'INBOUND_TRANSFER',
+  'INBOUND_ADJUSTMENT',
+  'OUTBOUND_SALE',
+  'OUTBOUND_TRANSFER',
+  'OUTBOUND_ADJUSTMENT',
+  'INITIAL_STOCK'
+];
 
 
 export const navItems: NavItemStructure[] = [
@@ -88,4 +114,3 @@ export const navItems: NavItemStructure[] = [
     ]
   },
 ];
-    
