@@ -35,6 +35,7 @@ import { cn } from "@/lib/utils";
 import { getActiveWarehouses } from "@/services/warehouseService";
 import { createReceipt, updatePOStatusAfterReceipt, type CreateReceiptServiceData } from "@/services/receiptService";
 import { db } from "@/lib/firebase";
+import { updateRequisitionQuantitiesPostConfirmation } from "@/services/requisitionService"; // Added this import
 
 
 const poDetailItemSchema = z.object({
@@ -221,7 +222,7 @@ export default function PurchaseOrderDetailPage() {
     editPOForm.reset({
       notes: sourceData.notes || "",
       expectedDeliveryDate: sourceData.expectedDeliveryDate?.toDate(),
-      additionalCosts: sourceData.additionalCosts?.map(ac => ({...ac, amount: Number(ac.amount)})) || [],
+      additionalCosts: sourceData.additionalCosts?.map(ac => ({...ac, id: ac.id || Math.random().toString(36).substring(7), amount: Number(ac.amount)})) || [],
       details: sourceData.details?.map(d => ({
         id: d.id, 
         productId: d.productId,
@@ -286,21 +287,19 @@ export default function PurchaseOrderDetailPage() {
             if (!poSnap.exists()) {
                 throw new Error("Purchase Order not found during transaction.");
             }
-            const currentPOData = poSnap.data() as PurchaseOrder;
-            if (!currentPOData.originalDetails || currentPOData.originalDetails.length === 0) {
+            const currentPODataFromSnap = poSnap.data() as PurchaseOrder;
+            if (!currentPODataFromSnap.originalDetails || currentPODataFromSnap.originalDetails.length === 0) {
                 throw new Error("No original details found to revert to.");
             }
             
-            // 1. Prepare updates for the main PO document
             const updateDataForMainPO: any = {
-                notes: currentPOData.originalNotes,
-                expectedDeliveryDate: currentPOData.originalExpectedDeliveryDate,
-                additionalCosts: currentPOData.originalAdditionalCosts || [],
-                productsSubtotal: currentPOData.originalProductsSubtotal,
-                totalAmount: currentPOData.originalTotalAmount,
+                notes: currentPODataFromSnap.originalNotes,
+                expectedDeliveryDate: currentPODataFromSnap.originalExpectedDeliveryDate,
+                additionalCosts: currentPODataFromSnap.originalAdditionalCosts || [],
+                productsSubtotal: currentPODataFromSnap.originalProductsSubtotal,
+                totalAmount: currentPODataFromSnap.originalTotalAmount,
                 status: "ConfirmedBySupplier" as PurchaseOrderStatus,
                 updatedAt: Timestamp.now(),
-
                 originalDetails: deleteField(),
                 originalAdditionalCosts: deleteField(),
                 originalProductsSubtotal: deleteField(),
@@ -310,24 +309,20 @@ export default function PurchaseOrderDetailPage() {
             };
             transaction.update(poRef, updateDataForMainPO);
 
-            // 2. Manage the 'details' sub-collection
             const detailsCollectionRef = firestoreCollection(db, "purchaseOrders", purchaseOrderId, "details");
-
-            // Delete current details in sub-collection
             const currentDetailsSnapshot = await firestoreGetDocs(firestoreQuery(detailsCollectionRef)); 
+            
             currentDetailsSnapshot.forEach(docSnap => {
                 transaction.delete(docSnap.ref);
             });
 
-            // Add original details back to sub-collection as new documents
-            for (const originalDetailItem of currentPOData.originalDetails) {
+            for (const originalDetailItem of currentPODataFromSnap.originalDetails) {
                 const { id: oldDocId, ...detailDataToSet } = originalDetailItem; 
                 const newDetailRef = firestoreDoc(firestoreCollection(db, "purchaseOrders", purchaseOrderId, "details"));
                 transaction.set(newDetailRef, detailDataToSet);
             }
         });
 
-        // After transaction succeeds
         await updateRequisitionQuantitiesPostConfirmation(purchaseOrderId, currentUser.uid);
         toast({ title: "Original PO Confirmed", description: "Purchase Order reverted to original terms and confirmed." });
         fetchPOData();
@@ -402,19 +397,28 @@ export default function PurchaseOrderDetailPage() {
         if (formItem.qtyOkReceivedThisReceipt > 0) {
             servicePayloadItems.push({
                 productId: formItem.productId, productName: formItem.productName, poDetailId: formItem.poDetailId,
-                quantityReceivedThisReceipt: formItem.qtyOkReceivedThisReceipt, itemStatus: "Ok", itemNotes: formItem.lineItemNotes || "",
+                qtyOkReceivedThisReceipt: formItem.qtyOkReceivedThisReceipt, 
+                qtyDamagedReceivedThisReceipt: 0, // Set explicitly for clarity
+                qtyMissingReceivedThisReceipt: 0, // Set explicitly for clarity
+                lineItemNotes: formItem.lineItemNotes || "",
             });
         }
         if (formItem.qtyDamagedReceivedThisReceipt > 0) {
              servicePayloadItems.push({
                 productId: formItem.productId, productName: formItem.productName, poDetailId: formItem.poDetailId,
-                quantityReceivedThisReceipt: formItem.qtyDamagedReceivedThisReceipt, itemStatus: "Damaged", itemNotes: formItem.lineItemNotes || "",
+                qtyOkReceivedThisReceipt: 0, 
+                qtyDamagedReceivedThisReceipt: formItem.qtyDamagedReceivedThisReceipt, 
+                qtyMissingReceivedThisReceipt: 0,
+                lineItemNotes: formItem.lineItemNotes || "",
             });
         }
         if (formItem.qtyMissingReceivedThisReceipt > 0) {
              servicePayloadItems.push({
                 productId: formItem.productId, productName: formItem.productName, poDetailId: formItem.poDetailId,
-                quantityReceivedThisReceipt: formItem.qtyMissingReceivedThisReceipt, itemStatus: "Missing", itemNotes: formItem.lineItemNotes || "",
+                qtyOkReceivedThisReceipt: 0,
+                qtyDamagedReceivedThisReceipt: 0,
+                qtyMissingReceivedThisReceipt: formItem.qtyMissingReceivedThisReceipt,
+                lineItemNotes: formItem.lineItemNotes || "",
             });
         }
     });
@@ -431,7 +435,7 @@ export default function PurchaseOrderDetailPage() {
         receivingUserId: currentUser.uid,
         targetWarehouseId: data.targetWarehouseId,
         notes: data.overallReceiptNotes || "",
-        itemsToReceive: servicePayloadItems,
+        itemsToProcess: servicePayloadItems,
     };
 
     try {
@@ -530,7 +534,7 @@ export default function PurchaseOrderDetailPage() {
 
   const showSendToSupplier = canManagePO && poStatus === "Pending";
   const showSentToSupplierActions = canManagePO && poStatus === "SentToSupplier";
-  const showChangesProposedActions = canManagePO && poStatus === "ChangesProposedBySupplier";
+  const showChangesProposedActions = canManagePO && poStatus === "ChangesProposedBySupplier"; // This status might be deprecated if direct edit leads to PendingInternalReview
   const showPendingInternalReviewActions = canManagePO && poStatus === "PendingInternalReview";
   const showAcceptOriginalPOButton = canManagePO && poStatus === "PendingInternalReview" && purchaseOrder.originalDetails && purchaseOrder.originalDetails.length > 0;
   
@@ -593,13 +597,7 @@ export default function PurchaseOrderDetailPage() {
               </>
             )}
 
-            {showChangesProposedActions && (
-                <>
-                    <Button onClick={handleOpenEditPODialog} disabled={isUpdating || isSubmittingEditPO} variant="default" className="bg-blue-500 hover:bg-blue-600"><Icons.Edit className="mr-2 h-4 w-4" />Record Supplier's Proposal & Review</Button>
-                    <Button onClick={() => handleStatusChange("ConfirmedBySupplier")} disabled={isUpdating} variant="outline" className="border-teal-500 text-teal-600 hover:bg-teal-50">{isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.Check className="mr-2 h-4 w-4" />}Supplier Agrees to Original Terms</Button>
-                    <Button onClick={() => handleStatusChange("RejectedBySupplier")} disabled={isUpdating} variant="destructive">{isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.X className="mr-2 h-4 w-4" />}Reject Supplier's Proposal</Button>
-                </>
-            )}
+            {/* Removed showChangesProposedActions as it's redundant if edit leads to PendingInternalReview */}
 
             {showPendingInternalReviewActions && (
                  <>
@@ -792,7 +790,7 @@ export default function PurchaseOrderDetailPage() {
                 <Card>
                   <CardHeader className="p-2 flex flex-row items-center justify-between">
                     <CardTitle className="text-md">Additional Costs (Editable)</CardTitle>
-                    <Button type="button" variant="outline" size="sm" onClick={() => appendAdditionalCost({ description: "", amount: 0, type: "other" as const })}>
+                    <Button type="button" variant="outline" size="sm" onClick={() => appendAdditionalCost({ id: Math.random().toString(36).substring(7), description: "", amount: 0, type: "other" as const })}>
                       <Icons.Add className="mr-1 h-3 w-3" /> Add Cost
                     </Button>
                   </CardHeader>
