@@ -11,7 +11,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth-store";
 import { getPurchaseOrderById, updatePurchaseOrderStatus, updatePurchaseOrderDetailsAndCosts, type UpdatePOWithChangesData, recordSupplierSolution, type RecordSupplierSolutionData } from "@/services/purchaseOrderService";
 import type { PurchaseOrder, PurchaseOrderStatus, PurchaseOrderDetail, QuotationAdditionalCost, Warehouse as AppWarehouse, User as AppUser, SupplierSolutionType } from "@/types";
-import { QUOTATION_ADDITIONAL_COST_TYPES, PURCHASE_ORDER_STATUSES, RECEIPT_ITEM_STATUSES, SUPPLIER_SOLUTION_TYPES } from "@/types"; 
+import { QUOTATION_ADDITIONAL_COST_TYPES, PURCHASE_ORDER_STATUSES, SUPPLIER_SOLUTION_TYPES } from "@/types"; 
 import { Timestamp } from "firebase/firestore";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
@@ -63,30 +63,28 @@ const recordReceiptItemSchema = z.object({
   productId: z.string(),
   productName: z.string(),
   poDetailId: z.string(),
-  orderedQuantity: z.number(),
-  alreadyReceivedQuantity: z.number(),
-  outstandingQuantity: z.number(),
+  orderedQuantity: z.number(), // Original ordered on PO line
   
-  qtyOkReceived: z.coerce.number().min(0,"OK Qty must be non-negative.").default(0),
-  qtyDamagedReceived: z.coerce.number().min(0,"Damaged Qty must be non-negative.").default(0),
-  qtyOtherReceived: z.coerce.number().min(0,"Other Qty must be non-negative.").default(0),
-  notesForOther: z.string().optional(),
-  qtyDeclaredMissing: z.coerce.number().min(0,"Missing Qty must be non-negative.").default(0),
-  notesForMissing: z.string().optional(),
-  lineItemNotes: z.string().optional(),
+  // Cumulative quantities already processed on this PO line from previous receipts
+  alreadyReceivedOkQuantity: z.number().default(0), 
+  alreadyReceivedDamagedQuantity: z.number().default(0),
+  alreadyReceivedMissingQuantity: z.number().default(0),
+
+  // Quantities being entered for THIS specific receipt event
+  qtyOkReceivedThisReceipt: z.coerce.number().min(0, "OK Qty must be non-negative.").default(0),
+  qtyDamagedReceivedThisReceipt: z.coerce.number().min(0, "Damaged Qty must be non-negative.").default(0),
+  qtyMissingReceivedThisReceipt: z.coerce.number().min(0, "Missing Qty must be non-negative.").default(0),
+  
+  lineItemNotes: z.string().optional(), // Notes for this item in this specific receipt
 }).superRefine((data, ctx) => {
-    const totalPhysicallyReceived = data.qtyOkReceived + data.qtyDamagedReceived + data.qtyOtherReceived;
-    if (totalPhysicallyReceived > data.outstandingQuantity) {
+    const trulyOutstandingForThisReceipt = Math.max(0, data.orderedQuantity - (data.alreadyReceivedOkQuantity + data.alreadyReceivedDamagedQuantity + data.alreadyReceivedMissingQuantity));
+    const totalEnteredThisReceipt = data.qtyOkReceivedThisReceipt + data.qtyDamagedReceivedThisReceipt + data.qtyMissingReceivedThisReceipt;
+
+    if (totalEnteredThisReceipt > trulyOutstandingForThisReceipt) {
         ctx.addIssue({
-            path: ["qtyOkReceived"], 
-            message: `Total physically received (${totalPhysicallyReceived}) cannot exceed outstanding quantity (${data.outstandingQuantity}).`,
+            path: ["qtyOkReceivedThisReceipt"], 
+            message: `Total quantities entered (${totalEnteredThisReceipt}) for this receipt cannot exceed the truly outstanding quantity (${trulyOutstandingForThisReceipt}).`,
         });
-    }
-    if (data.qtyOtherReceived > 0 && (!data.notesForOther || data.notesForOther.trim() === "")) {
-      ctx.addIssue({
-        path: ["notesForOther"],
-        message: "Notes are required if 'Other' quantity is greater than 0.",
-      });
     }
 });
 
@@ -99,15 +97,14 @@ const recordReceiptFormSchema = z.object({
     .min(1, "At least one item must be specified for receipt.")
     .superRefine((items, ctx) => {
         const anyQuantityEntered = items.some(item => 
-            item.qtyOkReceived > 0 || 
-            item.qtyDamagedReceived > 0 || 
-            item.qtyOtherReceived > 0 ||
-            item.qtyDeclaredMissing > 0 
+            item.qtyOkReceivedThisReceipt > 0 || 
+            item.qtyDamagedReceivedThisReceipt > 0 || 
+            item.qtyMissingReceivedThisReceipt > 0
         );
         if (!anyQuantityEntered) {
              ctx.addIssue({
                 path: [], 
-                message: "Please enter received, damaged, other quantities for at least one item (missing will be auto-calculated).",
+                message: "Please enter received (OK, Damaged, or Missing) quantities for at least one item.",
             });
         }
     }),
@@ -118,49 +115,8 @@ type RecordReceiptFormData = z.infer<typeof recordReceiptFormSchema>;
 const supplierSolutionFormSchema = z.object({
   solutionType: z.enum(SUPPLIER_SOLUTION_TYPES, { required_error: "Supplier solution type is required."}),
   solutionDetails: z.string().min(10, "Please provide at least 10 characters of detail for the solution."),
-  // Future: Add conditional fields based on solutionType
 });
 type SupplierSolutionFormData = z.infer<typeof supplierSolutionFormSchema>;
-
-
-const ReceiptItemMissingCalculator = ({
-  control,
-  setValue,
-  index,
-  outstandingQuantity,
-}: {
-  control: Control<RecordReceiptFormData>;
-  setValue: UseFormSetValue<RecordReceiptFormData>;
-  index: number;
-  outstandingQuantity: number;
-}) => {
-  const qtyOkReceived = useWatch({
-    control,
-    name: `itemsToProcess.${index}.qtyOkReceived`,
-  });
-  const qtyDamagedReceived = useWatch({
-    control,
-    name: `itemsToProcess.${index}.qtyDamagedReceived`,
-  });
-  const qtyOtherReceived = useWatch({
-    control,
-    name: `itemsToProcess.${index}.qtyOtherReceived`,
-  });
-
-  useEffect(() => {
-    const numOk = Number(qtyOkReceived) || 0;
-    const numDamaged = Number(qtyDamagedReceived) || 0;
-    const numOther = Number(qtyOtherReceived) || 0;
-
-    const totalPhysicallyReceived = numOk + numDamaged + numOther;
-    const calculatedMissing = Math.max(0, outstandingQuantity - totalPhysicallyReceived);
-    
-    setValue(`itemsToProcess.${index}.qtyDeclaredMissing`, calculatedMissing, { shouldValidate: true });
-
-  }, [qtyOkReceived, qtyDamagedReceived, qtyOtherReceived, outstandingQuantity, index, setValue]);
-
-  return null;
-};
 
 
 export default function PurchaseOrderDetailPage() {
@@ -306,28 +262,28 @@ export default function PurchaseOrderDetailPage() {
         setAvailableWarehouses(activeWarehouses);
 
         const itemsForReceiptProcessing = purchaseOrder.details
-            .filter(d => d.orderedQuantity > (d.receivedQuantity || 0))
+            .filter(d => {
+                const totalAccountedFor = (d.receivedQuantity || 0) + (d.receivedDamagedQuantity || 0) + (d.receivedMissingQuantity || 0);
+                return d.orderedQuantity > totalAccountedFor;
+            })
             .map(d => {
-                const outstanding = d.orderedQuantity - (d.receivedQuantity || 0);
                 return {
                     productId: d.productId,
                     productName: d.productName,
                     poDetailId: d.id,
                     orderedQuantity: d.orderedQuantity,
-                    alreadyReceivedQuantity: d.receivedQuantity || 0,
-                    outstandingQuantity: outstanding,
-                    qtyOkReceived: 0, 
-                    qtyDamagedReceived: 0,
-                    qtyOtherReceived: 0,
-                    notesForOther: "",
-                    qtyDeclaredMissing: outstanding, 
-                    notesForMissing: "",
+                    alreadyReceivedOkQuantity: d.receivedQuantity || 0,
+                    alreadyReceivedDamagedQuantity: d.receivedDamagedQuantity || 0,
+                    alreadyReceivedMissingQuantity: d.receivedMissingQuantity || 0,
+                    qtyOkReceivedThisReceipt: 0, 
+                    qtyDamagedReceivedThisReceipt: 0,
+                    qtyMissingReceivedThisReceipt: 0,
                     lineItemNotes: "",
                 };
             });
 
         if (itemsForReceiptProcessing.length === 0) {
-            toast({ title: "No Items to Receive", description: "All items on this PO have been fully received or accounted for.", variant: "default" });
+            toast({ title: "No Items to Receive", description: "All items on this PO have been fully accounted for (OK, Damaged, or Missing).", variant: "default" });
             return;
         }
         
@@ -351,43 +307,42 @@ export default function PurchaseOrderDetailPage() {
     setIsSubmittingReceipt(true);
 
     const servicePayloadItems: CreateReceiptServiceData['itemsToReceive'] = [];
-    data.itemsToProcess.forEach(item => {
-        if (item.qtyOkReceived > 0) {
+    
+    data.itemsToProcess.forEach(formItem => {
+        if (formItem.qtyOkReceivedThisReceipt > 0) {
             servicePayloadItems.push({
-                productId: item.productId, productName: item.productName, poDetailId: item.poDetailId,
-                quantityReceived: item.qtyOkReceived, itemStatus: "Ok", itemNotes: item.lineItemNotes || "",
-                currentPOReceivedQuantity: item.alreadyReceivedQuantity, poOrderedQuantity: item.orderedQuantity
+                productId: formItem.productId, productName: formItem.productName, poDetailId: formItem.poDetailId,
+                quantityForThisStatusEntry: formItem.qtyOkReceivedThisReceipt, itemStatus: "Ok", itemNotes: formItem.lineItemNotes || "",
+                cumulativePOOkQtyBeforeThisReceipt: formItem.alreadyReceivedOkQuantity,
+                cumulativePODamagedQtyBeforeThisReceipt: formItem.alreadyReceivedDamagedQuantity,
+                cumulativePOMissingQtyBeforeThisReceipt: formItem.alreadyReceivedMissingQuantity,
+                poOrderedQuantity: formItem.orderedQuantity
             });
         }
-        if (item.qtyDamagedReceived > 0) {
-            servicePayloadItems.push({
-                productId: item.productId, productName: item.productName, poDetailId: item.poDetailId,
-                quantityReceived: item.qtyDamagedReceived, itemStatus: "Damaged", itemNotes: item.lineItemNotes || "",
-                currentPOReceivedQuantity: item.alreadyReceivedQuantity, poOrderedQuantity: item.orderedQuantity
+        if (formItem.qtyDamagedReceivedThisReceipt > 0) {
+             servicePayloadItems.push({
+                productId: formItem.productId, productName: formItem.productName, poDetailId: formItem.poDetailId,
+                quantityForThisStatusEntry: formItem.qtyDamagedReceivedThisReceipt, itemStatus: "Damaged", itemNotes: formItem.lineItemNotes || "",
+                cumulativePOOkQtyBeforeThisReceipt: formItem.alreadyReceivedOkQuantity,
+                cumulativePODamagedQtyBeforeThisReceipt: formItem.alreadyReceivedDamagedQuantity,
+                cumulativePOMissingQtyBeforeThisReceipt: formItem.alreadyReceivedMissingQuantity,
+                poOrderedQuantity: formItem.orderedQuantity
             });
         }
-        if (item.qtyOtherReceived > 0) {
-            servicePayloadItems.push({
-                productId: item.productId, productName: item.productName, poDetailId: item.poDetailId,
-                quantityReceived: item.qtyOtherReceived, itemStatus: "Other", 
-                itemNotes: `${item.notesForOther || ''}${item.lineItemNotes ? (item.notesForOther ? '; ' : '') + item.lineItemNotes : ''}`.trim(),
-                currentPOReceivedQuantity: item.alreadyReceivedQuantity, poOrderedQuantity: item.orderedQuantity
-            });
-        }
-        if (item.qtyDeclaredMissing > 0) { 
-            servicePayloadItems.push({
-                productId: item.productId, productName: item.productName, poDetailId: item.poDetailId,
-                quantityReceived: 0, itemStatus: "Missing", 
-                itemNotes: `${item.notesForMissing || ''}${item.lineItemNotes ? (item.notesForMissing ? '; ' : '') + item.lineItemNotes : ''}`.trim(),
-                currentPOReceivedQuantity: item.alreadyReceivedQuantity, poOrderedQuantity: item.orderedQuantity
+        if (formItem.qtyMissingReceivedThisReceipt > 0) {
+             servicePayloadItems.push({
+                productId: formItem.productId, productName: formItem.productName, poDetailId: formItem.poDetailId,
+                quantityForThisStatusEntry: formItem.qtyMissingReceivedThisReceipt, itemStatus: "Missing", itemNotes: formItem.lineItemNotes || "",
+                cumulativePOOkQtyBeforeThisReceipt: formItem.alreadyReceivedOkQuantity,
+                cumulativePODamagedQtyBeforeThisReceipt: formItem.alreadyReceivedDamagedQuantity,
+                cumulativePOMissingQtyBeforeThisReceipt: formItem.alreadyReceivedMissingQuantity,
+                poOrderedQuantity: formItem.orderedQuantity
             });
         }
     });
     
-    if (servicePayloadItems.length === 0 && data.itemsToProcess.every(itp => itp.qtyDeclaredMissing === itp.outstandingQuantity && itp.outstandingQuantity > 0)) {
-       // This is a valid case: all items are declared missing.
-    } else if (servicePayloadItems.filter(spi => spi.itemStatus !== "Missing").length === 0 && !data.itemsToProcess.some(itp => itp.qtyDeclaredMissing > 0 && itp.qtyDeclaredMissing <= itp.outstandingQuantity)) {
-        receiptForm.setError("itemsToProcess", { type: "manual", message: "No quantities were entered for receipt or discrepancy." });
+    if (servicePayloadItems.length === 0) {
+        receiptForm.setError("itemsToProcess", { type: "manual", message: "No quantities were entered for receipt (OK, Damaged, or Missing)." });
         setIsSubmittingReceipt(false);
         return;
     }
@@ -435,7 +390,7 @@ export default function PurchaseOrderDetailPage() {
         await recordSupplierSolution(purchaseOrderId, payload, currentUser.uid);
         toast({ title: "Supplier Solution Recorded", description: `Solution '${data.solutionType}' has been recorded for this PO.`});
         setIsSupplierSolutionDialogOpen(false);
-        fetchPOData(); // Refetch PO to reflect new status and solution details
+        fetchPOData(); 
     } catch (error: any) {
         console.error("Error recording supplier solution:", error);
         toast({ title: "Solution Update Failed", description: error.message || "Could not record supplier solution.", variant: "destructive"});
@@ -464,6 +419,7 @@ export default function PurchaseOrderDetailPage() {
       case "RejectedBySupplier": return "destructive";
       case "PartiallyDelivered": return "default"; 
       case "AwaitingFutureDelivery": return "default"; 
+      case "FullyReceived": return "default";
       case "Completed": return "default";
       case "Canceled": return "destructive";
       default: return "secondary";
@@ -479,6 +435,7 @@ export default function PurchaseOrderDetailPage() {
       case "ConfirmedBySupplier": return "bg-teal-500 hover:bg-teal-600 text-white";
       case "PartiallyDelivered": return "bg-yellow-500 hover:bg-yellow-600 text-black"; 
       case "AwaitingFutureDelivery": return "bg-cyan-500 hover:bg-cyan-600 text-white"; 
+      case "FullyReceived": return "bg-sky-500 hover:bg-sky-600 text-white";
       case "Completed": return "bg-green-500 hover:bg-green-600 text-white";
       default: return "";
     }
@@ -502,7 +459,7 @@ export default function PurchaseOrderDetailPage() {
   const showRecordReceipt = canManagePO && (poStatus === "ConfirmedBySupplier" || poStatus === "PartiallyDelivered" || poStatus === "AwaitingFutureDelivery");
   const showRecordSupplierSolutionButton = canManagePO && poStatus === "PartiallyDelivered";
 
-  const showCancelPO = canManagePO && !["Completed", "Canceled", "RejectedBySupplier", "PartiallyDelivered", "AwaitingFutureDelivery"].includes(poStatus);
+  const showCancelPO = canManagePO && !["FullyReceived", "Completed", "Canceled", "RejectedBySupplier", "PartiallyDelivered", "AwaitingFutureDelivery"].includes(poStatus);
 
 
   const renderComparisonTable = (originalItems: PurchaseOrderDetail[], proposedItems: PurchaseOrderDetail[], itemType: "Details" | "Costs") => (
@@ -681,13 +638,13 @@ export default function PurchaseOrderDetailPage() {
         </Card>
         <Card className="md:col-span-2"><CardHeader><CardTitle className="font-headline">Ordered Products (Current State)</CardTitle><CardDescription>List of products reflecting current PO details.</CardDescription></CardHeader>
           <CardContent>
-            {purchaseOrder.details && purchaseOrder.details.length > 0 ? (<ScrollArea className="h-[calc(100vh-22rem)]"><Table><TableHeader><TableRow><TableHead>Product Name</TableHead><TableHead className="text-right">Ordered Qty</TableHead><TableHead className="text-right">Unit Price</TableHead><TableHead className="text-right">Subtotal</TableHead><TableHead className="text-right">Received Qty</TableHead><TableHead>Item Notes</TableHead></TableRow></TableHeader><TableBody>{purchaseOrder.details.map((item) => (<TableRow key={item.id || item.productId}><TableCell className="font-medium">{item.productName}</TableCell><TableCell className="text-right">{item.orderedQuantity}</TableCell><TableCell className="text-right">${Number(item.unitPrice).toFixed(2)}</TableCell><TableCell className="text-right font-semibold">${(Number(item.orderedQuantity) * Number(item.unitPrice)).toFixed(2)}</TableCell><TableCell className="text-right">{item.receivedQuantity || 0}</TableCell><TableCell className="whitespace-pre-wrap text-xs max-w-[150px] truncate" title={item.notes}>{item.notes || "N/A"}</TableCell></TableRow>))}</TableBody></Table></ScrollArea>) : (<p>No products listed for this purchase order.</p>)}
+            {purchaseOrder.details && purchaseOrder.details.length > 0 ? (<ScrollArea className="h-[calc(100vh-22rem)]"><Table><TableHeader><TableRow><TableHead>Product Name</TableHead><TableHead className="text-right">Ordered</TableHead><TableHead className="text-right">Unit Price</TableHead><TableHead className="text-right">OK Rec'd</TableHead><TableHead className="text-right">Damaged</TableHead><TableHead className="text-right">Missing</TableHead><TableHead>Item Notes</TableHead></TableRow></TableHeader><TableBody>{purchaseOrder.details.map((item) => (<TableRow key={item.id || item.productId}><TableCell className="font-medium">{item.productName}</TableCell><TableCell className="text-right">{item.orderedQuantity}</TableCell><TableCell className="text-right">${Number(item.unitPrice).toFixed(2)}</TableCell><TableCell className="text-right text-green-600 font-semibold">{item.receivedQuantity || 0}</TableCell><TableCell className="text-right text-orange-600">{item.receivedDamagedQuantity || 0}</TableCell><TableCell className="text-right text-red-600">{item.receivedMissingQuantity || 0}</TableCell><TableCell className="whitespace-pre-wrap text-xs max-w-[150px] truncate" title={item.notes}>{item.notes || "N/A"}</TableCell></TableRow>))}</TableBody></Table></ScrollArea>) : (<p>No products listed for this purchase order.</p>)}
           </CardContent>
         </Card>
       </div>
 
       <Dialog open={isEditPODialogOpen} onOpenChange={setIsEditPODialogOpen}>
-        <DialogContent className="sm:max-w-3xl flex flex-col max-h-[90vh]"><Form {...editPOForm}><form onSubmit={editPOForm.handleSubmit(handleEditPOSubmit)} className="flex flex-col flex-grow min-h-0"><DialogHeader><ShadDialogTitle className="font-headline">Record Supplier's Proposed Changes</ShadDialogTitle><DialogDescription>Modify quantities, prices, costs, or notes based on supplier's proposal. Saving will update the PO to 'Pending Internal Review'.</DialogDescription></DialogHeader><div className="flex-grow overflow-y-auto min-h-0 py-4 pr-2 space-y-4"><FormField control={editPOForm.control} name="expectedDeliveryDate" render={({ field }) => (<FormItem className="flex flex-col"><FormLabel>New Expected Delivery Date (Optional)</FormLabel><Popover><PopoverTrigger asChild><FormControl><Button variant={"outline"} className={cn("pl-3 text-left font-normal w-full", !field.value && "text-muted-foreground")}>{field.value ? format(field.value, "PPP") : <span>Pick a date</span>}<Icons.Calendar className="ml-auto h-4 w-4 opacity-50" /></Button></FormControl></PopoverTrigger><PopoverContent className="w-auto p-0" align="start"><Calendar mode="single" selected={field.value} onSelect={field.onChange} initialFocus /></PopoverContent></Popover><FormMessage /></FormItem>)} /><FormField control={editPOForm.control} name="notes" render={({ field }) => (<FormItem><FormLabel>PO Notes (Updated)</FormLabel><FormControl><Textarea {...field} placeholder="Enter updated notes for the PO" /></FormControl><FormMessage /></FormItem>)} /><Card><CardHeader className="p-2"><CardTitle className="text-md">Product Details (Editable)</CardTitle></CardHeader><CardContent className="p-2 space-y-3">{editPOForm.getValues('details')?.map((item, index) => (<div key={item.id || item.productId} className="p-3 border rounded-md space-y-2 bg-muted/30"><h4 className="font-semibold text-sm">{editPOForm.getValues(`details.${index}.productName`)}</h4><div className="grid grid-cols-1 md:grid-cols-2 gap-3"><FormField control={editPOForm.control} name={`details.${index}.orderedQuantity`} render={({ field }) => (<FormItem><FormLabel className="text-xs">New Qty*</FormLabel><FormControl><Input type="number" {...field} className="h-8 text-sm" /></FormControl><FormMessage className="text-xs" /></FormItem>)} /><FormField control={editPOForm.control} name={`details.${index}.unitPrice`} render={({ field }) => (<FormItem><FormLabel className="text-xs">New Price*</FormLabel><FormControl><Input type="number" step="0.01" {...field} className="h-8 text-sm" /></FormControl><FormMessage className="text-xs" /></FormItem>)} /></div><FormField control={editPOForm.control} name={`details.${index}.notes`} render={({ field }) => (<FormItem><FormLabel className="text-xs">Item Notes</FormLabel><FormControl><Textarea {...field} rows={1} className="text-sm" /></FormControl><FormMessage className="text-xs" /></FormItem>)} /></div>))}</CardContent></Card><Card><CardHeader className="p-2 flex flex-row items-center justify-between"><CardTitle className="text-md">Additional Costs (Editable)</CardTitle><Button type="button" variant="outline" size="sm" onClick={() => editPOForm.setValue('additionalCosts', [...(editPOForm.getValues('additionalCosts') || []), { description: "", amount: 0, type: "other" }])}><Icons.Add className="mr-1 h-3 w-3" /> Add Cost</Button></CardHeader><CardContent className="p-2 space-y-2">{editPOForm.getValues('additionalCosts')?.map((item, index) => (<div key={index} className="p-2 border rounded-md space-y-2 bg-muted/30 relative"><Button type="button" variant="ghost" size="icon" className="absolute top-1 right-1 h-5 w-5" onClick={() => editPOForm.setValue('additionalCosts', editPOForm.getValues('additionalCosts')?.filter((_, i) => i !== index) || []) }><Icons.Delete className="h-3 w-3 text-destructive" /></Button><div className="grid grid-cols-1 md:grid-cols-3 gap-2 items-end"><FormField control={editPOForm.control} name={`additionalCosts.${index}.description`} render={({ field }) => (<FormItem><FormLabel className="text-xs">Desc*</FormLabel><FormControl><Input {...field} className="h-8 text-sm" /></FormControl><FormMessage className="text-xs" /></FormItem>)} /><FormField control={editPOForm.control} name={`additionalCosts.${index}.amount`} render={({ field }) => (<FormItem><FormLabel className="text-xs">Amount*</FormLabel><FormControl><Input type="number" step="0.01" {...field} className="h-8 text-sm" /></FormControl><FormMessage className="text-xs" /></FormItem>)} /><FormField control={editPOForm.control} name={`additionalCosts.${index}.type`} render={({ field }) => (<FormItem><FormLabel className="text-xs">Type*</FormLabel><Select onValueChange={field.onChange} value={field.value}><FormControl><SelectTrigger className="h-8 text-sm"><SelectValue placeholder="Type" /></SelectTrigger></FormControl><SelectContent>{QUOTATION_ADDITIONAL_COST_TYPES.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}</SelectContent></Select><FormMessage className="text-xs" /></FormItem>)} /></div></div>))}{editPOForm.getValues('additionalCosts')?.length === 0 && <p className="text-xs text-muted-foreground p-2">No additional costs.</p>}</CardContent></Card>{editPOForm.formState.errors.root && <p className="text-sm font-medium text-destructive">{editPOForm.formState.errors.root.message}</p>}</div><DialogFooter className="pt-4 flex-shrink-0 border-t"><DialogClose asChild><Button type="button" variant="outline">Cancel</Button></DialogClose><Button type="submit" disabled={isSubmittingEditPO}>{isSubmittingEditPO ? <Icons.Logo className="animate-spin" /> : "Save Proposal & Review"}</Button></DialogFooter></form></Form></DialogContent>
+        <DialogContent className="sm:max-w-3xl flex flex-col max-h-[90vh]"><Form {...editPOForm}><form onSubmit={editPOForm.handleSubmit(handleEditPOSubmit)} className="flex flex-col flex-grow min-h-0"><DialogHeader><ShadDialogTitle className="font-headline">Record Supplier's Proposed Changes</ShadDialogTitle><DialogDescription>Modify quantities, prices, costs, or notes based on supplier's proposal. Saving will update the PO to 'Pending Internal Review'.</DialogDescription></DialogHeader><div className="flex-grow overflow-y-auto min-h-0 py-4 pr-2 space-y-4"><FormField control={editPOForm.control} name="expectedDeliveryDate" render={({ field }) => (<FormItem className="flex flex-col"><FormLabel>New Expected Delivery Date (Optional)</FormLabel><Popover><PopoverTrigger asChild><FormControl><Button variant={"outline"} className={cn("pl-3 text-left font-normal w-full", !field.value && "text-muted-foreground")}>{field.value ? format(field.value, "PPP") : <span>Pick a date</span>}<Icons.Calendar className="ml-auto h-4 w-4 opacity-50" /></Button></FormControl></PopoverTrigger><PopoverContent className="w-auto p-0" align="start"><Calendar mode="single" selected={field.value} onSelect={field.onChange} initialFocus /></PopoverContent></Popover><FormMessage /></FormItem>)} /><FormField control={editPOForm.control} name="notes" render={({ field }) => (<FormItem><FormLabel>PO Notes (Updated)</FormLabel><FormControl><Textarea {...field} placeholder="Enter updated notes for the PO" /></FormControl><FormMessage /></FormItem>)} /><Card><CardHeader className="p-2"><CardTitle className="text-md">Product Details (Editable)</CardTitle></CardHeader><CardContent className="p-2 space-y-3">{editPOForm.getValues('details')?.map((item, index) => (<div key={item.id || item.productId} className="p-3 border rounded-md space-y-2 bg-muted/30"><h4 className="font-semibold text-sm">{editPOForm.getValues(`details.${index}.productName`)}</h4><div className="grid grid-cols-1 md:grid-cols-2 gap-3"><FormField control={editPOForm.control} name={`details.${index}.orderedQuantity`} render={({ field }) => (<FormItem><FormLabel className="text-xs">New Qty*</FormLabel><FormControl><Input type="number" {...field} className="h-8 text-sm" /></FormControl><FormMessage className="text-xs" /></FormItem>)} /><FormField control={editPOForm.control} name={`details.${index}.unitPrice`} render={({ field }) => (<FormItem><FormLabel className="text-xs">New Price*</FormLabel><FormControl><Input type="number" step="0.01" {...field} className="h-8 text-sm" /></FormControl><FormMessage className="text-xs" /></FormItem>)} /></div><FormField control={editPOForm.control} name={`details.${index}.notes`} render={({ field }) => (<FormItem><FormLabel className="text-xs">Item Notes</FormLabel><FormControl><Textarea rows={1} {...field} className="text-sm" /></FormControl><FormMessage className="text-xs" /></FormItem>)} /></div>))}</CardContent></Card><Card><CardHeader className="p-2 flex flex-row items-center justify-between"><CardTitle className="text-md">Additional Costs (Editable)</CardTitle><Button type="button" variant="outline" size="sm" onClick={() => editPOForm.setValue('additionalCosts', [...(editPOForm.getValues('additionalCosts') || []), { description: "", amount: 0, type: "other" }])}><Icons.Add className="mr-1 h-3 w-3" /> Add Cost</Button></CardHeader><CardContent className="p-2 space-y-2">{editPOForm.getValues('additionalCosts')?.map((item, index) => (<div key={index} className="p-2 border rounded-md space-y-2 bg-muted/30 relative"><Button type="button" variant="ghost" size="icon" className="absolute top-1 right-1 h-5 w-5" onClick={() => editPOForm.setValue('additionalCosts', editPOForm.getValues('additionalCosts')?.filter((_, i) => i !== index) || []) }><Icons.Delete className="h-3 w-3 text-destructive" /></Button><div className="grid grid-cols-1 md:grid-cols-3 gap-2 items-end"><FormField control={editPOForm.control} name={`additionalCosts.${index}.description`} render={({ field }) => (<FormItem><FormLabel className="text-xs">Desc*</FormLabel><FormControl><Input {...field} className="h-8 text-sm" /></FormControl><FormMessage className="text-xs" /></FormItem>)} /><FormField control={editPOForm.control} name={`additionalCosts.${index}.amount`} render={({ field }) => (<FormItem><FormLabel className="text-xs">Amount*</FormLabel><FormControl><Input type="number" step="0.01" {...field} className="h-8 text-sm" /></FormControl><FormMessage className="text-xs" /></FormItem>)} /><FormField control={editPOForm.control} name={`additionalCosts.${index}.type`} render={({ field }) => (<FormItem><FormLabel className="text-xs">Type*</FormLabel><Select onValueChange={field.onChange} value={field.value}><FormControl><SelectTrigger className="h-8 text-sm"><SelectValue placeholder="Type" /></SelectTrigger></FormControl><SelectContent>{QUOTATION_ADDITIONAL_COST_TYPES.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}</SelectContent></Select><FormMessage className="text-xs" /></FormItem>)} /></div></div>))}{editPOForm.getValues('additionalCosts')?.length === 0 && <p className="text-xs text-muted-foreground p-2">No additional costs.</p>}</CardContent></Card>{editPOForm.formState.errors.root && <p className="text-sm font-medium text-destructive">{editPOForm.formState.errors.root.message}</p>}</div><DialogFooter className="pt-4 flex-shrink-0 border-t"><DialogClose asChild><Button type="button" variant="outline">Cancel</Button></DialogClose><Button type="submit" disabled={isSubmittingEditPO}>{isSubmittingEditPO ? <Icons.Logo className="animate-spin" /> : "Save Proposal & Review"}</Button></DialogFooter></form></Form></DialogContent>
       </Dialog>
 
       <Dialog open={isReceiptDialogOpen} onOpenChange={setIsReceiptDialogOpen}>
@@ -723,41 +680,31 @@ export default function PurchaseOrderDetailPage() {
                   <Separator />
                   <h3 className="text-md font-semibold">Items to Process:</h3>
                   {receiptItemsFields.map((item, index) => {
-                    const outstandingQty = item.orderedQuantity - item.alreadyReceivedQuantity;
+                    const trulyOutstandingForThisReceipt = Math.max(0, item.orderedQuantity - (item.alreadyReceivedOkQuantity + item.alreadyReceivedDamagedQuantity + item.alreadyReceivedMissingQuantity));
                     return (
                       <Card key={item.poDetailId} className="p-3 bg-muted/30">
-                        <ReceiptItemMissingCalculator control={receiptForm.control} setValue={receiptForm.setValue} index={index} outstandingQuantity={outstandingQty} />
-                        <CardTitle className="text-base mb-2">{item.productName}</CardTitle>
-                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end mb-3">
-                          <div><FormLabel className="text-xs">Ordered</FormLabel><Input type="text" value={item.orderedQuantity} readOnly disabled className="h-8 text-sm bg-muted/50" /></div>
-                          <div><FormLabel className="text-xs">Already Received</FormLabel><Input type="text" value={item.alreadyReceivedQuantity} readOnly disabled className="h-8 text-sm bg-muted/50" /></div>
-                          <div><FormLabel className="text-xs">Outstanding</FormLabel><Input type="text" value={outstandingQty} readOnly disabled className="h-8 text-sm bg-muted/50 font-semibold" /></div>
-                        </div>
+                        <CardTitle className="text-base mb-1">{item.productName}</CardTitle>
+                        <CardDescription className="text-xs mb-3">
+                            Ordered: {item.orderedQuantity} | 
+                            Prev. OK: {item.alreadyReceivedOkQuantity} | 
+                            Prev. Damaged: {item.alreadyReceivedDamagedQuantity} | 
+                            Prev. Missing: {item.alreadyReceivedMissingQuantity} | 
+                            <span className="font-semibold"> Outstanding for this receipt: {trulyOutstandingForThisReceipt}</span>
+                        </CardDescription>
                         
-                        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 items-start">
-                            <FormField control={receiptForm.control} name={`itemsToProcess.${index}.qtyOkReceived`} render={({ field }) => (
-                                <FormItem><FormLabel className="text-xs">Qty OK Received*</FormLabel><FormControl><Input type="number" {...field} className="h-8 text-sm" min={0} /></FormControl><FormMessage className="text-xs" /></FormItem>
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-start">
+                            <FormField control={receiptForm.control} name={`itemsToProcess.${index}.qtyOkReceivedThisReceipt`} render={({ field }) => (
+                                <FormItem><FormLabel className="text-xs">Qty OK Rec'd*</FormLabel><FormControl><Input type="number" {...field} className="h-8 text-sm" min={0} /></FormControl><FormMessage className="text-xs" /></FormItem>
                             )} />
-                            <FormField control={receiptForm.control} name={`itemsToProcess.${index}.qtyDamagedReceived`} render={({ field }) => (
-                                <FormItem><FormLabel className="text-xs">Qty Damaged*</FormLabel><FormControl><Input type="number" {...field} className="h-8 text-sm" min={0} /></FormControl><FormMessage className="text-xs" /></FormItem>
+                            <FormField control={receiptForm.control} name={`itemsToProcess.${index}.qtyDamagedReceivedThisReceipt`} render={({ field }) => (
+                                <FormItem><FormLabel className="text-xs">Qty Damaged Rec'd*</FormLabel><FormControl><Input type="number" {...field} className="h-8 text-sm" min={0} /></FormControl><FormMessage className="text-xs" /></FormItem>
                             )} />
-                            <FormField control={receiptForm.control} name={`itemsToProcess.${index}.qtyOtherReceived`} render={({ field }) => (
-                                <FormItem><FormLabel className="text-xs">Qty Other Status*</FormLabel><FormControl><Input type="number" {...field} className="h-8 text-sm" min={0} /></FormControl><FormMessage className="text-xs" /></FormItem>
-                            )} />
-                             <FormField control={receiptForm.control} name={`itemsToProcess.${index}.qtyDeclaredMissing`} render={({ field }) => (
-                                <FormItem><FormLabel className="text-xs">Qty Declared Missing*</FormLabel><FormControl><Input type="number" {...field} className="h-8 text-sm bg-slate-100" readOnly /></FormControl><FormMessage className="text-xs" /></FormItem>
-                            )} />
-                        </div>
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-2 items-start">
-                             <FormField control={receiptForm.control} name={`itemsToProcess.${index}.notesForOther`} render={({ field }) => (
-                                <FormItem><FormLabel className="text-xs">Notes for "Other" Qty</FormLabel><FormControl><Textarea rows={1} {...field} className="text-sm" placeholder="Specify reason if 'Other' > 0" /></FormControl><FormMessage className="text-xs" /></FormItem>
-                            )} />
-                            <FormField control={receiptForm.control} name={`itemsToProcess.${index}.notesForMissing`} render={({ field }) => (
-                                <FormItem><FormLabel className="text-xs">Notes for Missing Items</FormLabel><FormControl><Textarea rows={1} {...field} className="text-sm" placeholder="Reason if 'Missing' > 0 (e.g. Backordered)" /></FormControl><FormMessage className="text-xs" /></FormItem>
+                            <FormField control={receiptForm.control} name={`itemsToProcess.${index}.qtyMissingReceivedThisReceipt`} render={({ field }) => (
+                                <FormItem><FormLabel className="text-xs">Qty Missing this time*</FormLabel><FormControl><Input type="number" {...field} className="h-8 text-sm" min={0} /></FormControl><FormMessage className="text-xs" /></FormItem>
                             )} />
                         </div>
                         <FormField control={receiptForm.control} name={`itemsToProcess.${index}.lineItemNotes`} render={({ field }) => (
-                            <FormItem className="mt-2"><FormLabel className="text-xs">General Item Notes</FormLabel><FormControl><Textarea rows={1} {...field} className="text-sm" placeholder="e.g., Batch number, expiry" /></FormControl><FormMessage className="text-xs" /></FormItem>
+                            <FormItem className="mt-2"><FormLabel className="text-xs">Line Item Notes (Optional)</FormLabel><FormControl><Textarea rows={1} {...field} className="text-sm" placeholder="e.g., Batch no., expiry, reason for damage/missing" /></FormControl><FormMessage className="text-xs" /></FormItem>
                         )} />
                       </Card>
                     );
@@ -827,7 +774,6 @@ export default function PurchaseOrderDetailPage() {
                     </FormItem>
                   )}
                 />
-                 {/* Future: Add conditional fields here based on selected solutionType */}
               </div>
               <DialogFooter>
                 <DialogClose asChild><Button type="button" variant="outline">Cancel</Button></DialogClose>
