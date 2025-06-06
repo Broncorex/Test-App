@@ -290,7 +290,6 @@ export const updatePurchaseOrderDetailsAndCosts = async (
     };
 
     if (!currentPOData.originalDetails && (currentPOData.status === "ChangesProposedBySupplier" || currentPOData.status === "SentToSupplier")) {
-      // Fetch existing details using regular getDocs (not within transaction for queries)
       const originalDetailsSnapshot = await getPODetails(poId);
       mainPOUpdateData.originalDetails = originalDetailsSnapshot;
       mainPOUpdateData.originalAdditionalCosts = currentPOData.additionalCosts;
@@ -395,6 +394,7 @@ export const updatePurchaseOrderStatus = async (
 export interface RecordSupplierSolutionData {
   supplierAgreedSolutionType: SupplierSolutionType;
   supplierAgreedSolutionDetails: string;
+  discountAmount?: number; // Added optional discountAmount
 }
 
 export const recordSupplierSolution = async (
@@ -436,23 +436,21 @@ export const recordSupplierSolution = async (
     }
 
     if (solutionData.supplierAgreedSolutionType === "DiscountForImperfection") {
+      if (solutionData.discountAmount === undefined || solutionData.discountAmount === null || solutionData.discountAmount <= 0) {
+        throw new Error("A positive discount amount is required for 'Discount For Imperfection' solution.");
+      }
+      const actualDiscountAmount = solutionData.discountAmount;
       const currentAdditionalCosts = currentPOData.additionalCosts || [];
-      // Placeholder for discount amount logic. 
-      // This should ideally come from solutionData or be parsed from solutionDetails.
-      const discountAmount = 10; // Placeholder value, as per prompt instructions.
-      // TODO: Replace placeholder '10' with actual discount amount derivation logic or pass it in solutionData.
-
+      
       const discountCostEntry: QuotationAdditionalCost = {
-        description: `Discount for Imperfection: ${solutionData.supplierAgreedSolutionDetails.substring(0, 100)}`, // Truncate for safety
-        amount: -Math.abs(discountAmount), 
-        type: "other", 
+        description: `Discount Applied: ${solutionData.supplierAgreedSolutionDetails.substring(0, 100)}`,
+        amount: -Math.abs(actualDiscountAmount),
+        type: "other",
       };
 
       const updatedAdditionalCosts = [...currentAdditionalCosts, discountCostEntry];
       updatePayload.additionalCosts = updatedAdditionalCosts;
 
-      // Recalculate totalAmount based on new additional costs
-      // Ensure productsSubtotal is treated as a number
       const productsSubtotalNum = Number(currentPOData.productsSubtotal) || 0;
       const newTotalAmount = productsSubtotalNum +
                              updatedAdditionalCosts.reduce((sum, cost) => sum + Number(cost.amount), 0);
@@ -463,12 +461,8 @@ export const recordSupplierSolution = async (
 
     if (newStatus === "Completed") {
       console.log(`[PO Service] Calling updateRequisitionQuantitiesPostConfirmation from recordSupplierSolution (status Completed) for PO: ${poId}`);
-      // Fetch PO details. This read is outside the main transaction for the PO doc update,
-      // but necessary to get the details for the requisition update.
-      const poDetails = await getPODetails(poId); 
+      const poDetails = await getPODetails(poId); // Fetches details outside transaction for now.
       await updateRequisitionQuantitiesPostConfirmation(currentPOData.originRequisitionId, poDetails, userId, currentPOData.status);
     }
   });
 };
-
-    

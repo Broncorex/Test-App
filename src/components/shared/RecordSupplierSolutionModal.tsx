@@ -31,20 +31,33 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { Input } from "@/components/ui/input"; // Added Input
 import { Icons } from "@/components/icons";
 import { useToast } from "@/hooks/use-toast";
 import type { PurchaseOrder, SupplierSolutionType } from "@/types";
 import { SUPPLIER_SOLUTION_TYPES } from "@/types";
 import { recordSupplierSolution, type RecordSupplierSolutionData } from "@/services/purchaseOrderService";
 
-const supplierSolutionFormSchema = z.object({
+const supplierSolutionFormSchemaBase = z.object({
   solutionType: z.enum(SUPPLIER_SOLUTION_TYPES, {
     required_error: "Supplier solution type is required.",
   }),
   solutionDetails: z.string().min(10, {
     message: "Please provide at least 10 characters of detail for the solution.",
   }),
+  discountAmount: z.coerce.number().positive({message: "Discount amount must be a positive number."}).optional(),
 });
+
+const supplierSolutionFormSchema = supplierSolutionFormSchemaBase.superRefine((data, ctx) => {
+  if (data.solutionType === "DiscountForImperfection" && (data.discountAmount === undefined || data.discountAmount === null || data.discountAmount <=0) ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Discount amount is required and must be positive for 'Discount For Imperfection'.",
+      path: ["discountAmount"],
+    });
+  }
+});
+
 
 type SupplierSolutionFormData = z.infer<typeof supplierSolutionFormSchema>;
 
@@ -53,7 +66,7 @@ interface RecordSupplierSolutionModalProps {
   onOpenChange: (isOpen: boolean) => void;
   purchaseOrder: PurchaseOrder | null;
   currentUserId: string | undefined;
-  onSolutionRecorded: () => void; // Callback to refresh PO data on parent page
+  onSolutionRecorded: () => void; 
 }
 
 export function RecordSupplierSolutionModal({
@@ -71,17 +84,27 @@ export function RecordSupplierSolutionModal({
     defaultValues: {
       solutionType: undefined,
       solutionDetails: "",
+      discountAmount: undefined,
     },
   });
+
+  const watchedSolutionType = form.watch("solutionType");
 
   useEffect(() => {
     if (isOpen && purchaseOrder) {
       form.reset({
         solutionType: purchaseOrder.supplierAgreedSolutionType || undefined,
         solutionDetails: purchaseOrder.supplierAgreedSolutionDetails || "",
+        // discountAmount will be reset/set based on previous values if we store it on PO,
+        // or remain undefined for a new entry. For now, it's cleared.
+        discountAmount: undefined, 
       });
     }
-  }, [isOpen, purchaseOrder, form]);
+     if (watchedSolutionType !== "DiscountForImperfection") {
+      form.setValue("discountAmount", undefined); // Clear discount if type changes
+      form.clearErrors("discountAmount");
+    }
+  }, [isOpen, purchaseOrder, form, watchedSolutionType]);
 
   async function onSubmit(data: SupplierSolutionFormData) {
     if (!purchaseOrder || !currentUserId) {
@@ -98,14 +121,17 @@ export function RecordSupplierSolutionModal({
         supplierAgreedSolutionType: data.solutionType,
         supplierAgreedSolutionDetails: data.solutionDetails,
       };
-      // Stage 2 will modify this service function
+      if (data.solutionType === "DiscountForImperfection" && data.discountAmount) {
+        payload.discountAmount = data.discountAmount;
+      }
+
       await recordSupplierSolution(purchaseOrder.id, payload, currentUserId);
       toast({
         title: "Supplier Solution Recorded",
         description: `Solution '${data.solutionType}' has been recorded.`,
       });
-      onOpenChange(false); // Close modal on success
-      onSolutionRecorded(); // Trigger data refresh on parent
+      onOpenChange(false); 
+      onSolutionRecorded(); 
     } catch (error: any) {
       console.error("Error recording supplier solution:", error);
       toast({
@@ -160,6 +186,26 @@ export function RecordSupplierSolutionModal({
                   </FormItem>
                 )}
               />
+              {watchedSolutionType === "DiscountForImperfection" && (
+                <FormField
+                  control={form.control}
+                  name="discountAmount"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Discount Amount ($) *</FormLabel>
+                      <FormControl>
+                        <Input
+                          type="number"
+                          placeholder="e.g., 50.00"
+                          {...field}
+                          onChange={event => field.onChange(+event.target.value)} // Ensure value is number
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              )}
               <FormField
                 control={form.control}
                 name="solutionDetails"

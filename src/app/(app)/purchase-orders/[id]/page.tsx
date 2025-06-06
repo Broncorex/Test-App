@@ -37,6 +37,7 @@ import { db } from "@/lib/firebase";
 import { updateRequisitionQuantitiesPostConfirmation, handleRequisitionUpdateForPOCancellation } from "@/services/requisitionService";
 import { RecordSupplierSolutionModal } from "@/components/shared/RecordSupplierSolutionModal";
 import { format, isValid } from "date-fns";
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion"; // Added
 
 
 const poDetailItemSchema = z.object({
@@ -135,7 +136,7 @@ export default function PurchaseOrderDetailPage() {
   const [isSubmittingReceipt, setIsSubmittingReceipt] = useState(false);
 
   const [isSupplierSolutionDialogOpen, setIsSupplierSolutionDialogOpen] = useState(false);
-  const [isSubmittingSolution, setIsSubmittingSolution] = useState(false); // For the new modal
+  const [isSubmittingSolution, setIsSubmittingSolution] = useState(false);
   const [isAcceptOriginalConfirmOpen, setIsAcceptOriginalConfirmOpen] = useState(false);
 
 
@@ -282,11 +283,10 @@ export default function PurchaseOrderDetailPage() {
       await runTransaction(db, async (transaction) => {
         const poRef = firestoreDoc(db, "purchaseOrders", purchaseOrderId);
         
-        // Fetch existing detail document references BEFORE transaction writes
         const detailsCollectionRef = firestoreCollection(db, "purchaseOrders", purchaseOrderId, "details");
         const currentDetailsSnapshot = await firestoreGetDocs(firestoreQuery(detailsCollectionRef)); 
 
-        const poSnap = await transaction.get(poRef); // Read main PO doc within transaction
+        const poSnap = await transaction.get(poRef); 
 
         if (!poSnap.exists()) {
           throw new Error("Purchase Order not found during transaction.");
@@ -314,13 +314,13 @@ export default function PurchaseOrderDetailPage() {
         transaction.update(poRef, updateDataForMainPO);
 
         currentDetailsSnapshot.forEach(docSnap => {
-          transaction.delete(docSnap.ref); // Delete old details
+          transaction.delete(docSnap.ref); 
         });
 
         for (const originalDetailItem of currentPODataFromSnap.originalDetails) {
-          const { id: oldDocId, ...detailDataToSet } = originalDetailItem; // Exclude old ID if present
-          const newDetailRef = firestoreDoc(detailsCollectionRef); // Generate new ID for new detail doc
-          transaction.set(newDetailRef, detailDataToSet); // Add new detail
+          const { id: oldDocId, ...detailDataToSet } = originalDetailItem; 
+          const newDetailRef = firestoreDoc(detailsCollectionRef); 
+          transaction.set(newDetailRef, detailDataToSet); 
         }
       });
 
@@ -448,9 +448,8 @@ export default function PurchaseOrderDetailPage() {
     else if (typeof timestamp === 'string') date = new Date(timestamp); 
     else return "Invalid Date Object";
     
-    if (!isValid(date)) { // Check if date is valid after conversion
+    if (!isValid(date)) { 
         try {
-            // Attempt to parse if it's an ISO string that new Date() might misinterpret
             const parsed = new Date(Date.parse(String(timestamp)));
             if (isValid(parsed)) date = parsed;
             else return "Invalid Date String";
@@ -511,7 +510,8 @@ export default function PurchaseOrderDetailPage() {
   const showAcceptOriginalPOButton = canManagePO && poStatus === "PendingInternalReview" && purchaseOrder.originalDetails && purchaseOrder.originalDetails.length > 0;
   
   const showRecordReceipt = canManagePO && (poStatus === "ConfirmedBySupplier" || poStatus === "PartiallyDelivered" || poStatus === "AwaitingFutureDelivery");
-  const showRecordSupplierSolutionButton = canManagePO && poStatus === "PartiallyDelivered"; 
+  const showRecordSupplierSolutionButton = canManagePO && (poStatus === "PartiallyDelivered" || poStatus === "ChangesProposedBySupplier" || poStatus === "PendingInternalReview");
+
 
   const showCancelPO = canManagePO && !["FullyReceived", "Completed", "Canceled", "RejectedBySupplier", "PartiallyDelivered", "AwaitingFutureDelivery"].includes(poStatus);
 
@@ -544,7 +544,9 @@ export default function PurchaseOrderDetailPage() {
                 <TableRow key={index}>
                     <TableCell>{cost.description}</TableCell>
                     <TableCell>{cost.type}</TableCell>
-                    <TableCell className="text-right">${Number(cost.amount).toFixed(2)}</TableCell>
+                    <TableCell className={cn("text-right", cost.amount < 0 && "text-destructive")}>
+                      {cost.amount < 0 ? `-$${Math.abs(cost.amount).toFixed(2)}` : `$${Number(cost.amount).toFixed(2)}`}
+                    </TableCell>
                 </TableRow>
             )) : <TableRow><TableCell colSpan={3} className="text-center text-muted-foreground">No additional costs</TableCell></TableRow>}
         </TableBody>
@@ -728,17 +730,34 @@ export default function PurchaseOrderDetailPage() {
             
             <Separator />
             <div className="flex justify-between"><span className="text-muted-foreground">Products Subtotal:</span><span className="font-medium">${Number(purchaseOrder.productsSubtotal || 0).toFixed(2)}</span></div>
-            {purchaseOrder.additionalCosts && purchaseOrder.additionalCosts.length > 0 && (
-               <>
-                 <p className="text-xs font-semibold text-muted-foreground">Additional Costs:</p>
-                 {purchaseOrder.additionalCosts.map((cost, index) => (
-                   <div key={index} className="flex justify-between pl-2 text-xs">
-                     <span>{cost.description} ({cost.type})</span>
-                     <span className="font-medium">${Number(cost.amount).toFixed(2)}</span>
-                   </div>
-                 ))}
-               </>
+            
+            {(purchaseOrder.additionalCosts && purchaseOrder.additionalCosts.length > 0) ? (
+              <Accordion type="single" collapsible className="w-full -my-2">
+                <AccordionItem value="additional-costs" className="border-b-0">
+                  <AccordionTrigger className="py-2 hover:no-underline text-xs">
+                    <div className="flex justify-between w-full">
+                      <span className="text-muted-foreground">Additional Costs:</span>
+                      <span className="font-medium">${purchaseOrder.additionalCosts.reduce((sum, cost) => sum + Number(cost.amount), 0).toFixed(2)}</span>
+                    </div>
+                  </AccordionTrigger>
+                  <AccordionContent className="pt-1 pb-2 pl-2 text-xs">
+                    <ul className="space-y-0.5">
+                      {purchaseOrder.additionalCosts.map((cost, index) => (
+                        <li key={index} className="flex justify-between items-center">
+                          <span>{cost.description} ({cost.type})</span>
+                          <span className={cn("font-medium", cost.amount < 0 && "text-destructive")}>
+                            {cost.amount < 0 ? `-$${Math.abs(cost.amount).toFixed(2)}` : `$${Number(cost.amount).toFixed(2)}`}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </AccordionContent>
+                </AccordionItem>
+              </Accordion>
+            ) : (
+              <div className="flex justify-between"><span className="text-muted-foreground">Additional Costs:</span><span className="font-medium">$0.00</span></div>
             )}
+
             <div className="flex justify-between text-md font-semibold pt-1"><span className="text-muted-foreground">Total PO Amount:</span><span>${Number(purchaseOrder.totalAmount || 0).toFixed(2)}</span></div>
             <Separator />
             
@@ -1003,4 +1022,3 @@ export default function PurchaseOrderDetailPage() {
     </>
   );
 }
-
