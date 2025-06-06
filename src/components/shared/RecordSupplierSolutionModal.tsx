@@ -1,4 +1,3 @@
-
 "use client";
 
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -31,33 +30,36 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { Input } from "@/components/ui/input"; // Added Input
+import { Input } from "@/components/ui/input";
 import { Icons } from "@/components/icons";
 import { useToast } from "@/hooks/use-toast";
 import type { PurchaseOrder, SupplierSolutionType } from "@/types";
 import { SUPPLIER_SOLUTION_TYPES } from "@/types";
 import { recordSupplierSolution, type RecordSupplierSolutionData } from "@/services/purchaseOrderService";
 
-const supplierSolutionFormSchemaBase = z.object({
+const supplierSolutionFormSchema = z.object({
   solutionType: z.enum(SUPPLIER_SOLUTION_TYPES, {
     required_error: "Supplier solution type is required.",
   }),
   solutionDetails: z.string().min(10, {
     message: "Please provide at least 10 characters of detail for the solution.",
   }),
-  discountAmount: z.coerce.number().positive({message: "Discount amount must be a positive number."}).optional(),
-});
-
-const supplierSolutionFormSchema = supplierSolutionFormSchemaBase.superRefine((data, ctx) => {
-  if (data.solutionType === "DiscountForImperfection" && (data.discountAmount === undefined || data.discountAmount === null || data.discountAmount <=0) ) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "Discount amount is required and must be positive for 'Discount For Imperfection'.",
-      path: ["discountAmount"],
-    });
+  discountAmount: z.union([
+    z.number().positive({message: "Discount amount must be a positive number."}),
+    z.string().transform((val) => val === "" ? undefined : parseFloat(val)),
+    z.undefined()
+  ]).optional(),
+}).superRefine((data, ctx) => {
+  if (data.solutionType === "DiscountForImperfection") {
+    if (data.discountAmount === undefined || data.discountAmount === null || data.discountAmount <= 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Discount amount is required and must be positive for 'Discount For Imperfection'.",
+        path: ["discountAmount"],
+      });
+    }
   }
 });
-
 
 type SupplierSolutionFormData = z.infer<typeof supplierSolutionFormSchema>;
 
@@ -95,16 +97,17 @@ export function RecordSupplierSolutionModal({
       form.reset({
         solutionType: purchaseOrder.supplierAgreedSolutionType || undefined,
         solutionDetails: purchaseOrder.supplierAgreedSolutionDetails || "",
-        // discountAmount will be reset/set based on previous values if we store it on PO,
-        // or remain undefined for a new entry. For now, it's cleared.
-        discountAmount: undefined, // Or retrieve from PO if you decide to store initial proposed discount
+        discountAmount: undefined,
       });
     }
-     if (watchedSolutionType !== "DiscountForImperfection") {
-      form.setValue("discountAmount", undefined); // Clear discount if type changes
+  }, [isOpen, purchaseOrder, form]);
+
+  useEffect(() => {
+    if (watchedSolutionType !== "DiscountForImperfection") {
+      form.setValue("discountAmount", undefined);
       form.clearErrors("discountAmount");
     }
-  }, [isOpen, purchaseOrder, form, watchedSolutionType]);
+  }, [watchedSolutionType, form]);
 
   async function onSubmit(data: SupplierSolutionFormData) {
     if (!purchaseOrder || !currentUserId) {
@@ -166,7 +169,6 @@ export function RecordSupplierSolutionModal({
                     <FormLabel>Solution Type *</FormLabel>
                     <Select
                       onValueChange={field.onChange}
-                      defaultValue={field.value}
                       value={field.value}
                     >
                       <FormControl>
@@ -197,11 +199,22 @@ export function RecordSupplierSolutionModal({
                         <Input
                           type="number"
                           placeholder="e.g., 50.00"
-                          step="0.01" // Allow decimal input
-                          {...field}
-                          // value is already handled by react-hook-form
-                          // onChange can be simplified or rely on RHF's default coercion
-                          onChange={event => field.onChange(parseFloat(event.target.value) || undefined)}
+                          step="0.01"
+                          value={field.value || ""}
+                          onChange={(e) => {
+                            const value = e.target.value;
+                            if (value === "") {
+                              field.onChange(undefined);
+                            } else {
+                              const numValue = parseFloat(value);
+                              if (!isNaN(numValue)) {
+                                field.onChange(numValue);
+                              }
+                            }
+                          }}
+                          onBlur={field.onBlur}
+                          name={field.name}
+                          ref={field.ref}
                         />
                       </FormControl>
                       <FormMessage />
