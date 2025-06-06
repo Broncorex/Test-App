@@ -30,7 +30,7 @@ import type {
   UserRole,
   PurchaseOrder as FullPurchaseOrder,
   PurchaseOrderDetail as FullPurchaseOrderDetail,
-  PurchaseOrderStatus, // Import PurchaseOrderStatus
+  PurchaseOrderStatus, 
 } from "@/types";
 import { getUserById } from "./userService";
 import type { SelectedOfferInfo } from "@/app/(app)/requisitions/[id]/compare-quotations/page";
@@ -261,12 +261,13 @@ export const processAndFinalizeAwards = async (
       console.log(`[RequisitionService] Fetched requisition ${requisitionId} within transaction. Status: ${requisitionData.status}`);
 
       const requiredProductsColRef = collection(db, `requisitions/${requisitionId}/requiredProducts`);
-      const requiredProductsSnapshot = await getDocs(requiredProductsColRef);
+      // Fetching requiredProducts outside transaction for IDs, then get each doc inside transaction
+      const initialRequiredProductsSnapshot = await getDocs(requiredProductsColRef);
       
       const requiredProductsMap = new Map<string, { ref: any, data: RequisitionRequiredProduct }>();
-      for (const docSnap of requiredProductsSnapshot.docs) {
+      for (const docSnap of initialRequiredProductsSnapshot.docs) {
         const reqProdDocRef = doc(db, `requisitions/${requisitionId}/requiredProducts`, docSnap.id);
-        const transactionDocSnap = await transaction.get(reqProdDocRef);
+        const transactionDocSnap = await transaction.get(reqProdDocRef); // Read within transaction
         
         if (transactionDocSnap.exists()) {
           const data = transactionDocSnap.data() as RequisitionRequiredProduct;
@@ -321,58 +322,44 @@ export const processAndFinalizeAwards = async (
 };
 
 export const updateRequisitionQuantitiesPostConfirmation = async (
-  purchaseOrderId: string,
+  requisitionId: string,
+  poDetailsToProcess: FullPurchaseOrderDetail[],
   userId: string,
-  confirmedPODetails?: FullPurchaseOrderDetail[],
-  isFinalCompletion?: boolean
+  poOriginalStatus?: PurchaseOrderStatus
 ): Promise<{ success: boolean; message?: string }> => {
-  console.log(`[RequisitionService] Starting updateRequisitionQuantitiesPostConfirmation for PO ID: ${purchaseOrderId}. User: ${userId}`);
+  console.log(`[RequisitionService] Starting updateRequisitionQuantitiesPostConfirmation for Requisition ID: ${requisitionId}. User: ${userId}. PO Original Status: ${poOriginalStatus}`);
 
   try {
-    const poFromDb = await getPurchaseOrderById(purchaseOrderId);
-    if (!poFromDb) { // Removed !poFromDb.details check here as details are passed or re-fetched
-      throw new Error(`Purchase Order ${purchaseOrderId} not found.`);
-    }
-    
-    const originRequisitionId = poFromDb.originRequisitionId;
-    const poDetailsToProcess = confirmedPODetails || await getRequiredProductsForRequisition(originRequisitionId); // Fallback, though confirmedPODetails should be primary
-
-    if (!poDetailsToProcess || poDetailsToProcess.length === 0) {
-        console.warn(`[RequisitionService] No PO details found or passed for PO ${purchaseOrderId} during post-confirmation update. Cannot update requisition quantities.`);
-        return { success: true, message: "No PO details to process for requisition update." };
-    }
-
     await runTransaction(db, async (transaction) => {
-      const requisitionRef = doc(db, "requisitions", originRequisitionId);
+      const requisitionRef = doc(db, "requisitions", requisitionId);
       const requisitionSnap = await transaction.get(requisitionRef);
       
       if (!requisitionSnap.exists()) {
-        throw new Error(`Origin Requisition ${originRequisitionId} not found for PO ${poFromDb.id}.`);
+        throw new Error(`Requisition ${requisitionId} not found.`);
       }
-      
       const requisitionData = requisitionSnap.data() as Requisition;
 
-      const requiredProductsColRef = collection(db, `requisitions/${originRequisitionId}/requiredProducts`);
-      const requiredProductsSnapshot = await getDocs(requiredProductsColRef); 
+      const requiredProductsColRef = collection(db, `requisitions/${requisitionId}/requiredProducts`);
+      // Fetching requiredProducts outside transaction for IDs, then get each doc inside transaction
+      const initialRequiredProductsSnapshot = await getDocs(requiredProductsColRef); 
       
       const requiredProductsMap = new Map<string, { ref: any, data: RequisitionRequiredProduct }>();
-      for (const docSnap of requiredProductsSnapshot.docs) {
-        const reqProdDocRef = doc(db, `requisitions/${originRequisitionId}/requiredProducts`, docSnap.id);
-        const transactionDocSnap = await transaction.get(reqProdDocRef);
+      for (const docSnap of initialRequiredProductsSnapshot.docs) {
+        const reqProdDocRef = doc(db, `requisitions/${requisitionId}/requiredProducts`, docSnap.id);
+        const transactionDocSnap = await transaction.get(reqProdDocRef); // Read within transaction
         if (transactionDocSnap.exists()) {
           const data = transactionDocSnap.data() as RequisitionRequiredProduct;
           requiredProductsMap.set(data.productId, { ref: reqProdDocRef, data });
         }
       }
 
-      let allReqItemsNowFullyPurchasedOrExceeded = true;
-
       for (const poDetail of poDetailsToProcess) {
         const reqProdInfo = requiredProductsMap.get(poDetail.productId);
 
         if (reqProdInfo) {
           const currentReqProdData = reqProdInfo.data;
-          const newPurchasedQty = (currentReqProdData.purchasedQuantity || 0) + poDetail.orderedQuantity;
+          
+          const newPurchasedQty = (currentReqProdData.purchasedQuantity || 0) + (poDetail.receivedQuantity || 0);
           const newPendingPOQuantity = Math.max(0, (currentReqProdData.pendingPOQuantity || 0) - poDetail.orderedQuantity);
 
           transaction.update(reqProdInfo.ref, {
@@ -380,41 +367,46 @@ export const updateRequisitionQuantitiesPostConfirmation = async (
             pendingPOQuantity: newPendingPOQuantity
           });
           
-          console.log(`[RequisitionService] Updated ReqProduct (ProdID: ${currentReqProdData.productId}): purchasedQty to ${newPurchasedQty}, pendingPOQuantity to ${newPendingPOQuantity}`);
+          console.log(`[RequisitionService] ProdID: ${poDetail.productId} (Requisition: ${requisitionId}) - Updated purchasedQty to ${newPurchasedQty} (added ${poDetail.receivedQuantity || 0}), pendingPOQty to ${newPendingPOQuantity} (subtracted ${poDetail.orderedQuantity}). PO Item ordered: ${poDetail.orderedQuantity}, received OK: ${poDetail.receivedQuantity || 0}.`);
           
+          // Update the local map for the completion check later
           reqProdInfo.data.purchasedQuantity = newPurchasedQty;
           reqProdInfo.data.pendingPOQuantity = newPendingPOQuantity;
-
-          if (newPurchasedQty < currentReqProdData.requiredQuantity) {
-            allReqItemsNowFullyPurchasedOrExceeded = false;
-          }
         } else {
-          console.warn(`[RequisitionService] Product ${poDetail.productId} from confirmed PO ${poFromDb.id} not found in original requisition's required products list.`);
+          console.warn(`[RequisitionService] Product ${poDetail.productId} from PO not found in requisition ${requisitionId} required products during post-confirmation update.`);
+        }
+      }
+      
+      let allReqItemsNowFullySatisfied = true;
+      for (const reqProdEntry of requiredProductsMap.values()) {
+        if ((reqProdEntry.data.purchasedQuantity || 0) < reqProdEntry.data.requiredQuantity) {
+          allReqItemsNowFullySatisfied = false;
+          break;
         }
       }
       
       let newRequisitionStatus = requisitionData.status;
-      if (allReqItemsNowFullyPurchasedOrExceeded && (requisitionData.status === "PO in Progress" || requisitionData.status === "Quoted")) {
-        if (isFinalCompletion || poFromDb.status === "Completed" || poFromDb.status === "FullyReceived") {
-          newRequisitionStatus = "Completed";
+      if (allReqItemsNowFullySatisfied) {
+        if (requisitionData.status === "PO in Progress" || requisitionData.status === "Quoted" || requisitionData.status === "Pending Quotation") {
+             newRequisitionStatus = "Completed";
         }
-        // If not final completion, but all items are purchased, it could remain "PO in Progress" until all POs are done.
-        // The logic for "Completed" requisition might need more holistic check across all its POs if one PO confirmation doesn't mean full requisition completion.
       }
-
+      // If not all items are satisfied, the status might remain "PO in Progress" or "Quoted".
+      // If PO was already 'Completed' or 'Canceled', Requisition status might not change further by this function alone.
 
       if (newRequisitionStatus !== requisitionData.status) {
         transaction.update(requisitionRef, { status: newRequisitionStatus, updatedAt: Timestamp.now() });
-        console.log(`[RequisitionService] Requisition ${originRequisitionId} status updated to ${newRequisitionStatus}.`);
+        console.log(`[RequisitionService] Requisition ${requisitionId} status updated to ${newRequisitionStatus}.`);
       } else {
+        // Even if status doesn't change, update the timestamp
         transaction.update(requisitionRef, { updatedAt: Timestamp.now() });
       }
     });
 
-    console.log(`[RequisitionService] Successfully updated requisition state for PO ${purchaseOrderId} confirmation.`);
-    return { success: true, message: "Requisition updated successfully after PO confirmation." };
+    console.log(`[RequisitionService] Successfully updated requisition state for Requisition ID: ${requisitionId} after PO confirmation/completion.`);
+    return { success: true, message: "Requisition updated successfully." };
   } catch (error: any) {
-    console.error(`[RequisitionService] Error updating requisition state after PO confirmation for PO ${purchaseOrderId}:`, error);
+    console.error(`[RequisitionService] Error updating requisition state for Requisition ID: ${requisitionId}:`, error);
     return { success: false, message: error.message || "Failed to update requisition state." };
   }
 };
@@ -433,21 +425,29 @@ export const handleRequisitionUpdateForPOCancellation = async (
   }
 
   try {
-    const requiredProductsColRef = collection(db, `requisitions/${requisitionId}/requiredProducts`);
-    const requiredProductsSnapshot = await getDocs(requiredProductsColRef);
-
     await runTransaction(db, async (transaction) => {
       const requisitionRef = doc(db, "requisitions", requisitionId);
+      const requisitionSnap = await transaction.get(requisitionRef);
+      if (!requisitionSnap.exists()) {
+        throw new Error(`Requisition ${requisitionId} not found during PO cancellation handling.`);
+      }
+      const requisitionData = requisitionSnap.data() as Requisition;
+
+      const requiredProductsColRef = collection(db, `requisitions/${requisitionId}/requiredProducts`);
+      // Fetching requiredProducts outside transaction for IDs, then get each doc inside transaction
+      const initialRequiredProductsSnapshot = await getDocs(requiredProductsColRef);
       
       const requiredProductsMap = new Map<string, { ref: any, data: RequisitionRequiredProduct }>();
-      for (const docSnap of requiredProductsSnapshot.docs) {
+      for (const docSnap of initialRequiredProductsSnapshot.docs) {
         const reqProdDocRef = doc(db, `requisitions/${requisitionId}/requiredProducts`, docSnap.id);
-        const transactionDocSnap = await transaction.get(reqProdDocRef);
+        const transactionDocSnap = await transaction.get(reqProdDocRef); // Read within transaction
         if (transactionDocSnap.exists()) {
           const data = transactionDocSnap.data() as RequisitionRequiredProduct;
           requiredProductsMap.set(data.productId, { ref: reqProdDocRef, data });
         }
       }
+
+      let anyPendingQtyIncreased = false;
 
       for (const poDetail of canceledPODetails) {
         const reqProdInfo = requiredProductsMap.get(poDetail.productId);
@@ -456,13 +456,77 @@ export const handleRequisitionUpdateForPOCancellation = async (
           const currentReqProdData = reqProdInfo.data;
           let updatePayload: Partial<RequisitionRequiredProduct> = {};
 
-          if (poStatusBeforeCancellation === "ConfirmedBySupplier") {
-            updatePayload.purchasedQuantity = Math.max(0, (currentReqProdData.purchasedQuantity || 0) - poDetail.orderedQuantity);
-            updatePayload.pendingPOQuantity = (currentReqProdData.pendingPOQuantity || 0) + poDetail.orderedQuantity; 
-            console.log(`[RequisitionService] For POCancel (was Confirmed): Product ${poDetail.productId} - purchasedQty to ${updatePayload.purchasedQuantity}, pendingPOQty to ${updatePayload.pendingPOQuantity}`);
-          } else {
-            updatePayload.pendingPOQuantity = Math.max(0, (currentReqProdData.pendingPOQuantity || 0) - poDetail.orderedQuantity);
-            console.log(`[RequisitionService] For POCancel (was not Confirmed): Product ${poDetail.productId} - pendingPOQty to ${updatePayload.pendingPOQuantity}`);
+          // If the PO was confirmed (meaning its quantities were considered 'ordered' and moved from pending to purchased for the requisition)
+          // then cancellation should revert 'purchasedQuantity' (by received amount if it's complex, or ordered if simpler)
+          // and potentially re-add to 'pendingPOQuantity' if the need still exists.
+          // However, the prompt for Stage 3 primarily focuses on the flow *towards* completion.
+          // The current logic is: if PO was 'ConfirmedBySupplier', it implies items were expected.
+          // If cancelled *after* being 'ConfirmedBySupplier' or 'Completed' (by solution), we reduce purchased and restore pending.
+          // If cancelled *before* 'ConfirmedBySupplier', we just reduce pending.
+
+          if (poStatusBeforeCancellation === "ConfirmedBySupplier" || poStatusBeforeCancellation === "Completed" || poStatusBeforeCancellation === "FullyReceived" || poStatusBeforeCancellation === "AwaitingFutureDelivery" || poStatusBeforeCancellation === "PartiallyDelivered") {
+            // This PO's quantities were effectively committed or partially received.
+            // Reverting purchasedQuantity by what was *actually received and OK* from this PO item makes most sense.
+            // And restoring the *ordered* quantity to pending if it was a cancellation of future expected items.
+            // The problem is, at cancellation, we might not know how much was received *from this specific PO* if it was part of multiple.
+            // Simpler: When a confirmed/completed PO is CANCELED, we reduce the `purchasedQuantity` by the amount this PO contributed (its `orderedQuantity`)
+            // and add back the `orderedQuantity` to `pendingPOQuantity` because these items are now needed again from *somewhere*.
+            // This assumes the "purchased" state was incremented by "ordered" quantity when PO was confirmed.
+            // If "purchased" was incremented by "received" quantity, this logic needs refinement.
+            // The current implementation of updateRequisitionQuantitiesPostConfirmation updates purchased by `poDetail.receivedQuantity`.
+
+            // For simplicity of reversal, if a PO is Canceled:
+            // 1. Reduce pendingPOQuantity by its orderedQuantity (this was done when PO was created).
+            // 2. If PO was Confirmed/Completed:
+            //    - purchasedQuantity was increased by receivedQuantity from this PO.
+            //    - pendingPOQuantity was decreased by orderedQuantity from this PO.
+            // If this PO is Canceled:
+            //    - We should decrease purchasedQuantity by what this PO contributed (its receivedQuantity).
+            //    - We should increase pendingPOQuantity by the remaining unfulfilled orderedQuantity of this PO (ordered - received).
+            // This is getting complex. Let's stick to the logic from the service file.
+            
+            // Logic from existing `handleRequisitionUpdateForPOCancellation`:
+            // If PO was ConfirmedBySupplier: it means `pendingPOQuantity` was already reduced by `orderedQuantity`,
+            // and `purchasedQuantity` might have been increased (by `receivedQuantity` as per `updateRequisitionQuantitiesPostConfirmation`).
+            // Now, if it's CANCELED:
+            // - `purchasedQuantity` should be reduced by `poDetail.receivedQuantity` (what this PO actually contributed to "purchased").
+            // - `pendingPOQuantity` should be *increased* by `poDetail.orderedQuantity - poDetail.receivedQuantity` (the amount that was ordered but now won't come from this PO).
+
+            // Let's simplify for the direct instruction: if the PO was `ConfirmedBySupplier` (or similar active states)
+            // and now it's `Canceled`, it implies items that were thought to be secured are no longer.
+            // So, we revert the `pendingPOQuantity` reduction and potentially adjust `purchasedQuantity`.
+
+            // Current code's logic: if 'ConfirmedBySupplier', revert `purchasedQuantity` by `orderedQuantity` and add `orderedQuantity` to `pending`.
+            // This assumes `purchasedQuantity` was incremented by `orderedQuantity`.
+            // But `updateRequisitionQuantitiesPostConfirmation` increments `purchasedQuantity` by `receivedQuantity`.
+            // This is a mismatch.
+
+            // Let's follow the Stage 3 guidance: "decrease its pendingPOQuantity ... subtract poDetail.orderedQuantity" for completion.
+            // For cancellation, the reverse would be to *increase* pendingPOQuantity by `poDetail.orderedQuantity` if those items are now needed again.
+            // And decrease `purchasedQuantity` by `poDetail.receivedQuantity` if items were received then PO was retroactively cancelled.
+
+            // Re-evaluating for cancellation of a PO that *was* considered confirmed/affecting requisition:
+            // `pendingPOQuantity` should increase by `(poDetail.orderedQuantity - (poDetail.receivedQuantity || 0) - (poDetail.receivedDamagedQuantity || 0) - (poDetail.receivedMissingQuantity || 0))`
+            // This is the *net outstanding amount* from this PO that is now being canceled.
+            // `purchasedQuantity` should decrease by `(poDetail.receivedQuantity || 0)`.
+
+            const netOutstandingFromThisPO = poDetail.orderedQuantity - 
+                                             (poDetail.receivedQuantity || 0) - 
+                                             (poDetail.receivedDamagedQuantity || 0) -
+                                             (poDetail.receivedMissingQuantity || 0);
+
+            if (poStatusBeforeCancellation === "ConfirmedBySupplier" || poStatusBeforeCancellation === "Completed" || poStatusBeforeCancellation === "FullyReceived" || poStatusBeforeCancellation === "PartiallyDelivered" || poStatusBeforeCancellation === "AwaitingFutureDelivery") {
+                updatePayload.purchasedQuantity = Math.max(0, (currentReqProdData.purchasedQuantity || 0) - (poDetail.receivedQuantity || 0));
+                updatePayload.pendingPOQuantity = (currentReqProdData.pendingPOQuantity || 0) + Math.max(0, netOutstandingFromThisPO);
+                 anyPendingQtyIncreased = true;
+            } else { // PO was canceled before it was 'ConfirmedBySupplier' or further (e.g. from Pending, SentToSupplier)
+                // In this case, pendingPOQuantity was increased when the PO was created. Now it should be decreased.
+                updatePayload.pendingPOQuantity = Math.max(0, (currentReqProdData.pendingPOQuantity || 0) - poDetail.orderedQuantity);
+            }
+            console.log(`[RequisitionService] For POCancel (ProdID: ${poDetail.productId}): PO old status ${poStatusBeforeCancellation}. Updated purchasedQty to ${updatePayload.purchasedQuantity}, pendingPOQty to ${updatePayload.pendingPOQuantity}`);
+          } else { // PO was canceled *before* confirmation or any active processing.
+             updatePayload.pendingPOQuantity = Math.max(0, (currentReqProdData.pendingPOQuantity || 0) - poDetail.orderedQuantity);
+             console.log(`[RequisitionService] For POCancel (ProdID: ${poDetail.productId}): PO was not confirmed. Reverted pendingPOQty by ${poDetail.orderedQuantity} to ${updatePayload.pendingPOQuantity}`);
           }
           transaction.update(reqProdInfo.ref, updatePayload);
         } else {
@@ -470,25 +534,23 @@ export const handleRequisitionUpdateForPOCancellation = async (
         }
       }
       
-      // Potentially revert Requisition status if it became "PO in Progress" or "Completed"
-      // This part needs careful consideration based on overall business logic for Requisition statuses.
-      // For now, just updating the timestamp. A more sophisticated status revert might be needed.
-      const reqSnap = await transaction.get(requisitionRef);
-      if (reqSnap.exists()) {
-          const currentReqData = reqSnap.data() as Requisition;
-          if (poStatusBeforeCancellation === "ConfirmedBySupplier" && currentReqData.status === "Completed") {
-            // If the req was completed solely due to this PO, maybe revert to "PO in Progress" or "Quoted"
-            // For simplicity now, we just update timestamp. Complex status revert needs more rules.
-             console.log(`[RequisitionService] PO was ConfirmedBySupplier and now Canceled. Requisition status is ${currentReqData.status}. Manual review might be needed for Requisition status.`);
-          } else if ((poStatusBeforeCancellation === "Pending" || poStatusBeforeCancellation === "SentToSupplier" || poStatusBeforeCancellation === "ChangesProposedBySupplier" || poStatusBeforeCancellation === "PendingInternalReview") && currentReqData.status === "PO in Progress") {
-            // If PO was canceled before confirmation and Requisition was 'PO in Progress',
-            // check if any other POs are still in progress. If not, revert to 'Quoted'.
-            // This is complex and needs to query other POs for this requisition.
-            // For now, just log.
-            console.log(`[RequisitionService] Pre-confirmation PO canceled. Requisition status is ${currentReqData.status}. Further logic might be needed to revert to 'Quoted' if no other POs are active.`);
-          }
+      let newRequisitionStatus = requisitionData.status;
+      if (anyPendingQtyIncreased && (requisitionData.status === "Completed" || requisitionData.status === "PO in Progress")) {
+          // If pending quantities increased due to cancellation, the requisition might no longer be 'Completed' or 'PO in Progress'
+          // and might need to revert to 'Quoted' or 'Pending Quotation' if no other POs cover the need.
+          // This check is complex as it requires knowing the state of *other* POs for this requisition.
+          // For now, if pending quantities increase and it was completed, set it back to "PO in Progress" or "Quoted"
+          // to signify it needs attention. "Quoted" is safer if we are unsure.
+          newRequisitionStatus = "Quoted"; 
+          console.log(`[RequisitionService] PO Cancellation resulted in increased pending need. Requisition ${requisitionId} status changed to ${newRequisitionStatus}.`);
       }
-      transaction.update(requisitionRef, { updatedAt: Timestamp.now() });
+
+
+      if (newRequisitionStatus !== requisitionData.status) {
+        transaction.update(requisitionRef, { status: newRequisitionStatus, updatedAt: Timestamp.now() });
+      } else {
+        transaction.update(requisitionRef, { updatedAt: Timestamp.now() });
+      }
     });
     
     console.log(`[RequisitionService] Successfully updated quantities for requisition ${requisitionId} due to PO cancellation/rejection.`);
@@ -497,5 +559,3 @@ export const handleRequisitionUpdateForPOCancellation = async (
     throw error; 
   }
 };
-
-    
