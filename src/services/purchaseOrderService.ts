@@ -17,7 +17,7 @@ import {
   runTransaction,
   deleteDoc,
   deleteField, 
-  collectionGroup, // Added for completeness, though not strictly used in this specific path
+  collectionGroup,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import type {
@@ -34,7 +34,7 @@ import { getUserById } from "./userService";
 import { getProductById } from "./productService";
 import {
     updateRequisitionQuantitiesPostConfirmation,
-    handleRequisitionUpdateForPOCancellation
+    handleRequisitionUpdateForPOCancellation // Ensure this is imported
 } from "./requisitionService";
 
 const purchaseOrdersCollection = collection(db, "purchaseOrders");
@@ -148,13 +148,8 @@ const getPODetails = async (poId: string): Promise<PurchaseOrderDetail[]> => {
 
 const getPODetailsInTransaction = async (poId: string, transaction: any): Promise<PurchaseOrderDetail[]> => {
   const detailsCollectionRef = collection(db, `purchaseOrders/${poId}/details`);
-  // For transactions, it's often better to read all documents in the collection if the number is small,
-  // or have a known set of document IDs. Reading a query result within a transaction can be tricky
-  // if the query itself depends on data that might change within the transaction.
-  // For now, assuming a direct getDocs on the collection path for details.
-  // If order is strictly needed and can't be guaranteed by doc IDs, post-fetch sort might be needed.
-  const q = query(detailsCollectionRef); // Basic query, consider ordering if essential for logic
-  const snapshot = await transaction.get(q); // Use transaction.get with a query
+  const q = query(detailsCollectionRef); 
+  const snapshot = await transaction.get(q); 
   
   const details: PurchaseOrderDetail[] = [];
   for (const docSnap of snapshot.docs) {
@@ -163,7 +158,6 @@ const getPODetailsInTransaction = async (poId: string, transaction: any): Promis
         ...docSnap.data() 
       } as PurchaseOrderDetail);
   }
-  // Sort after fetching if specific order is needed and not guaranteed by query in tx
   return details.sort((a, b) => a.productName.localeCompare(b.productName));
 };
 
@@ -189,6 +183,9 @@ export const getPurchaseOrderById = async (id: string): Promise<PurchaseOrder | 
     const user = await getUserById(data.creationUserId);
     creationUserName = user?.displayName;
   }
+  
+  // Ensure originalDetails is an array, even if it's empty or null from DB
+  const originalDetailsFromDB = data.originalDetails || [];
 
   return {
     id: poSnap.id,
@@ -196,6 +193,7 @@ export const getPurchaseOrderById = async (id: string): Promise<PurchaseOrder | 
     details,
     supplierName,
     creationUserName,
+    originalDetails: Array.isArray(originalDetailsFromDB) ? originalDetailsFromDB : [],
   };
 };
 
@@ -243,8 +241,6 @@ export const getAllPurchaseOrders = async (filters: PurchaseOrderFilters = {}): 
       const user = await getUserById(data.creationUserId);
       creationUserName = user?.displayName;
     }
-    // Details are not fetched here for performance on list view.
-    // Fetch them on demand in getPurchaseOrderById or the detail page.
     return {
       id: docSnap.id,
       ...data,
@@ -324,7 +320,6 @@ export const updatePurchaseOrderDetailsAndCosts = async (
 
     const detailsCollectionRef = collection(poRef, "details");
     const oldDetailsQuery = query(detailsCollectionRef);
-    // Reading all details with transaction.get(query) to get all their refs.
     const oldDetailsSnap = await transaction.get(oldDetailsQuery); 
     
     for (const docSnap of oldDetailsSnap.docs) {
@@ -372,7 +367,7 @@ export const updatePurchaseOrderStatus = async (
     updateData.completionDate = now;
   }
 
-  if (newStatus === "ConfirmedBySupplier" && originalPO.originalDetails) {
+  if (newStatus === "ConfirmedBySupplier" && originalPO.originalDetails && originalPO.originalDetails.length > 0) {
     updateData.originalDetails = deleteField();
     updateData.originalAdditionalCosts = deleteField();
     updateData.originalProductsSubtotal = deleteField();
@@ -381,19 +376,30 @@ export const updatePurchaseOrderStatus = async (
     updateData.originalExpectedDeliveryDate = deleteField();
   }
 
-  if (newStatus === "ConfirmedBySupplier" && originalPO.details) {
-    // Fetch potentially updated details (e.g., if a revert happened just before this call)
+  if (newStatus === "ConfirmedBySupplier" && originalPO.details && originalPO.details.length > 0) {
     console.log(`[PO Service] Calling updateRequisitionQuantitiesPostConfirmation from updatePurchaseOrderStatus (status ConfirmedBySupplier) for PO: ${poId}`);
-    const currentDetailsForConfirmation = await getPODetails(poId); // Fetches fresh, potentially reverted details
-    await updateRequisitionQuantitiesPostConfirmation(originalPO.originRequisitionId, userId, currentDetailsForConfirmation);
-  } else if (
-      (newStatus === "Canceled" && (originalStatus === "Pending" || originalStatus === "SentToSupplier" || originalStatus === "ChangesProposedBySupplier" || originalStatus === "PendingInternalReview")) ||
-      (newStatus === "RejectedBySupplier" && (originalStatus === "SentToSupplier" || originalStatus === "ChangesProposedBySupplier" || originalStatus === "PendingInternalReview"))
-    ) {
-    // Use originalPO.details as these are the quantities that were *pending*
-    if (originalPO.details && originalPO.details.length > 0) {
-        console.log(`[PO Service] Calling handleRequisitionUpdateForPOCancellation from updatePurchaseOrderStatus (status ${newStatus}) for PO: ${poId}`);
-        await handleRequisitionUpdateForPOCancellation(originalPO.originRequisitionId, originalPO.details, userId);
+    const currentDetailsForConfirmation = await getPODetails(poId); 
+    await updateRequisitionQuantitiesPostConfirmation(poId, userId, currentDetailsForConfirmation);
+  }
+  
+  const shouldUpdateRequisitionForCancellation =
+    (newStatus === "Canceled" && 
+      (originalStatus === "Pending" || 
+       originalStatus === "SentToSupplier" || 
+       originalStatus === "ChangesProposedBySupplier" || 
+       originalStatus === "PendingInternalReview" ||
+       originalStatus === "ConfirmedBySupplier")) || 
+    (newStatus === "RejectedBySupplier" && 
+      (originalStatus === "SentToSupplier" || 
+       originalStatus === "ChangesProposedBySupplier" || 
+       originalStatus === "PendingInternalReview"));
+
+  if (shouldUpdateRequisitionForCancellation) {
+    const detailsForRequisitionUpdate = originalPO.details; 
+
+    if (detailsForRequisitionUpdate && detailsForRequisitionUpdate.length > 0) {
+        console.log(`[PO Service] Calling handleRequisitionUpdateForPOCancellation from updatePurchaseOrderStatus (status ${newStatus}, original ${originalStatus}) for PO: ${poId}`);
+        await handleRequisitionUpdateForPOCancellation(originalPO.originRequisitionId, detailsForRequisitionUpdate, userId, originalStatus);
     } else {
         console.warn(`[PO Service] PO ${poId} details not found or empty when attempting to update requisition for ${newStatus} status. Requisition may not be correctly updated.`);
     }
@@ -442,7 +448,9 @@ export const recordSupplierSolution = async (
 
   if (newStatus === "Completed") {
       console.log(`[PO Service] Calling updateRequisitionQuantitiesPostConfirmation from recordSupplierSolution (status Completed) for PO: ${poId}`);
-      const currentDetailsForCompletion = await getPODetails(poId); // Fetch latest details
-      await updateRequisitionQuantitiesPostConfirmation(poId, userId, currentDetailsForCompletion, true /* indicate it's a final completion */);
+      const currentDetailsForCompletion = await getPODetails(poId);
+      await updateRequisitionQuantitiesPostConfirmation(poId, userId, currentDetailsForCompletion, true );
   }
 };
+
+    
