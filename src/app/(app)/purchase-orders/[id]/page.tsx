@@ -274,63 +274,64 @@ export default function PurchaseOrderDetailPage() {
   };
 
   const handleAcceptOriginalPOAndConfirm = async () => {
-    if (!purchaseOrder || !currentUser || !purchaseOrder.originalDetails) {
-        toast({ title: "Error", description: "Cannot proceed: PO data or original details missing.", variant: "destructive"});
-        return;
+    if (!purchaseOrder || !currentUser || !purchaseOrder.originalDetails || purchaseOrder.originalDetails.length === 0) {
+      toast({ title: "Error", description: "Cannot proceed: PO data or original details missing.", variant: "destructive" });
+      return;
     }
     setIsUpdating(true);
     try {
-        await runTransaction(db, async (transaction) => {
-            const poRef = firestoreDoc(db, "purchaseOrders", purchaseOrderId);
-            const poSnap = await transaction.get(poRef);
+      await runTransaction(db, async (transaction) => {
+        const poRef = firestoreDoc(db, "purchaseOrders", purchaseOrderId);
+        const poSnap = await transaction.get(poRef);
 
-            if (!poSnap.exists()) {
-                throw new Error("Purchase Order not found during transaction.");
-            }
-            const currentPODataFromSnap = poSnap.data() as PurchaseOrder;
-            if (!currentPODataFromSnap.originalDetails || currentPODataFromSnap.originalDetails.length === 0) {
-                throw new Error("No original details found to revert to.");
-            }
-            
-            const updateDataForMainPO: any = {
-                notes: currentPODataFromSnap.originalNotes,
-                expectedDeliveryDate: currentPODataFromSnap.originalExpectedDeliveryDate,
-                additionalCosts: currentPODataFromSnap.originalAdditionalCosts || [],
-                productsSubtotal: currentPODataFromSnap.originalProductsSubtotal,
-                totalAmount: currentPODataFromSnap.originalTotalAmount,
-                status: "ConfirmedBySupplier" as PurchaseOrderStatus,
-                updatedAt: Timestamp.now(),
-                originalDetails: deleteField(),
-                originalAdditionalCosts: deleteField(),
-                originalProductsSubtotal: deleteField(),
-                originalTotalAmount: deleteField(),
-                originalNotes: deleteField(),
-                originalExpectedDeliveryDate: deleteField(),
-            };
-            transaction.update(poRef, updateDataForMainPO);
+        if (!poSnap.exists()) {
+          throw new Error("Purchase Order not found during transaction.");
+        }
+        const currentPODataFromSnap = poSnap.data() as PurchaseOrder;
+        if (!currentPODataFromSnap.originalDetails || currentPODataFromSnap.originalDetails.length === 0) {
+          throw new Error("No original details found to revert to.");
+        }
 
-            const detailsCollectionRef = firestoreCollection(db, "purchaseOrders", purchaseOrderId, "details");
-            const currentDetailsSnapshot = await firestoreGetDocs(firestoreQuery(detailsCollectionRef)); 
-            
-            currentDetailsSnapshot.forEach(docSnap => {
-                transaction.delete(docSnap.ref);
-            });
+        const updateDataForMainPO: any = {
+          notes: currentPODataFromSnap.originalNotes,
+          expectedDeliveryDate: currentPODataFromSnap.originalExpectedDeliveryDate,
+          additionalCosts: currentPODataFromSnap.originalAdditionalCosts || [],
+          productsSubtotal: currentPODataFromSnap.originalProductsSubtotal,
+          totalAmount: currentPODataFromSnap.originalTotalAmount,
+          status: "ConfirmedBySupplier" as PurchaseOrderStatus,
+          updatedAt: Timestamp.now(),
+          originalDetails: deleteField(),
+          originalAdditionalCosts: deleteField(),
+          originalProductsSubtotal: deleteField(),
+          originalTotalAmount: deleteField(),
+          originalNotes: deleteField(),
+          originalExpectedDeliveryDate: deleteField(),
+        };
+        transaction.update(poRef, updateDataForMainPO);
 
-            for (const originalDetailItem of currentPODataFromSnap.originalDetails) {
-                const { id: oldDocId, ...detailDataToSet } = originalDetailItem; 
-                const newDetailRef = firestoreDoc(firestoreCollection(db, "purchaseOrders", purchaseOrderId, "details"));
-                transaction.set(newDetailRef, detailDataToSet);
-            }
+        const detailsCollectionRef = firestoreCollection(db, "purchaseOrders", purchaseOrderId, "details");
+        const currentDetailsSnapshot = await firestoreGetDocs(firestoreQuery(detailsCollectionRef));
+
+        currentDetailsSnapshot.forEach(docSnap => {
+          transaction.delete(docSnap.ref);
         });
 
-        await updateRequisitionQuantitiesPostConfirmation(purchaseOrderId, currentUser.uid, purchaseOrder.originalDetails);
-        toast({ title: "Original PO Confirmed", description: "Purchase Order reverted to original terms and confirmed." });
-        fetchPOData();
-        setIsAcceptOriginalConfirmOpen(false);
+        for (const originalDetailItem of currentPODataFromSnap.originalDetails) {
+          const { id: oldDocId, ...detailDataToSet } = originalDetailItem;
+          const newDetailRef = firestoreDoc(detailsCollectionRef); // Create ref for new doc
+          transaction.set(newDetailRef, detailDataToSet);
+        }
+      });
+
+      // Call this *after* the transaction successfully commits
+      await updateRequisitionQuantitiesPostConfirmation(purchaseOrderId, currentUser.uid, purchaseOrder.originalDetails);
+      toast({ title: "Original PO Confirmed", description: "Purchase Order reverted to original terms and confirmed." });
+      fetchPOData();
+      setIsAcceptOriginalConfirmOpen(false);
 
     } catch (error: any) {
-        console.error("Error accepting original PO:", error);
-        toast({ title: "Update Failed", description: error.message || "Could not accept original Purchase Order.", variant: "destructive" });
+      console.error("Error accepting original PO:", error);
+      toast({ title: "Update Failed", description: error.message || "Could not accept original Purchase Order.", variant: "destructive" });
     }
     setIsUpdating(false);
   };
@@ -609,24 +610,26 @@ export default function PurchaseOrderDetailPage() {
                             <AlertDialogContent>
                                 <AlertDialogHeader>
                                     <AlertDialogTitle>Confirm Acceptance of Original PO Terms</AlertDialogTitle>
-                                     <AlertDialogDescription>
-                                      <p>
-                                        You are about to override the supplier's proposed changes and confirm the Purchase Order based on its <strong>original</strong> terms.
-                                      </p>
-                                      <p className="mt-2">
-                                        Please ensure you have explicit confirmation from the supplier that they can now fulfill the original order details (quantities, prices, delivery dates, etc.) despite their previous counter-offer.
-                                      </p>
-                                      <p className="mt-2">
-                                        If the supplier <strong>cannot</strong> fulfill the original terms, you should either 'Reject This Revised PO' or use 'Needs Further Negotiation / Re-edit' to adjust the PO to what the supplier can actually provide.
-                                      </p>
-                                      <p className="mt-2">
-                                        Proceeding will:
-                                      </p>
-                                      
-                                        Discard the supplier's proposed changes.
-                                        Set the PO status to 'ConfirmedBySupplier' based on original terms.
-                                        Update requisition quantities accordingly.
-                                      
+                                     <AlertDialogDescription asChild>
+                                      <div className="text-sm text-muted-foreground">
+                                        <p>
+                                          You are about to override the supplier's proposed changes and confirm the Purchase Order based on its <strong>original</strong> terms.
+                                        </p>
+                                        <p className="mt-2">
+                                          Please ensure you have explicit confirmation from the supplier that they can now fulfill the original order details (quantities, prices, delivery dates, etc.) despite their previous counter-offer.
+                                        </p>
+                                        <p className="mt-2">
+                                          If the supplier <strong>cannot</strong> fulfill the original terms, you should either 'Reject This Revised PO' or use 'Needs Further Negotiation / Re-edit' to adjust the PO to what the supplier can actually provide.
+                                        </p>
+                                        <p className="mt-2">
+                                          Proceeding will:
+                                        </p>
+                                        <ul className="list-disc pl-5 mt-1 text-xs">
+                                          <li>Discard the supplier's proposed changes.</li>
+                                          <li>Set the PO status to 'ConfirmedBySupplier' based on original terms.</li>
+                                          <li>Update requisition quantities accordingly.</li>
+                                        </ul>
+                                      </div>
                                     </AlertDialogDescription>
                                 </AlertDialogHeader>
                                 <AlertDialogFooter>
@@ -678,450 +681,395 @@ export default function PurchaseOrderDetailPage() {
           <CardContent className="space-y-6">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div className="space-y-4 p-4 border rounded-md bg-muted/30">
+                <h3 className="text-lg font-semibold">Original Order</h3>
+                <p className="text-sm"><span className="font-medium text-muted-foreground">Notes:</span> {purchaseOrder.originalNotes || "N/A"}</p>
+                <p className="text-sm"><span className="font-medium text-muted-foreground">Expected Delivery:</span> {formatTimestampDate(purchaseOrder.originalExpectedDeliveryDate)}</p>
                 
-                Original Order
-                
-                Original Notes:
-                
-                Original Expected Delivery:
-                
-                
-                Original Items:
+                <h4 className="text-md font-semibold pt-2">Original Items:</h4>
                 {purchaseOrder.originalDetails && purchaseOrder.originalDetails.length > 0 ? (
                   renderComparisonTable(purchaseOrder.originalDetails, purchaseOrder.originalDetails, "Details")
-                ) : No original items recorded.}
+                ) : <p className="text-sm text-muted-foreground">No original items recorded.</p>}
                 
-                
-                Original Additional Costs:
+                <h4 className="text-md font-semibold pt-2">Original Additional Costs:</h4>
                 {renderAdditionalCostsTable(purchaseOrder.originalAdditionalCosts || [])}
                 
-                
-                  Original Subtotal: 
-                  Original Total: 
-                
+                <div className="text-sm font-semibold pt-2 border-t mt-2">
+                  <p>Original Subtotal: ${Number(purchaseOrder.originalProductsSubtotal || 0).toFixed(2)}</p>
+                  <p>Original Total: ${Number(purchaseOrder.originalTotalAmount || 0).toFixed(2)}</p>
+                </div>
               </div>
 
-              
+              <div className="space-y-4 p-4 border rounded-md bg-card">
+                <h3 className="text-lg font-semibold text-primary">Supplier's Proposed Order (Current)</h3>
+                <p className="text-sm"><span className="font-medium text-muted-foreground">Notes:</span> {purchaseOrder.notes || "N/A"}</p>
+                <p className="text-sm"><span className="font-medium text-muted-foreground">Expected Delivery:</span> {formatTimestampDate(purchaseOrder.expectedDeliveryDate)}</p>
                 
-                Supplier's Proposed Order (Current)
-                
-                Proposed Notes:
-                
-                Proposed Expected Delivery:
-                
-                
-                Proposed Items:
+                <h4 className="text-md font-semibold pt-2">Proposed Items:</h4>
                 {purchaseOrder.details && purchaseOrder.details.length > 0 ? (
                    renderComparisonTable(purchaseOrder.originalDetails || [], purchaseOrder.details, "Details")
-                ) : No proposed items recorded.}
+                ) : <p className="text-sm text-muted-foreground">No proposed items recorded.</p>}
                  
-                
-                Proposed Additional Costs:
+                <h4 className="text-md font-semibold pt-2">Proposed Additional Costs:</h4>
                 {renderAdditionalCostsTable(purchaseOrder.additionalCosts || [])}
                 
-                 
-                  Proposed Subtotal: 
-                  Proposed Total: 
-                
-              
-            
+                 <div className="text-sm font-semibold pt-2 border-t mt-2">
+                  <p>Proposed Subtotal: ${Number(purchaseOrder.productsSubtotal || 0).toFixed(2)}</p>
+                  <p>Proposed Total: ${Number(purchaseOrder.totalAmount || 0).toFixed(2)}</p>
+                </div>
+              </div>
+            </div>
           </CardContent>
         </Card>
       )}
 
 
-      
-        
-          
-            PO Summary
-          
-          
-            
-              PO ID:
-              
-            
-            
-              Origin Requisition:
-              
-            
+      <div className="grid gap-6 md:grid-cols-3 mt-6">
+        <Card className="md:col-span-1">
+          <CardHeader>
+            <CardTitle className="font-headline">PO Summary</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3 text-sm">
+            <div className="flex justify-between"><span className="text-muted-foreground">PO ID:</span><span className="font-medium truncate max-w-[150px]">{purchaseOrder.id}</span></div>
+            <div className="flex justify-between"><span className="text-muted-foreground">Origin Requisition:</span>
+              <Link href={`/requisitions/${purchaseOrder.originRequisitionId}`} className="font-medium text-primary hover:underline truncate max-w-[150px]">
+                {purchaseOrder.originRequisitionId}
+              </Link>
+            </div>
             {purchaseOrder.quotationReferenceId && (
-              
-                Quotation Ref:
-                
-              
+              <div className="flex justify-between"><span className="text-muted-foreground">Quotation Ref:</span>
+                <Link href={`/quotations/${purchaseOrder.quotationReferenceId}`} className="font-medium text-primary hover:underline truncate max-w-[150px]">
+                  {purchaseOrder.quotationReferenceId}
+                </Link>
+              </div>
             )}
-            
-              Supplier:
-              
-            
-            
-              Order Date:
-              
-            
-            
-              Expected Delivery:
-              
-            
-            
-              Status:
-              
-            
-            
-              Created By:
-              
-            
+            <div className="flex justify-between"><span className="text-muted-foreground">Supplier:</span><span className="font-medium">{purchaseOrder.supplierName || purchaseOrder.supplierId}</span></div>
+            <div className="flex justify-between"><span className="text-muted-foreground">Order Date:</span><span className="font-medium">{formatTimestampDate(purchaseOrder.orderDate)}</span></div>
+            <div className="flex justify-between"><span className="text-muted-foreground">Expected Delivery:</span><span className="font-medium">{formatTimestampDate(purchaseOrder.expectedDeliveryDate)}</span></div>
+            <div className="flex justify-between items-center"><span className="text-muted-foreground">Status:</span>
+              <Badge variant={getStatusBadgeVariant(poStatus)} className={getStatusBadgeClass(poStatus)}>
+                {poStatus}
+              </Badge>
+            </div>
+            <div className="flex justify-between"><span className="text-muted-foreground">Created By:</span><span className="font-medium">{purchaseOrder.creationUserName || purchaseOrder.creationUserId}</span></div>
             {purchaseOrder.completionDate && (
-              
-                Completion Date:
-                
-              
+              <div className="flex justify-between"><span className="text-muted-foreground">Completion Date:</span><span className="font-medium">{formatTimestampDate(purchaseOrder.completionDate)}</span></div>
             )}
             
-            
-            
-              Products Subtotal:
-              
-            
+            <Separator />
+            <div className="flex justify-between"><span className="text-muted-foreground">Products Subtotal:</span><span className="font-medium">${Number(purchaseOrder.productsSubtotal || 0).toFixed(2)}</span></div>
             {purchaseOrder.additionalCosts && purchaseOrder.additionalCosts.length > 0 && (
-               Additional Costs:
-               {purchaseOrder.additionalCosts.map((cost, index) => (
-                   ({cost.description} ({cost.type}))
-                   ${Number(cost.amount).toFixed(2)}
-               ))}
+               <>
+                 <p className="text-xs font-semibold text-muted-foreground">Additional Costs:</p>
+                 {purchaseOrder.additionalCosts.map((cost, index) => (
+                   <div key={index} className="flex justify-between pl-2 text-xs">
+                     <span>{cost.description} ({cost.type})</span>
+                     <span className="font-medium">${Number(cost.amount).toFixed(2)}</span>
+                   </div>
+                 ))}
+               </>
             )}
+            <div className="flex justify-between text-md font-semibold pt-1"><span className="text-muted-foreground">Total PO Amount:</span><span>${Number(purchaseOrder.totalAmount || 0).toFixed(2)}</span></div>
+            <Separator />
             
-              Total PO Amount:
-              ${Number(purchaseOrder.totalAmount || 0).toFixed(2)}
-            
-            
-            
-              Notes:
-              
-            
+            <div><span className="text-muted-foreground">Notes:</span><p className="font-medium whitespace-pre-wrap">{purchaseOrder.notes || "N/A"}</p></div>
             {purchaseOrder.supplierAgreedSolutionType && (
               <>
-                
-                
-                  Supplier Solution Type:
-                  
-                
+                <Separator />
+                <div>
+                  <span className="text-muted-foreground">Supplier Solution Type:</span>
+                  <p className="font-medium">{purchaseOrder.supplierAgreedSolutionType.replace(/([A-Z])/g, ' $1').trim()}</p>
+                </div>
                 {purchaseOrder.supplierAgreedSolutionDetails && (
-                  
-                    Solution Details:
-                    
-                  
+                  <div>
+                    <span className="text-muted-foreground">Solution Details:</span>
+                    <p className="font-medium whitespace-pre-wrap">{purchaseOrder.supplierAgreedSolutionDetails}</p>
+                  </div>
                 )}
               </>
             )}
             
-            
-            
-              Last Updated:
-              
-            
-          
-        
-        
-          
-            Ordered Products (Current State)
-            List of products reflecting current PO details.
-          
-          
+            <Separator />
+            <div className="flex justify-between"><span className="text-muted-foreground">Last Updated:</span><span className="font-medium">{new Date(purchaseOrder.updatedAt.seconds * 1000).toLocaleString()}</span></div>
+            <div className="flex justify-between"><span className="text-muted-foreground">Created At:</span><span className="font-medium">{new Date(purchaseOrder.createdAt.seconds * 1000).toLocaleString()}</span></div>
+          </CardContent>
+        </Card>
+        <Card className="md:col-span-2">
+          <CardHeader>
+            <CardTitle className="font-headline">Ordered Products (Current State)</CardTitle>
+            <CardDescription>List of products reflecting current PO details.</CardDescription>
+          </CardHeader>
+          <CardContent>
             {purchaseOrder.details && purchaseOrder.details.length > 0 ? (
-              
-                
-                  
-                    Product Name
-                    Ordered
-                    Unit Price
-                    OK Rec'd
-                    Damaged
-                    Missing
-                    Item Notes
-                  
-                
-                
-                  {purchaseOrder.details.map((item) => (
-                    
-                      
-                        {item.productName}
-                        {item.orderedQuantity}
-                        ${Number(item.unitPrice).toFixed(2)}
-                        {item.receivedQuantity || 0}
-                        {item.receivedDamagedQuantity || 0}
-                        {item.receivedMissingQuantity || 0}
-                        {item.notes || "N/A"}
-                      
-                    
-                  ))}
-                
-              
+              <ScrollArea className="h-[calc(100vh-25rem)]">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Product Name</TableHead>
+                      <TableHead className="text-right">Ordered</TableHead>
+                      <TableHead className="text-right">Unit Price</TableHead>
+                      <TableHead className="text-right">OK Rec'd</TableHead>
+                      <TableHead className="text-right">Damaged</TableHead>
+                      <TableHead className="text-right">Missing</TableHead>
+                      <TableHead>Item Notes</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {purchaseOrder.details.map((item) => (
+                      <TableRow key={item.id || item.productId}>
+                        <TableCell className="font-medium">{item.productName}</TableCell>
+                        <TableCell className="text-right">{item.orderedQuantity}</TableCell>
+                        <TableCell className="text-right">${Number(item.unitPrice).toFixed(2)}</TableCell>
+                        <TableCell className="text-right">{item.receivedQuantity || 0}</TableCell>
+                        <TableCell className="text-right">{item.receivedDamagedQuantity || 0}</TableCell>
+                        <TableCell className="text-right">{item.receivedMissingQuantity || 0}</TableCell>
+                        <TableCell className="whitespace-pre-wrap text-xs max-w-[150px] truncate" title={item.notes}>{item.notes || "N/A"}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </ScrollArea>
             ) : (
-              No products listed for this purchase order.
+              <p>No products listed for this purchase order.</p>
             )}
-          
-        
-      
+          </CardContent>
+        </Card>
+      </div>
 
-      
-        
-          
-            
-              
-                Record Supplier's Proposed Changes
-                Modify quantities, prices, costs, or notes based on supplier's proposal. Saving will update the PO to 'Pending Internal Review'.
-              
-              
+      <Dialog open={isEditPODialogOpen} onOpenChange={setIsEditPODialogOpen}>
+        <DialogContent className="sm:max-w-2xl md:max-w-3xl flex flex-col max-h-[90vh]">
+          <Form {...editPOForm}>
+            <form onSubmit={editPOForm.handleSubmit(handleEditPOSubmit)} className="flex flex-col flex-grow min-h-0">
+              <DialogHeader>
+                <ShadDialogTitle className="font-headline">Record Supplier's Proposed Changes</ShadDialogTitle>
+                <ShadDialogDescription>Modify quantities, prices, costs, or notes based on supplier's proposal. Saving will update the PO to 'Pending Internal Review'.</ShadDialogDescription>
+              </DialogHeader>
+              <ScrollArea className="flex-grow py-4 pr-2 space-y-4">
+                <FormField control={editPOForm.control} name="expectedDeliveryDate"
+                  render={({ field }) => (
+                    <FormItem className="flex flex-col">
+                      <FormLabel>New Expected Delivery Date (Optional)</FormLabel>
+                      <Popover>
+                        <PopoverTrigger asChild>
+                          <FormControl>
+                            <Button variant={"outline"} className={cn("pl-3 text-left font-normal w-full", !field.value && "text-muted-foreground")}>
+                              {field.value ? format(field.value, "PPP") : <span>Pick a date</span>}
+                              <Icons.Calendar className="ml-auto h-4 w-4 opacity-50" />
+                            </Button>
+                          </FormControl>
+                        </PopoverTrigger>
+                        <PopoverContent className="w-auto p-0" align="start">
+                          <Calendar mode="single" selected={field.value} onSelect={field.onChange} initialFocus />
+                        </PopoverContent>
+                      </Popover>
+                      <FormMessage />
+                    </FormItem>
+                  )} />
+                <FormField control={editPOForm.control} name="notes"
+                  render={({ field }) => (<FormItem><FormLabel>PO Notes (Updated)</FormLabel><FormControl><Textarea placeholder="Updated notes from supplier or internal remarks" {...field} /></FormControl><FormMessage /></FormItem>)} />
                 
-                    New Expected Delivery Date (Optional)
-                    
-                      
-                        Pick a date
-                      
-                    
-                  
-                
-                
-                    PO Notes (Updated)
-                    
-                  
-                
-                
-                  
-                    Product Details (Editable)
-                  
-                  
+                <Card>
+                  <CardHeader className="p-3"><CardTitle className="text-md">Product Details (Editable)</CardTitle></CardHeader>
+                  <CardContent className="p-3 space-y-3">
                     {editPOForm.getValues('details')?.map((item, index) => (
-                      
-                        
-                          {editPOForm.getValues(`details.${index}.productName`)}
-                        
-                        
-                          
-                            
-                              New Qty*
-                              
-                            
-                            
-                              New Price*
-                              
-                            
-                          
-                        
-                        
-                            Item Notes
-                            
-                          
-                        
-                      
+                      <div key={item.id || `detail-${index}`} className="p-3 border rounded-md space-y-3 bg-muted/30">
+                        <h4 className="font-semibold">{editPOForm.getValues(`details.${index}.productName`)}</h4>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                          <FormField control={editPOForm.control} name={`details.${index}.orderedQuantity`}
+                            render={({ field }) => (<FormItem><FormLabel>New Qty*</FormLabel><FormControl><Input type="number" step="0.01" {...field} /></FormControl><FormMessage /></FormItem>)} />
+                          <FormField control={editPOForm.control} name={`details.${index}.unitPrice`}
+                            render={({ field }) => (<FormItem><FormLabel>New Price*</FormLabel><FormControl><Input type="number" step="0.01" {...field} /></FormControl><FormMessage /></FormItem>)} />
+                        </div>
+                        <FormField control={editPOForm.control} name={`details.${index}.notes`}
+                          render={({ field }) => (<FormItem><FormLabel>Item Notes</FormLabel><FormControl><Textarea placeholder="Notes specific to this item's changes" {...field} rows={2} /></FormControl><FormMessage /></FormItem>)} />
+                      </div>
                     ))}
-                  
+                  </CardContent>
+                </Card>
                 
-                
-                  
-                    Additional Costs (Editable)
-                    
-                      
-                        Add Cost
-                      
-                    
-                  
-                  
+                <Card>
+                  <CardHeader className="p-3 flex flex-row items-center justify-between">
+                    <CardTitle className="text-md">Additional Costs (Editable)</CardTitle>
+                    <Button type="button" variant="outline" size="sm" onClick={() => appendAdditionalCost({ description: "", amount: 0, type: "other" })}>
+                      <Icons.Add className="mr-2 h-4 w-4"/> Add Cost
+                    </Button>
+                  </CardHeader>
+                  <CardContent className="p-3 space-y-3">
                     {additionalCostFields.map((item, index) => (
-                      
-                        
-                          
-                            
-                              Desc*
-                              
-                            
-                            
-                              Amount*
-                              
-                            
-                            
-                              Type*
-                              
-                                
-                                  
-                                    Type
-                                  
-                                
-                                  {QUOTATION_ADDITIONAL_COST_TYPES.map(t => (
-                                      {t}
-                                  ))}
-                                
-                              
-                            
-                          
-                        
-                      
+                      <div key={item.id} className="p-3 border rounded-md space-y-2 bg-muted/30 relative">
+                        <Button type="button" variant="ghost" size="icon" className="absolute top-1 right-1 h-6 w-6" onClick={() => removeAdditionalCost(index)}><Icons.Delete className="h-4 w-4 text-destructive"/></Button>
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                           <FormField control={editPOForm.control} name={`additionalCosts.${index}.description`}
+                            render={({ field }) => (<FormItem><FormLabel>Desc*</FormLabel><FormControl><Input {...field} /></FormControl><FormMessage /></FormItem>)} />
+                           <FormField control={editPOForm.control} name={`additionalCosts.${index}.amount`}
+                            render={({ field }) => (<FormItem><FormLabel>Amount*</FormLabel><FormControl><Input type="number" step="0.01" {...field} /></FormControl><FormMessage /></FormItem>)} />
+                           <FormField control={editPOForm.control} name={`additionalCosts.${index}.type`}
+                            render={({ field }) => (<FormItem><FormLabel>Type*</FormLabel>
+                              <Select onValueChange={field.onChange} value={field.value}>
+                                <FormControl><SelectTrigger><SelectValue placeholder="Select type" /></SelectTrigger></FormControl>
+                                <SelectContent>{QUOTATION_ADDITIONAL_COST_TYPES.map(t => <SelectItem key={t} value={t}>{t.charAt(0).toUpperCase() + t.slice(1)}</SelectItem>)}</SelectContent>
+                              </Select><FormMessage /></FormItem>)}/>
+                        </div>
+                      </div>
                     ))}
-                    {additionalCostFields.length === 0 && No additional costs.}
-                  
-                
-                {editPOForm.formState.errors.root && editPOForm.formState.errors.root.message}
-              
-              
-                
-                  Cancel
-                  Save Proposal & Review
-                
-              
-            
-          
-        
-      
+                    {additionalCostFields.length === 0 && <p className="text-sm text-muted-foreground">No additional costs.</p>}
+                  </CardContent>
+                </Card>
+                {editPOForm.formState.errors.root && <p className="text-destructive text-sm p-1">{editPOForm.formState.errors.root.message}</p>}
+              </ScrollArea>
+              <DialogFooter className="pt-4 flex-shrink-0 border-t">
+                <DialogClose asChild><Button type="button" variant="outline">Cancel</Button></DialogClose>
+                <Button type="submit" disabled={isSubmittingEditPO}>
+                  {isSubmittingEditPO ? <Icons.Logo className="animate-spin"/> : "Save Proposal & Review"}
+                </Button>
+              </DialogFooter>
+            </form>
+          </Form>
+        </DialogContent>
+      </Dialog>
 
-      
-        
-          
-            
-              
-                Record Stock Receipt
-                Record items received against PO: {purchaseOrder?.id.substring(0,8)}...
-              
-              
+      <Dialog open={isReceiptDialogOpen} onOpenChange={setIsReceiptDialogOpen}>
+        <DialogContent className="sm:max-w-3xl md:max-w-4xl flex flex-col max-h-[90vh]">
+          <Form {...receiptForm}>
+            <form onSubmit={receiptForm.handleSubmit(onReceiptSubmit)} className="flex flex-col flex-grow min-h-0">
+              <DialogHeader>
+                <ShadDialogTitle className="font-headline">Record Stock Receipt</ShadDialogTitle>
+                <ShadDialogDescription>Record items received against PO: {purchaseOrder?.id.substring(0,8)}...</ShadDialogDescription>
+              </DialogHeader>
+              <ScrollArea className="flex-grow py-4 pr-2 space-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <FormField control={receiptForm.control} name="receiptDate"
+                    render={({ field }) => (
+                      <FormItem className="flex flex-col">
+                        <FormLabel>Receipt Date *</FormLabel>
+                        <Popover>
+                          <PopoverTrigger asChild>
+                            <FormControl>
+                              <Button variant={"outline"} className={cn("pl-3 text-left font-normal w-full", !field.value && "text-muted-foreground")}>
+                                {field.value ? format(field.value, "PPP") : <span>Pick a date</span>}
+                                <Icons.Calendar className="ml-auto h-4 w-4 opacity-50" />
+                              </Button>
+                            </FormControl>
+                          </PopoverTrigger>
+                          <PopoverContent className="w-auto p-0" align="start">
+                            <Calendar mode="single" selected={field.value} onSelect={field.onChange} initialFocus />
+                          </PopoverContent>
+                        </Popover>
+                        <FormMessage />
+                      </FormItem>
+                    )} />
+                  <FormField control={receiptForm.control} name="targetWarehouseId"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Target Warehouse *</FormLabel>
+                        <Select onValueChange={field.onChange} value={field.value} disabled={isLoadingWarehouses}>
+                          <FormControl><SelectTrigger><SelectValue placeholder={isLoadingWarehouses ? "Loading..." : "Select warehouse"} /></SelectTrigger></FormControl>
+                          <SelectContent>{availableWarehouses.map(wh => <SelectItem key={wh.id} value={wh.id}>{wh.name}</SelectItem>)}</SelectContent>
+                        </Select>
+                        <FormMessage />
+                      </FormItem>
+                    )} />
+                </div>
+                <FormField control={receiptForm.control} name="overallReceiptNotes"
+                  render={({ field }) => (<FormItem><FormLabel>Overall Receipt Notes</FormLabel><FormControl><Textarea placeholder="e.g., Delivery condition, driver details" {...field} /></FormControl><FormMessage /></FormItem>)} />
                 
-                  
-                    
-                      Receipt Date *
-                      
-                        
-                          
-                            Pick a date
-                          
-                        
-                      
-                    
-                    
-                      Target Warehouse *
-                      
-                        
-                          
-                            Select warehouse
-                          
-                        
-                          {availableWarehouses.map(wh => (
-                              {wh.name}
-                          ))}
-                        
-                      
-                    
-                  
-                  
-                    Overall Receipt Notes
-                    
-                  
-                  
-                  
-                    Items to Process:
-                    
+                <Card className="mt-4">
+                  <CardHeader className="p-3"><CardTitle className="text-md">Items to Process:</CardTitle></CardHeader>
+                  <CardContent className="p-3 space-y-3">
                     {receiptItemsFields.map((item, index) => {
                       const trulyOutstandingForThisReceipt = Math.max(0, item.orderedQuantity - (item.alreadyReceivedOkQuantity + item.alreadyReceivedDamagedQuantity + item.alreadyReceivedMissingQuantity));
                       return (
-                        
-                          
-                            {item.productName}
-                            
+                        <div key={item.id} className="p-3 border rounded-md space-y-3 bg-muted/30">
+                          <div className="flex justify-between items-center">
+                            <h4 className="font-semibold">{item.productName}</h4>
+                            <p className="text-xs text-muted-foreground">
                               Ordered: {item.orderedQuantity} | 
                               Prev. OK: {item.alreadyReceivedOkQuantity} | 
                               Prev. Damaged: {item.alreadyReceivedDamagedQuantity} | 
                               Prev. Missing: {item.alreadyReceivedMissingQuantity} | 
-                               Outstanding for this receipt: {trulyOutstandingForThisReceipt}
-                            
-                          
-                          
-                            
-                              
-                                Qty OK Rec'd*
-                                
-                              
-                              
-                                Qty Damaged Rec'd*
-                                
-                              
-                              
-                                Qty Missing this time*
-                                
-                              
-                            
-                            
-                              
-                                Line Item Notes (Optional)
-                                
-                              
-                            
-                          
-                        
+                              <span className="font-bold text-primary"> Outstanding for this receipt: {trulyOutstandingForThisReceipt}</span>
+                            </p>
+                          </div>
+                          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                            <FormField control={receiptForm.control} name={`itemsToProcess.${index}.qtyOkReceivedThisReceipt`}
+                              render={({ field }) => (<FormItem><FormLabel>Qty OK Rec'd*</FormLabel><FormControl><Input type="number" {...field} /></FormControl><FormMessage /></FormItem>)} />
+                            <FormField control={receiptForm.control} name={`itemsToProcess.${index}.qtyDamagedReceivedThisReceipt`}
+                              render={({ field }) => (<FormItem><FormLabel>Qty Damaged Rec'd*</FormLabel><FormControl><Input type="number" {...field} /></FormControl><FormMessage /></FormItem>)} />
+                            <FormField control={receiptForm.control} name={`itemsToProcess.${index}.qtyMissingReceivedThisReceipt`}
+                              render={({ field }) => (<FormItem><FormLabel>Qty Missing this time*</FormLabel><FormControl><Input type="number" {...field} /></FormControl><FormMessage /></FormItem>)} />
+                          </div>
+                          <div className="col-span-full">
+                            <FormField control={receiptForm.control} name={`itemsToProcess.${index}.lineItemNotes`}
+                              render={({ field }) => (<FormItem><FormLabel>Line Item Notes (Optional)</FormLabel><FormControl><Textarea placeholder="e.g., Box slightly dented but contents OK" {...field} rows={1} /></FormControl><FormMessage /></FormItem>)} />
+                          </div>
+                        </div>
                       );
                     })}
-                    {receiptForm.formState.errors.itemsToProcess && typeof receiptForm.formState.errors.itemsToProcess.message === 'string' && receiptForm.formState.errors.itemsToProcess.message}
-                    {(receiptForm.formState.errors.itemsToProcess as any)?.root?.message && (receiptForm.formState.errors.itemsToProcess as any)?.root?.message}
-                  
-                
-              
-              
-                
-                  Cancel
-                  Record Receipt
-                
-              
-            
-          
-        
-      
+                    {receiptForm.formState.errors.itemsToProcess && typeof receiptForm.formState.errors.itemsToProcess.message === 'string' && <p className="text-destructive text-sm p-1">{receiptForm.formState.errors.itemsToProcess.message}</p>}
+                    {(receiptForm.formState.errors.itemsToProcess as any)?.root?.message && <p className="text-destructive text-sm p-1">{(receiptForm.formState.errors.itemsToProcess as any)?.root?.message}</p>}
+                  </CardContent>
+                </Card>
+              </ScrollArea>
+              <DialogFooter className="pt-4 flex-shrink-0 border-t">
+                <DialogClose asChild><Button type="button" variant="outline">Cancel</Button></DialogClose>
+                <Button type="submit" disabled={isSubmittingReceipt}>
+                  {isSubmittingReceipt ? <Icons.Logo className="animate-spin"/> : "Record Receipt"}
+                </Button>
+              </DialogFooter>
+            </form>
+          </Form>
+        </DialogContent>
+      </Dialog>
 
-      
-        
-          
-            
-              
-                Record Supplier Solution
-                Document the agreed solution for discrepancies in PO: {purchaseOrder?.id.substring(0,8)}...
-              
-              
-                
-                  
-                    Solution Type *
-                    
-                      
-                        
-                          Select solution type
-                        
-                      
-                      
-                        {SUPPLIER_SOLUTION_TYPES.map(type => (
-                            {type.replace(/([A-Z])/g, ' $1').trim()}
-                        ))}
-                      
-                    
-                  
-                  
-                    Solution Details *
-                    
-                      
-                        
-                          Describe the agreed solution, e.g., credit amount, discount terms, new ETA for missing items.
-                          
-                        
-                      
-                    
-                  
-                
-              
-              
-                
-                  Cancel
-                  Save Solution
-                
-              
-            
-          
-        
-      
-    
+      <Dialog open={isSupplierSolutionDialogOpen} onOpenChange={setIsSupplierSolutionDialogOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <Form {...supplierSolutionForm}>
+            <form onSubmit={supplierSolutionForm.handleSubmit(onSupplierSolutionSubmit)}>
+              <DialogHeader>
+                <ShadDialogTitle className="font-headline">Record Supplier Solution</ShadDialogTitle>
+                <ShadDialogDescription>Document the agreed solution for discrepancies in PO: {purchaseOrder?.id.substring(0,8)}...</ShadDialogDescription>
+              </DialogHeader>
+              <div className="grid gap-4 py-4">
+                <FormField control={supplierSolutionForm.control} name="solutionType"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Solution Type *</FormLabel>
+                      <Select onValueChange={field.onChange} value={field.value}>
+                        <FormControl><SelectTrigger><SelectValue placeholder="Select solution type" /></SelectTrigger></FormControl>
+                        <SelectContent>
+                          {SUPPLIER_SOLUTION_TYPES.map(type => (
+                            <SelectItem key={type} value={type}>{type.replace(/([A-Z])/g, ' $1').trim()}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <FormMessage />
+                    </FormItem>
+                  )} />
+                <FormField control={supplierSolutionForm.control} name="solutionDetails"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Solution Details *</FormLabel>
+                      <FormControl>
+                        <Textarea
+                          placeholder="Describe the agreed solution, e.g., credit amount, discount terms, new ETA for missing items."
+                          {...field}
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )} />
+              </div>
+              <DialogFooter>
+                <DialogClose asChild><Button type="button" variant="outline">Cancel</Button></DialogClose>
+                <Button type="submit" disabled={isSubmittingSolution}>
+                  {isSubmittingSolution ? <Icons.Logo className="animate-spin"/> : "Save Solution"}
+                </Button>
+              </DialogFooter>
+            </form>
+          </Form>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
-    
+
     

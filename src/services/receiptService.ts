@@ -43,7 +43,6 @@ export const createReceipt = async (data: CreateReceiptServiceData): Promise<str
   }
 
   const poRef = doc(db, "purchaseOrders", data.purchaseOrderId);
-  // PO data needed for supplierId for stock movements
   const poSnapInitial = await getDoc(poRef);
   if (!poSnapInitial.exists()) throw new Error("Purchase Order not found.");
   const purchaseOrderDataForContext = poSnapInitial.data() as PurchaseOrder;
@@ -51,7 +50,6 @@ export const createReceipt = async (data: CreateReceiptServiceData): Promise<str
 
   const receiptRef = doc(collection(db, "receipts"));
 
-  // Use a transaction for all reads and writes related to this receipt
   await runTransaction(db, async (transaction) => {
     const receiptDataForTransaction: Omit<Receipt, "id" | "receivedItems" | "receivingUserName" | "targetWarehouseName"> = {
       purchaseOrderId: data.purchaseOrderId,
@@ -65,18 +63,25 @@ export const createReceipt = async (data: CreateReceiptServiceData): Promise<str
     };
     transaction.set(receiptRef, receiptDataForTransaction);
 
-    for (const item of data.itemsToProcess) {
-      const product = await getProductById(item.productId); // Get product details for notes, etc.
-      if (!product || !product.isActive) {
-        throw new Error(`Product ${item.productName} (ID: ${item.productId}) is not valid or active for receipt.`);
-      }
+    // Pre-fetch all relevant PO Detail documents to avoid reads after writes for different items.
+    // This is not strictly necessary if each loop iteration is self-contained for reads/writes
+    // related to *that specific item*, but ensures all PO detail reads happen before *any* stock/movement writes.
+    const poDetailRefs = data.itemsToProcess.map(item => doc(db, `purchaseOrders/${data.purchaseOrderId}/details/${item.poDetailId}`));
+    const poDetailSnaps = await Promise.all(poDetailRefs.map(ref => transaction.get(ref))); // Read all PO details first
 
-      const poDetailRef = doc(db, `purchaseOrders/${data.purchaseOrderId}/details/${item.poDetailId}`);
-      const poDetailSnap = await transaction.get(poDetailRef);
+    for (let i = 0; i < data.itemsToProcess.length; i++) {
+      const item = data.itemsToProcess[i];
+      const poDetailSnap = poDetailSnaps[i]; // Use the pre-fetched snapshot
+
       if (!poDetailSnap.exists()) {
         throw new Error(`Purchase Order Detail item ${item.poDetailId} for product ${item.productName} not found.`);
       }
       const currentPODetail = poDetailSnap.data() as PurchaseOrderDetail;
+
+      const product = await getProductById(item.productId);
+      if (!product || !product.isActive) {
+        throw new Error(`Product ${item.productName} (ID: ${item.productId}) is not valid or active for receipt.`);
+      }
 
       // --- Handle OK Quantity ---
       if (item.qtyOkReceivedThisReceipt > 0) {
@@ -86,7 +91,7 @@ export const createReceipt = async (data: CreateReceiptServiceData): Promise<str
           item.qtyOkReceivedThisReceipt,
           "Ok",
           data.receivingUserId,
-          transaction
+          transaction // Pass the transaction object
         );
         await recordStockMovement({
           productId: item.productId, productName: product.name, warehouseId: data.targetWarehouseId, warehouseName: targetWarehouse.name,
@@ -95,7 +100,7 @@ export const createReceipt = async (data: CreateReceiptServiceData): Promise<str
           reason: `PO Receipt: ${data.purchaseOrderId.substring(0,8)}... (OK)`,
           notes: `PO Item: ${product.name}. Qty: ${item.qtyOkReceivedThisReceipt}. Status: Ok. ${item.lineItemNotes || ''}`.trim(),
           relatedDocumentId: data.purchaseOrderId, supplierId: purchaseOrderDataForContext.supplierId,
-        }, transaction);
+        }, transaction); // Pass the transaction object
 
         const receivedItemOkRef = doc(collection(receiptRef, "receivedItems"));
         transaction.set(receivedItemOkRef, {
@@ -112,7 +117,7 @@ export const createReceipt = async (data: CreateReceiptServiceData): Promise<str
           item.qtyDamagedReceivedThisReceipt,
           "Damaged",
           data.receivingUserId,
-          transaction
+          transaction // Pass the transaction object
         );
         await recordStockMovement({
           productId: item.productId, productName: product.name, warehouseId: data.targetWarehouseId, warehouseName: targetWarehouse.name,
@@ -121,7 +126,7 @@ export const createReceipt = async (data: CreateReceiptServiceData): Promise<str
           reason: `PO Receipt: ${data.purchaseOrderId.substring(0,8)}... (Damaged)`,
           notes: `PO Item: ${product.name}. Qty: ${item.qtyDamagedReceivedThisReceipt}. Status: Damaged. ${item.lineItemNotes || ''}`.trim(),
           relatedDocumentId: data.purchaseOrderId, supplierId: purchaseOrderDataForContext.supplierId,
-        }, transaction);
+        }, transaction); // Pass the transaction object
 
         const receivedItemDamagedRef = doc(collection(receiptRef, "receivedItems"));
         transaction.set(receivedItemDamagedRef, {
@@ -132,20 +137,19 @@ export const createReceipt = async (data: CreateReceiptServiceData): Promise<str
 
       // --- Handle Missing Quantity ---
       if (item.qtyMissingReceivedThisReceipt > 0) {
-        // No stock item update for missing items
         await recordStockMovement({
           productId: item.productId, productName: product.name, warehouseId: data.targetWarehouseId, warehouseName: targetWarehouse.name,
-          type: 'PO_MISSING', quantityChanged: item.qtyMissingReceivedThisReceipt, // quantityChanged is the number missing
-          quantityBefore: 0, quantityAfter: 0, // No physical stock change
+          type: 'PO_MISSING', quantityChanged: item.qtyMissingReceivedThisReceipt,
+          quantityBefore: 0, quantityAfter: 0,
           movementDate: data.receiptDate, userId: data.receivingUserId, userName: receivingUser.displayName || data.receivingUserId,
           reason: `PO Receipt: ${data.purchaseOrderId.substring(0,8)}... (Missing)`,
           notes: `PO Item: ${product.name}. Qty: ${item.qtyMissingReceivedThisReceipt} declared Missing. ${item.lineItemNotes || ''}`.trim(),
           relatedDocumentId: data.purchaseOrderId, supplierId: purchaseOrderDataForContext.supplierId,
-        }, transaction);
+        }, transaction); // Pass the transaction object
 
         const receivedItemMissingRef = doc(collection(receiptRef, "receivedItems"));
         transaction.set(receivedItemMissingRef, {
-          productId: item.productId, productName: product.name, quantityReceived: item.qtyMissingReceivedThisReceipt, // Store missing qty here for the receipt record
+          productId: item.productId, productName: product.name, quantityReceived: item.qtyMissingReceivedThisReceipt,
           itemStatus: "Missing", notes: item.lineItemNotes || "",
         } as Omit<ReceivedItem, "id">);
       }
@@ -155,7 +159,7 @@ export const createReceipt = async (data: CreateReceiptServiceData): Promise<str
       const newCumulativeDamaged = (currentPODetail.receivedDamagedQuantity || 0) + item.qtyDamagedReceivedThisReceipt;
       const newCumulativeMissing = (currentPODetail.receivedMissingQuantity || 0) + item.qtyMissingReceivedThisReceipt;
 
-      transaction.update(poDetailRef, {
+      transaction.update(poDetailRefs[i], { // Use the pre-fetched ref
         receivedQuantity: newCumulativeOk,
         receivedDamagedQuantity: newCumulativeDamaged,
         receivedMissingQuantity: newCumulativeMissing,
@@ -177,7 +181,7 @@ async function getPODetailsForStatusCheck(poId: string): Promise<PurchaseOrderDe
 
 export async function updatePOStatusAfterReceipt(purchaseOrderId: string, userId: string) {
     const poRef = doc(db, "purchaseOrders", purchaseOrderId);
-    const poSnap = await getDoc(poRef); // Get latest PO data
+    const poSnap = await getDoc(poRef);
     if (!poSnap.exists()) {
         console.error(`PO ${purchaseOrderId} not found during status update after receipt.`);
         return;
@@ -187,8 +191,6 @@ export async function updatePOStatusAfterReceipt(purchaseOrderId: string, userId
     const details = await getPODetailsForStatusCheck(purchaseOrderId);
 
     if (details.length === 0) {
-        // If PO has no line items (edge case, possibly after all items were removed by an edit)
-        // and it's not already in a terminal state, mark as Completed.
         if (purchaseOrder.status !== "Completed" && purchaseOrder.status !== "Canceled") {
             await updatePurchaseOrderStatus(purchaseOrderId, "Completed", userId);
         }
@@ -212,22 +214,17 @@ export async function updatePOStatusAfterReceipt(purchaseOrderId: string, userId
 
     if (allItemsFullyAccounted) {
         if (allExpectedPhysicalItemsReceivedAndNoMissing) {
-            // All ordered items are physically accounted for (OK or Damaged), and nothing is marked as missing cumulatively.
             newStatus = "FullyReceived";
         } else {
-            // All ordered items are accounted for, but some were confirmed as missing.
-            // The PO is reconciled in terms of quantity accounting.
             newStatus = "Completed";
         }
     } else {
-        // Some items are still outstanding (not yet received as OK, Damaged, or Missing).
         newStatus = "PartiallyDelivered";
     }
     
     if (newStatus !== purchaseOrder.status) {
         await updatePurchaseOrderStatus(purchaseOrderId, newStatus, userId);
     } else {
-        // Even if status doesn't change, update the 'updatedAt' timestamp.
         await updateDoc(poRef, { updatedAt: Timestamp.now() });
     }
 }
