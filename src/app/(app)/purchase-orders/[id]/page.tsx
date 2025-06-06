@@ -35,7 +35,7 @@ import { cn } from "@/lib/utils";
 import { getActiveWarehouses } from "@/services/warehouseService";
 import { createReceipt, updatePOStatusAfterReceipt, type CreateReceiptServiceData } from "@/services/receiptService";
 import { db } from "@/lib/firebase";
-import { updateRequisitionQuantitiesPostConfirmation } from "@/services/requisitionService";
+import { updateRequisitionQuantitiesPostConfirmation, handleRequisitionUpdateForPOCancellation } from "@/services/requisitionService";
 
 
 const poDetailItemSchema = z.object({
@@ -310,7 +310,9 @@ export default function PurchaseOrderDetailPage() {
         transaction.update(poRef, updateDataForMainPO);
 
         const detailsCollectionRef = firestoreCollection(db, "purchaseOrders", purchaseOrderId, "details");
-        const currentDetailsSnapshot = await firestoreGetDocs(firestoreQuery(detailsCollectionRef));
+        // Fetch existing detail document references BEFORE the transaction loop if needed
+        // For this specific 'Accept Original' case, we are deleting all current and re-adding original.
+        const currentDetailsSnapshot = await firestoreGetDocs(firestoreQuery(detailsCollectionRef)); 
 
         currentDetailsSnapshot.forEach(docSnap => {
           transaction.delete(docSnap.ref);
@@ -318,12 +320,11 @@ export default function PurchaseOrderDetailPage() {
 
         for (const originalDetailItem of currentPODataFromSnap.originalDetails) {
           const { id: oldDocId, ...detailDataToSet } = originalDetailItem;
-          const newDetailRef = firestoreDoc(detailsCollectionRef); // Create ref for new doc
+          const newDetailRef = firestoreDoc(detailsCollectionRef); 
           transaction.set(newDetailRef, detailDataToSet);
         }
       });
 
-      // Call this *after* the transaction successfully commits
       await updateRequisitionQuantitiesPostConfirmation(purchaseOrderId, currentUser.uid, purchaseOrder.originalDetails);
       toast({ title: "Original PO Confirmed", description: "Purchase Order reverted to original terms and confirmed." });
       fetchPOData();
@@ -392,37 +393,21 @@ export default function PurchaseOrderDetailPage() {
     if (!purchaseOrder || !currentUser) return;
     setIsSubmittingReceipt(true);
 
-    const servicePayloadItems: CreateReceiptServiceData['itemsToProcess'] = [];
-    
-    data.itemsToProcess.forEach(formItem => {
-        if (formItem.qtyOkReceivedThisReceipt > 0) {
-            servicePayloadItems.push({
-                productId: formItem.productId, productName: formItem.productName, poDetailId: formItem.poDetailId,
-                qtyOkReceivedThisReceipt: formItem.qtyOkReceivedThisReceipt, 
-                qtyDamagedReceivedThisReceipt: 0, 
-                qtyMissingReceivedThisReceipt: 0, 
-                lineItemNotes: formItem.lineItemNotes || "",
-            });
-        }
-        if (formItem.qtyDamagedReceivedThisReceipt > 0) {
-             servicePayloadItems.push({
-                productId: formItem.productId, productName: formItem.productName, poDetailId: formItem.poDetailId,
-                qtyOkReceivedThisReceipt: 0, 
-                qtyDamagedReceivedThisReceipt: formItem.qtyDamagedReceivedThisReceipt, 
-                qtyMissingReceivedThisReceipt: 0,
-                lineItemNotes: formItem.lineItemNotes || "",
-            });
-        }
-        if (formItem.qtyMissingReceivedThisReceipt > 0) {
-             servicePayloadItems.push({
-                productId: formItem.productId, productName: formItem.productName, poDetailId: formItem.poDetailId,
-                qtyOkReceivedThisReceipt: 0,
-                qtyDamagedReceivedThisReceipt: 0,
-                qtyMissingReceivedThisReceipt: formItem.qtyMissingReceivedThisReceipt,
-                lineItemNotes: formItem.lineItemNotes || "",
-            });
-        }
-    });
+    const servicePayloadItems: CreateReceiptServiceData['itemsToProcess'] = data.itemsToProcess
+      .filter(formItem => 
+        formItem.qtyOkReceivedThisReceipt > 0 || 
+        formItem.qtyDamagedReceivedThisReceipt > 0 || 
+        formItem.qtyMissingReceivedThisReceipt > 0
+      )
+      .map(formItem => ({
+        productId: formItem.productId,
+        productName: formItem.productName,
+        poDetailId: formItem.poDetailId,
+        qtyOkReceivedThisReceipt: formItem.qtyOkReceivedThisReceipt,
+        qtyDamagedReceivedThisReceipt: formItem.qtyDamagedReceivedThisReceipt,
+        qtyMissingReceivedThisReceipt: formItem.qtyMissingReceivedThisReceipt,
+        lineItemNotes: formItem.lineItemNotes || "",
+      }));
     
     if (servicePayloadItems.length === 0) {
         receiptForm.setError("itemsToProcess", { type: "manual", message: "No quantities were entered for receipt (OK, Damaged, or Missing)." });
@@ -441,7 +426,7 @@ export default function PurchaseOrderDetailPage() {
 
     try {
         await createReceipt(payload);
-        await updatePOStatusAfterReceipt(purchaseOrder.id, currentUser.uid);
+        // updatePOStatusAfterReceipt is now called within createReceipt itself
         toast({ title: "Receipt Recorded", description: "Stock receipt successfully recorded. PO status updated." });
         setIsReceiptDialogOpen(false);
         fetchPOData(); 
