@@ -202,6 +202,7 @@ export const QUOTATION_ADDITIONAL_COST_TYPES = ["logistics", "tax", "insurance",
 export type QuotationAdditionalCostType = typeof QUOTATION_ADDITIONAL_COST_TYPES[number];
 
 export interface QuotationAdditionalCost {
+  id?: string; // <--- Añade esta línea para resolver el error de 'id'
   description: string;
   amount: number;
   type: QuotationAdditionalCostType;

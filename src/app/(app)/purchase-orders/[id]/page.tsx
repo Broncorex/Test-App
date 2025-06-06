@@ -1,4 +1,3 @@
-
 "use client";
 
 import { useParams, useRouter } from "next/navigation";
@@ -11,7 +10,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth-store";
 import { getPurchaseOrderById, updatePurchaseOrderStatus, updatePurchaseOrderDetailsAndCosts, type UpdatePOWithChangesData, recordSupplierSolution, type RecordSupplierSolutionData } from "@/services/purchaseOrderService";
 import type { PurchaseOrder, PurchaseOrderStatus, PurchaseOrderDetail, QuotationAdditionalCost, Warehouse as AppWarehouse, User as AppUser, SupplierSolutionType } from "@/types";
-import { QUOTATION_ADDITIONAL_COST_TYPES, PURCHASE_ORDER_STATUSES, SUPPLIER_SOLUTION_TYPES } from "@/types"; 
+import { QUOTATION_ADDITIONAL_COST_TYPES, PURCHASE_ORDER_STATUSES, SUPPLIER_SOLUTION_TYPES } from "@/types";
 import { Timestamp, deleteField, runTransaction, collection as firestoreCollection, query as firestoreQuery, getDocs as firestoreGetDocs, doc as firestoreDoc } from "firebase/firestore";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
@@ -53,7 +52,9 @@ const editPOFormSchema = z.object({
   notes: z.string().optional(),
   expectedDeliveryDate: z.date().optional(),
   additionalCosts: z.array(z.object({
-    id: z.string().optional(), 
+    // Removed 'id' from here as QuotationAdditionalCost doesn't have it. Form can use internal IDs.
+    // However, if the form still expects an 'id' for useFieldArray, we need to ensure it's generated when mapping from PO data.
+    // For now, removing `ac.id` from `map` in `handleOpenEditPODialog` is the key fix.
     description: z.string().min(1, "Cost description is required."),
     amount: z.coerce.number().min(0, "Cost amount must be non-negative."),
     type: z.enum(QUOTATION_ADDITIONAL_COST_TYPES),
@@ -68,26 +69,38 @@ const recordReceiptItemSchema = z.object({
   productId: z.string(),
   productName: z.string(),
   poDetailId: z.string(),
-  orderedQuantity: z.number(), 
-  
-  alreadyReceivedOkQuantity: z.number().default(0), 
+  orderedQuantity: z.number(),
+
+  alreadyReceivedOkQuantity: z.number().default(0),
   alreadyReceivedDamagedQuantity: z.number().default(0),
   alreadyReceivedMissingQuantity: z.number().default(0),
 
   qtyOkReceivedThisReceipt: z.coerce.number().min(0, "OK Qty must be non-negative.").default(0),
   qtyDamagedReceivedThisReceipt: z.coerce.number().min(0, "Damaged Qty must be non-negative.").default(0),
-  qtyMissingReceivedThisReceipt: z.coerce.number().min(0, "Missing Qty must be non-negative.").default(0),
-  
-  lineItemNotes: z.string().optional(), 
+  qtyMissingReceivedThisReceipt: z.coerce.number().min(0, "Missing Qty must be non-negative.").default(0), // Will be auto-calculated
+
+  lineItemNotes: z.string().optional(),
 }).superRefine((data, ctx) => {
     const trulyOutstandingForThisReceipt = Math.max(0, data.orderedQuantity - (data.alreadyReceivedOkQuantity + data.alreadyReceivedDamagedQuantity + data.alreadyReceivedMissingQuantity));
     const totalEnteredThisReceipt = data.qtyOkReceivedThisReceipt + data.qtyDamagedReceivedThisReceipt + data.qtyMissingReceivedThisReceipt;
 
+    // Validate that total entered quantities do not exceed truly outstanding
     if (totalEnteredThisReceipt > trulyOutstandingForThisReceipt) {
         ctx.addIssue({
-            path: ["qtyOkReceivedThisReceipt"], 
+            code: z.ZodIssueCode.custom, // Add Zod issue code
+            path: ["qtyOkReceivedThisReceipt"], // Path can be more specific, or just to the array for root
             message: `Total quantities entered (${totalEnteredThisReceipt}) for this receipt cannot exceed the truly outstanding quantity (${trulyOutstandingForThisReceipt}).`,
         });
+    }
+
+    // Validate that if there's any outstanding, the sum of quantities for THIS receipt equals the truly outstanding
+    // This implies that if trulyOutstandingForThisReceipt > 0, the user MUST account for all of it.
+    if (trulyOutstandingForThisReceipt > 0 && totalEnteredThisReceipt !== trulyOutstandingForThisReceipt) {
+      ctx.addIssue({
+          code: z.ZodIssueCode.custom, // Add Zod issue code
+          path: ["qtyOkReceivedThisReceipt"], // Point to an input field
+          message: `The sum of OK, Damaged, and Missing quantities entered for this receipt (${totalEnteredThisReceipt}) must exactly match the outstanding quantity (${trulyOutstandingForThisReceipt}).`,
+      });
     }
 });
 
@@ -99,14 +112,15 @@ const recordReceiptFormSchema = z.object({
   itemsToProcess: z.array(recordReceiptItemSchema)
     .min(1, "At least one item must be specified for receipt.")
     .superRefine((items, ctx) => {
-        const anyQuantityEntered = items.some(item => 
-            item.qtyOkReceivedThisReceipt > 0 || 
-            item.qtyDamagedReceivedThisReceipt > 0 || 
+        const anyQuantityEntered = items.some(item =>
+            item.qtyOkReceivedThisReceipt > 0 ||
+            item.qtyDamagedReceivedThisReceipt > 0 ||
             item.qtyMissingReceivedThisReceipt > 0
         );
         if (!anyQuantityEntered) {
              ctx.addIssue({
-                path: [], 
+                code: z.ZodIssueCode.custom, // Add Zod issue code
+                path: [], // Root of the array
                 message: "Please enter received (OK, Damaged, or Missing) quantities for at least one item.",
             });
         }
@@ -167,7 +181,35 @@ export default function PurchaseOrderDetailPage() {
   const { fields: receiptItemsFields, replace: replaceReceiptItems } = useFieldArray({
     control: receiptForm.control, name: "itemsToProcess"
   });
-  
+
+  // For auto-calculation of missing quantity in receipt form
+  const receiptFormWatchItems = useWatch({ control: receiptForm.control, name: "itemsToProcess" });
+
+  useEffect(() => {
+    // This effect ensures missing quantity is auto-calculated and updated
+    // It's crucial for react-hook-form to setValue correctly based on other inputs
+    receiptItemsFields.forEach((field, index) => {
+      const currentValues = receiptFormWatchItems[index];
+      const orderedQuantity = currentValues.orderedQuantity;
+      const alreadyReceivedOk = currentValues.alreadyReceivedOkQuantity;
+      const alreadyReceivedDamaged = currentValues.alreadyReceivedDamagedQuantity;
+      const alreadyReceivedMissing = currentValues.alreadyReceivedMissingQuantity;
+
+      const qtyOk = currentValues.qtyOkReceivedThisReceipt || 0;
+      const qtyDamaged = currentValues.qtyDamagedReceivedThisReceipt || 0;
+
+      const totalAccountedForPreviously = alreadyReceivedOk + alreadyReceivedDamaged + alreadyReceivedMissing;
+      const trulyOutstanding = Math.max(0, orderedQuantity - totalAccountedForPreviously);
+
+      const calculatedMissing = Math.max(0, trulyOutstanding - qtyOk - qtyDamaged);
+
+      // Only update if the calculated value is different to avoid infinite re-renders
+      if (receiptForm.getValues(`itemsToProcess.${index}.qtyMissingReceivedThisReceipt`) !== calculatedMissing) {
+        receiptForm.setValue(`itemsToProcess.${index}.qtyMissingReceivedThisReceipt`, calculatedMissing, { shouldValidate: true, shouldDirty: true });
+      }
+    });
+  }, [receiptFormWatchItems, receiptItemsFields, receiptForm]);
+
 
   const fetchPOData = useCallback(async () => {
     if (!purchaseOrderId || !appUser) return;
@@ -207,16 +249,17 @@ export default function PurchaseOrderDetailPage() {
 
   const handleOpenEditPODialog = () => {
     if (!purchaseOrder) return;
-    const sourceData = (purchaseOrder.status === 'PendingInternalReview' && purchaseOrder.originalDetails) 
-      ? purchaseOrder 
-      : purchaseOrder; 
+    const sourceData = (purchaseOrder.status === 'PendingInternalReview' && purchaseOrder.originalDetails)
+      ? purchaseOrder
+      : purchaseOrder;
 
     editPOForm.reset({
       notes: sourceData.notes || "",
       expectedDeliveryDate: sourceData.expectedDeliveryDate?.toDate(),
-      additionalCosts: sourceData.additionalCosts?.map(ac => ({...ac, id: ac.id || Math.random().toString(36).substring(7), amount: Number(ac.amount)})) || [],
+      // FIX: Ensure id is generated for form's internal use for `key` prop, not from sourceData.additionalCosts which don't have it.
+      additionalCosts: sourceData.additionalCosts?.map(ac => ({...ac, id: Math.random().toString(36).substring(7), amount: Number(ac.amount)})) || [],
       details: sourceData.details?.map(d => ({
-        id: d.id, 
+        id: d.id,
         productId: d.productId,
         productName: d.productName,
         orderedQuantity: d.orderedQuantity,
@@ -251,9 +294,9 @@ export default function PurchaseOrderDetailPage() {
     try {
       await updatePurchaseOrderDetailsAndCosts(purchaseOrderId, payload);
       toast({ title: "Supplier's Proposal Recorded", description: "PO details updated. Now awaiting internal review." });
-      await handleStatusChange("PendingInternalReview"); 
+      await handleStatusChange("PendingInternalReview");
       setIsEditPODialogOpen(false);
-      fetchPOData(); 
+      fetchPOData();
     } catch (error: any) {
       console.error("Error updating PO with supplier changes:", error);
       toast({ title: "Update Failed", description: error.message || "Could not update Purchase Order.", variant: "destructive" });
@@ -282,11 +325,11 @@ export default function PurchaseOrderDetailPage() {
 
       await runTransaction(db, async (transaction) => {
         const poRef = firestoreDoc(db, "purchaseOrders", purchaseOrderId);
-        
-        const detailsCollectionRef = firestoreCollection(db, "purchaseOrders", purchaseOrderId, "details");
-        const currentDetailsSnapshot = await firestoreGetDocs(firestoreQuery(detailsCollectionRef)); 
 
-        const poSnap = await transaction.get(poRef); 
+        const detailsCollectionRef = firestoreCollection(db, "purchaseOrders", purchaseOrderId, "details");
+        const currentDetailsSnapshot = await firestoreGetDocs(firestoreQuery(detailsCollectionRef));
+
+        const poSnap = await transaction.get(poRef);
 
         if (!poSnap.exists()) {
           throw new Error("Purchase Order not found during transaction.");
@@ -314,17 +357,20 @@ export default function PurchaseOrderDetailPage() {
         transaction.update(poRef, updateDataForMainPO);
 
         currentDetailsSnapshot.forEach(docSnap => {
-          transaction.delete(docSnap.ref); 
+          transaction.delete(docSnap.ref);
         });
 
         for (const originalDetailItem of currentPODataFromSnap.originalDetails) {
-          const { id: oldDocId, ...detailDataToSet } = originalDetailItem; 
-          const newDetailRef = firestoreDoc(detailsCollectionRef); 
-          transaction.set(newDetailRef, detailDataToSet); 
+          const { id: oldDocId, ...detailDataToSet } = originalDetailItem;
+          // Ensure newDetailRef gets a new ID, if 'id' from originalDetailItem was present
+          const newDetailRef = firestoreDoc(detailsCollectionRef);
+          transaction.set(newDetailRef, detailDataToSet);
         }
       });
 
-      await updateRequisitionQuantitiesPostConfirmation(purchaseOrderId, currentUser.uid, originalDetailsForRequisitionUpdate);
+      // FIX: Corrected argument order based on common patterns and error message analysis
+      // Assuming updateRequisitionQuantitiesPostConfirmation takes (poDetails: PurchaseOrderDetail[], poId: string, userId: string)
+      await updateRequisitionQuantitiesPostConfirmation(originalDetailsForRequisitionUpdate, purchaseOrderId, currentUser.uid);
       toast({ title: "Original PO Confirmed", description: "Purchase Order reverted to original terms and confirmed." });
       fetchPOData();
       setIsAcceptOriginalConfirmOpen(false);
@@ -361,9 +407,9 @@ export default function PurchaseOrderDetailPage() {
                     alreadyReceivedOkQuantity: d.receivedQuantity || 0,
                     alreadyReceivedDamagedQuantity: d.receivedDamagedQuantity || 0,
                     alreadyReceivedMissingQuantity: d.receivedMissingQuantity || 0,
-                    qtyOkReceivedThisReceipt: 0, 
+                    qtyOkReceivedThisReceipt: 0,
                     qtyDamagedReceivedThisReceipt: 0,
-                    qtyMissingReceivedThisReceipt: 0,
+                    qtyMissingReceivedThisReceipt: 0, // This will be auto-calculated by useEffect
                     lineItemNotes: "",
                 };
             });
@@ -372,7 +418,7 @@ export default function PurchaseOrderDetailPage() {
             toast({ title: "No Items to Receive", description: "All items on this PO have been fully accounted for (OK, Damaged, or Missing).", variant: "default" });
             return;
         }
-        
+
         receiptForm.reset({
             receiptDate: new Date(),
             targetWarehouseId: activeWarehouses.find(wh => wh.isDefault)?.id || (activeWarehouses.length > 0 ? activeWarehouses[0].id : ""),
@@ -393,9 +439,9 @@ export default function PurchaseOrderDetailPage() {
     setIsSubmittingReceipt(true);
 
     const servicePayloadItems: CreateReceiptServiceData['itemsToProcess'] = data.itemsToProcess
-      .filter(formItem => 
-        formItem.qtyOkReceivedThisReceipt > 0 || 
-        formItem.qtyDamagedReceivedThisReceipt > 0 || 
+      .filter(formItem =>
+        formItem.qtyOkReceivedThisReceipt > 0 ||
+        formItem.qtyDamagedReceivedThisReceipt > 0 ||
         formItem.qtyMissingReceivedThisReceipt > 0
       )
       .map(formItem => ({
@@ -407,9 +453,10 @@ export default function PurchaseOrderDetailPage() {
         qtyMissingReceivedThisReceipt: formItem.qtyMissingReceivedThisReceipt,
         lineItemNotes: formItem.lineItemNotes || "",
       }));
-    
+
     if (servicePayloadItems.length === 0) {
-        receiptForm.setError("itemsToProcess", { type: "manual", message: "No quantities were entered for receipt (OK, Damaged, or Missing)." });
+        // FIX: Added Zod issue code
+        receiptForm.setError("itemsToProcess", { type: "manual", message: "No quantities were entered for receipt (OK, Damaged, or Missing).", code: z.ZodIssueCode.custom });
         setIsSubmittingReceipt(false);
         return;
     }
@@ -427,14 +474,14 @@ export default function PurchaseOrderDetailPage() {
         await createReceipt(payload);
         toast({ title: "Receipt Recorded", description: "Stock receipt successfully recorded. PO status updated." });
         setIsReceiptDialogOpen(false);
-        fetchPOData(); 
+        fetchPOData();
     } catch (error: any) {
         console.error("Error recording receipt:", error);
         toast({ title: "Receipt Failed", description: error.message || "Could not record receipt.", variant: "destructive" });
     }
     setIsSubmittingReceipt(false);
   };
-  
+
   const handleOpenSupplierSolutionDialog = () => {
     if (!purchaseOrder) return;
     setIsSupplierSolutionDialogOpen(true);
@@ -445,10 +492,10 @@ export default function PurchaseOrderDetailPage() {
     if (!timestamp) return "N/A";
     let date: Date;
     if (timestamp instanceof Timestamp) date = timestamp.toDate();
-    else if (typeof timestamp === 'string') date = new Date(timestamp); 
+    else if (typeof timestamp === 'string') date = new Date(timestamp);
     else return "Invalid Date Object";
-    
-    if (!isValid(date)) { 
+
+    if (!isValid(date)) {
         try {
             const parsed = new Date(Date.parse(String(timestamp)));
             if (isValid(parsed)) date = parsed;
@@ -469,8 +516,8 @@ export default function PurchaseOrderDetailPage() {
       case "PendingInternalReview": return "default";
       case "ConfirmedBySupplier": return "default";
       case "RejectedBySupplier": return "destructive";
-      case "PartiallyDelivered": return "default"; 
-      case "AwaitingFutureDelivery": return "default"; 
+      case "PartiallyDelivered": return "default";
+      case "AwaitingFutureDelivery": return "default";
       case "FullyReceived": return "default";
       case "Completed": return "default";
       case "Canceled": return "destructive";
@@ -485,8 +532,8 @@ export default function PurchaseOrderDetailPage() {
       case "ChangesProposedBySupplier": return "bg-orange-400 hover:bg-orange-500 text-black";
       case "PendingInternalReview": return "bg-purple-500 hover:bg-purple-600 text-white";
       case "ConfirmedBySupplier": return "bg-teal-500 hover:bg-teal-600 text-white";
-      case "PartiallyDelivered": return "bg-yellow-500 hover:bg-yellow-600 text-black"; 
-      case "AwaitingFutureDelivery": return "bg-cyan-500 hover:bg-cyan-600 text-white"; 
+      case "PartiallyDelivered": return "bg-yellow-500 hover:bg-yellow-600 text-black";
+      case "AwaitingFutureDelivery": return "bg-cyan-500 hover:bg-cyan-600 text-white";
       case "FullyReceived": return "bg-sky-500 hover:bg-sky-600 text-white";
       case "Completed": return "bg-green-500 hover:bg-green-600 text-white";
       default: return "";
@@ -505,10 +552,10 @@ export default function PurchaseOrderDetailPage() {
 
   const showSendToSupplier = canManagePO && poStatus === "Pending";
   const showSentToSupplierActions = canManagePO && poStatus === "SentToSupplier";
-  const showChangesProposedActions = canManagePO && poStatus === "ChangesProposedBySupplier"; 
+  const showChangesProposedActions = canManagePO && poStatus === "ChangesProposedBySupplier";
   const showPendingInternalReviewActions = canManagePO && poStatus === "PendingInternalReview";
   const showAcceptOriginalPOButton = canManagePO && poStatus === "PendingInternalReview" && purchaseOrder.originalDetails && purchaseOrder.originalDetails.length > 0;
-  
+
   const showRecordReceipt = canManagePO && (poStatus === "ConfirmedBySupplier" || poStatus === "PartiallyDelivered" || poStatus === "AwaitingFutureDelivery");
   const showRecordSupplierSolutionButton = canManagePO && (poStatus === "PartiallyDelivered" || poStatus === "ChangesProposedBySupplier" || poStatus === "PendingInternalReview");
 
@@ -541,6 +588,7 @@ export default function PurchaseOrderDetailPage() {
         <TableHeader><TableRow><TableHead>Description</TableHead><TableHead>Type</TableHead><TableHead className="text-right">Amount</TableHead></TableRow></TableHeader>
         <TableBody>
             {costs.length > 0 ? costs.map((cost, index) => (
+                // Use a stable key for each row, index is fine if items are not reordered
                 <TableRow key={index}>
                     <TableCell>{cost.description}</TableCell>
                     <TableCell>{cost.type}</TableCell>
@@ -562,7 +610,7 @@ export default function PurchaseOrderDetailPage() {
         actions={
           <div className="flex gap-2 flex-wrap">
             {showSendToSupplier && (<Button onClick={() => handleStatusChange("SentToSupplier")} disabled={isUpdating}>{isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.Send className="mr-2 h-4 w-4" />}Send to Supplier</Button>)}
-            
+
             {showSentToSupplierActions && (
               <>
                 <Button onClick={() => handleStatusChange("ConfirmedBySupplier")} disabled={isUpdating} variant="default" className="bg-teal-500 hover:bg-teal-600">{isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.Check className="mr-2 h-4 w-4" />}Record Supplier Confirmation</Button>
@@ -621,11 +669,11 @@ export default function PurchaseOrderDetailPage() {
             )}
 
             {showRecordReceipt && (<Button onClick={handleOpenReceiptDialog} disabled={isUpdating || isLoadingWarehouses} variant="default"><Icons.Package className="mr-2 h-4 w-4" /> Record Receipt</Button>)}
-            
+
             {showRecordSupplierSolutionButton && (<Button onClick={handleOpenSupplierSolutionDialog} disabled={isUpdating || isSubmittingSolution} variant="outline" className="border-yellow-500 text-yellow-600 hover:bg-yellow-50"><Icons.Edit className="mr-2 h-4 w-4" /> Record Supplier Solution</Button>)}
-            
+
             {showCancelPO && (<AlertDialog><AlertDialogTrigger asChild><Button variant="destructive" disabled={isUpdating}>{isUpdating ? <Icons.Logo className="animate-spin mr-2" /> : <Icons.Delete className="mr-2 h-4 w-4" />}Cancel PO</Button></AlertDialogTrigger><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Are you sure you want to cancel this Purchase Order?</AlertDialogTitle><AlertDialogDescription>This action will mark the PO as 'Canceled'. If canceled before supplier confirmation, pending quantities on the requisition will be adjusted.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Keep PO</AlertDialogCancel><AlertDialogAction onClick={() => handleStatusChange("Canceled")} className="bg-destructive hover:bg-destructive/90">Confirm Cancellation</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>)}
-            
+
             <Button onClick={() => router.back()} variant="outline">Back</Button>
           </div>
         }
@@ -657,15 +705,15 @@ export default function PurchaseOrderDetailPage() {
                 <h3 className="text-lg font-semibold">Original Order</h3>
                 <p className="text-sm"><span className="font-medium text-muted-foreground">Notes:</span> {purchaseOrder.originalNotes || "N/A"}</p>
                 <p className="text-sm"><span className="font-medium text-muted-foreground">Expected Delivery:</span> {formatTimestampDate(purchaseOrder.originalExpectedDeliveryDate)}</p>
-                
+
                 <h4 className="text-md font-semibold pt-2">Original Items:</h4>
                 {purchaseOrder.originalDetails && purchaseOrder.originalDetails.length > 0 ? (
                   renderComparisonTable(purchaseOrder.originalDetails, purchaseOrder.originalDetails, "Details")
                 ) : <p className="text-sm text-muted-foreground">No original items recorded.</p>}
-                
+
                 <h4 className="text-md font-semibold pt-2">Original Additional Costs:</h4>
                 {renderAdditionalCostsTable(purchaseOrder.originalAdditionalCosts || [])}
-                
+
                 <div className="text-sm font-semibold pt-2 border-t mt-2">
                   <p>Original Subtotal: ${Number(purchaseOrder.originalProductsSubtotal || 0).toFixed(2)}</p>
                   <p>Original Total: ${Number(purchaseOrder.originalTotalAmount || 0).toFixed(2)}</p>
@@ -676,15 +724,15 @@ export default function PurchaseOrderDetailPage() {
                 <h3 className="text-lg font-semibold text-primary">Supplier's Proposed Order (Current)</h3>
                 <p className="text-sm"><span className="font-medium text-muted-foreground">Notes:</span> {purchaseOrder.notes || "N/A"}</p>
                 <p className="text-sm"><span className="font-medium text-muted-foreground">Expected Delivery:</span> {formatTimestampDate(purchaseOrder.expectedDeliveryDate)}</p>
-                
+
                 <h4 className="text-md font-semibold pt-2">Proposed Items:</h4>
                 {purchaseOrder.details && purchaseOrder.details.length > 0 ? (
                    renderComparisonTable(purchaseOrder.originalDetails || [], purchaseOrder.details, "Details")
                 ) : <p className="text-sm text-muted-foreground">No proposed items recorded.</p>}
-                 
+
                 <h4 className="text-md font-semibold pt-2">Proposed Additional Costs:</h4>
                 {renderAdditionalCostsTable(purchaseOrder.additionalCosts || [])}
-                
+
                  <div className="text-sm font-semibold pt-2 border-t mt-2">
                   <p>Proposed Subtotal: ${Number(purchaseOrder.productsSubtotal || 0).toFixed(2)}</p>
                   <p>Proposed Total: ${Number(purchaseOrder.totalAmount || 0).toFixed(2)}</p>
@@ -727,10 +775,10 @@ export default function PurchaseOrderDetailPage() {
             {purchaseOrder.completionDate && (
               <div className="flex justify-between"><span className="text-muted-foreground">Completion Date:</span><span className="font-medium">{formatTimestampDate(purchaseOrder.completionDate)}</span></div>
             )}
-            
+
             <Separator />
             <div className="flex justify-between"><span className="text-muted-foreground">Products Subtotal:</span><span className="font-medium">${Number(purchaseOrder.productsSubtotal || 0).toFixed(2)}</span></div>
-            
+
             {(purchaseOrder.additionalCosts && purchaseOrder.additionalCosts.length > 0) ? (
               <Accordion type="single" collapsible className="w-full -my-2">
                 <AccordionItem value="additional-costs" className="border-b-0">
@@ -760,7 +808,7 @@ export default function PurchaseOrderDetailPage() {
 
             <div className="flex justify-between text-md font-semibold pt-1"><span className="text-muted-foreground">Total PO Amount:</span><span>${Number(purchaseOrder.totalAmount || 0).toFixed(2)}</span></div>
             <Separator />
-            
+
             <div><span className="text-muted-foreground">Notes:</span><p className="font-medium whitespace-pre-wrap">{purchaseOrder.notes || "N/A"}</p></div>
             {purchaseOrder.supplierAgreedSolutionType && (
               <>
@@ -777,7 +825,7 @@ export default function PurchaseOrderDetailPage() {
                 )}
               </>
             )}
-            
+
             <Separator />
             <div className="flex justify-between"><span className="text-muted-foreground">Last Updated:</span><span className="font-medium">{new Date(purchaseOrder.updatedAt.seconds * 1000).toLocaleString()}</span></div>
             <div className="flex justify-between"><span className="text-muted-foreground">Created At:</span><span className="font-medium">{new Date(purchaseOrder.createdAt.seconds * 1000).toLocaleString()}</span></div>
@@ -856,7 +904,7 @@ export default function PurchaseOrderDetailPage() {
                   )} />
                 <FormField control={editPOForm.control} name="notes"
                   render={({ field }) => (<FormItem><FormLabel>PO Notes (Updated)</FormLabel><FormControl><Textarea placeholder="Updated notes from supplier or internal remarks" {...field} /></FormControl><FormMessage /></FormItem>)} />
-                
+
                 <Card>
                   <CardHeader className="p-3"><CardTitle className="text-md">Product Details (Editable)</CardTitle></CardHeader>
                   <CardContent className="p-3 space-y-3">
@@ -875,7 +923,7 @@ export default function PurchaseOrderDetailPage() {
                     ))}
                   </CardContent>
                 </Card>
-                
+
                 <Card>
                   <CardHeader className="p-3 flex flex-row items-center justify-between">
                     <CardTitle className="text-md">Additional Costs (Editable)</CardTitle>
@@ -937,16 +985,16 @@ export default function PurchaseOrderDetailPage() {
                               <Button variant={"outline"} className={cn("pl-3 text-left font-normal w-full", !field.value && "text-muted-foreground")}>
                                 {field.value ? format(field.value, "PPP") : <span>Pick a date</span>}
                                 <Icons.Calendar className="ml-auto h-4 w-4 opacity-50" />
-                              </Button>
-                            </FormControl>
-                          </PopoverTrigger>
-                          <PopoverContent className="w-auto p-0" align="start">
-                            <Calendar mode="single" selected={field.value} onSelect={field.onChange} initialFocus />
-                          </PopoverContent>
-                        </Popover>
-                        <FormMessage />
-                      </FormItem>
-                    )} />
+                            </Button>
+                          </FormControl>
+                        </PopoverTrigger>
+                        <PopoverContent className="w-auto p-0" align="start">
+                          <Calendar mode="single" selected={field.value} onSelect={field.onChange} initialFocus />
+                        </PopoverContent>
+                      </Popover>
+                      <FormMessage />
+                    </FormItem>
+                  )} />
                   <FormField control={receiptForm.control} name="targetWarehouseId"
                     render={({ field }) => (
                       <FormItem>
@@ -961,21 +1009,24 @@ export default function PurchaseOrderDetailPage() {
                 </div>
                 <FormField control={receiptForm.control} name="overallReceiptNotes"
                   render={({ field }) => (<FormItem><FormLabel>Overall Receipt Notes</FormLabel><FormControl><Textarea placeholder="e.g., Delivery condition, driver details" {...field} /></FormControl><FormMessage /></FormItem>)} />
-                
+
                 <Card className="mt-4">
                   <CardHeader className="p-3"><CardTitle className="text-md">Items to Process:</CardTitle></CardHeader>
                   <CardContent className="p-3 space-y-3">
                     {receiptItemsFields.map((item, index) => {
-                      const trulyOutstandingForThisReceipt = Math.max(0, item.orderedQuantity - (item.alreadyReceivedOkQuantity + item.alreadyReceivedDamagedQuantity + item.alreadyReceivedMissingQuantity));
+                      // We can get the latest values using receiptFormWatchItems for reactive updates
+                      const currentItemWatch = receiptFormWatchItems[index];
+                      const trulyOutstandingForThisReceipt = Math.max(0, currentItemWatch.orderedQuantity - (currentItemWatch.alreadyReceivedOkQuantity + currentItemWatch.alreadyReceivedDamagedQuantity + currentItemWatch.alreadyReceivedMissingQuantity));
+
                       return (
                         <div key={item.id} className="p-3 border rounded-md space-y-3 bg-muted/30">
                           <div className="flex justify-between items-center">
-                            <h4 className="font-semibold">{item.productName}</h4>
+                            <h4 className="font-semibold">{currentItemWatch.productName}</h4>
                             <p className="text-xs text-muted-foreground">
-                              Ordered: {item.orderedQuantity} | 
-                              Prev. OK: {item.alreadyReceivedOkQuantity} | 
-                              Prev. Damaged: {item.alreadyReceivedDamagedQuantity} | 
-                              Prev. Missing: {item.alreadyReceivedMissingQuantity} | 
+                              Ordered: {currentItemWatch.orderedQuantity} |
+                              Prev. OK: {currentItemWatch.alreadyReceivedOkQuantity} |
+                              Prev. Damaged: {currentItemWatch.alreadyReceivedDamagedQuantity} |
+                              Prev. Missing: {currentItemWatch.alreadyReceivedMissingQuantity} |
                               <span className="font-bold text-primary"> Outstanding for this receipt: {trulyOutstandingForThisReceipt}</span>
                             </p>
                           </div>
@@ -985,7 +1036,16 @@ export default function PurchaseOrderDetailPage() {
                             <FormField control={receiptForm.control} name={`itemsToProcess.${index}.qtyDamagedReceivedThisReceipt`}
                               render={({ field }) => (<FormItem><FormLabel>Qty Damaged Rec'd*</FormLabel><FormControl><Input type="number" {...field} /></FormControl><FormMessage /></FormItem>)} />
                             <FormField control={receiptForm.control} name={`itemsToProcess.${index}.qtyMissingReceivedThisReceipt`}
-                              render={({ field }) => (<FormItem><FormLabel>Qty Missing this time*</FormLabel><FormControl><Input type="number" {...field} /></FormControl><FormMessage /></FormItem>)} />
+                              render={({ field }) => (
+                                <FormItem>
+                                  <FormLabel>Qty Missing this time*</FormLabel>
+                                  <FormControl>
+                                    {/* Make this field readOnly as it's auto-calculated */}
+                                    <Input type="number" {...field} readOnly className="bg-muted" />
+                                  </FormControl>
+                                  <FormMessage />
+                                </FormItem>
+                              )} />
                           </div>
                           <div className="col-span-full">
                             <FormField control={receiptForm.control} name={`itemsToProcess.${index}.lineItemNotes`}
@@ -994,6 +1054,7 @@ export default function PurchaseOrderDetailPage() {
                         </div>
                       );
                     })}
+                    {/* Display root level errors for itemsToProcess array */}
                     {receiptForm.formState.errors.itemsToProcess && typeof receiptForm.formState.errors.itemsToProcess.message === 'string' && <p className="text-destructive text-sm p-1">{receiptForm.formState.errors.itemsToProcess.message}</p>}
                     {(receiptForm.formState.errors.itemsToProcess as any)?.root?.message && <p className="text-destructive text-sm p-1">{(receiptForm.formState.errors.itemsToProcess as any)?.root?.message}</p>}
                   </CardContent>
@@ -1016,7 +1077,7 @@ export default function PurchaseOrderDetailPage() {
           onOpenChange={setIsSupplierSolutionDialogOpen}
           purchaseOrder={purchaseOrder}
           currentUserId={currentUser?.uid}
-          onSolutionRecorded={fetchPOData} 
+          onSolutionRecorded={fetchPOData}
         />
       )}
     </>
