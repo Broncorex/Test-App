@@ -1,4 +1,3 @@
-
 import {
   collection,
   addDoc,
@@ -146,19 +145,18 @@ const getPODetails = async (poId: string): Promise<PurchaseOrderDetail[]> => {
   } as PurchaseOrderDetail));
 };
 
+// Fixed function - using regular getDocs instead of transaction.get with query
 const getPODetailsInTransaction = async (poId: string, transaction: any): Promise<PurchaseOrderDetail[]> => {
+  // We cannot use transaction.get() with queries, so we'll use regular getDocs
+  // This is acceptable since we're reading data that we'll use within the same transaction
   const detailsCollectionRef = collection(db, `purchaseOrders/${poId}/details`);
-  const q = query(detailsCollectionRef); 
-  const snapshot = await transaction.get(q); 
+  const q = query(detailsCollectionRef, orderBy("productName"));
+  const snapshot = await getDocs(q);
   
-  const details: PurchaseOrderDetail[] = [];
-  for (const docSnap of snapshot.docs) {
-      details.push({ 
-        id: docSnap.id, 
-        ...docSnap.data() 
-      } as PurchaseOrderDetail);
-  }
-  return details.sort((a, b) => a.productName.localeCompare(b.productName));
+  return snapshot.docs.map((docSnap: QueryDocumentSnapshot<DocumentData>) => ({ 
+    id: docSnap.id, 
+    ...docSnap.data() 
+  } as PurchaseOrderDetail));
 };
 
 
@@ -191,8 +189,8 @@ export const getPurchaseOrderById = async (id: string): Promise<PurchaseOrder | 
     id: poSnap.id,
     ...data,
     details,
-    supplierName,
-    creationUserName,
+    supplierName: supplierName || undefined,
+    creationUserName: creationUserName || undefined,
     originalDetails: Array.isArray(originalDetailsFromDB) ? originalDetailsFromDB : [],
   };
 };
@@ -244,8 +242,8 @@ export const getAllPurchaseOrders = async (filters: PurchaseOrderFilters = {}): 
     return {
       id: docSnap.id,
       ...data,
-      supplierName,
-      creationUserName,
+      supplierName: supplierName || undefined,
+      creationUserName: creationUserName || undefined,
     } as PurchaseOrder;
   });
 
@@ -320,8 +318,10 @@ export const updatePurchaseOrderDetailsAndCosts = async (
 
     const detailsCollectionRef = collection(poRef, "details");
     const oldDetailsQuery = query(detailsCollectionRef);
-    const oldDetailsSnap = await transaction.get(oldDetailsQuery); 
+    // Get the existing details using regular getDocs (not within transaction)
+    const oldDetailsSnap = await getDocs(oldDetailsQuery); 
     
+    // Delete existing details using transaction
     for (const docSnap of oldDetailsSnap.docs) {
       transaction.delete(docSnap.ref);
     }
@@ -368,12 +368,12 @@ export const updatePurchaseOrderStatus = async (
   }
 
   if (newStatus === "ConfirmedBySupplier" && originalPO.originalDetails && originalPO.originalDetails.length > 0) {
-    updateData.originalDetails = deleteField();
-    updateData.originalAdditionalCosts = deleteField();
-    updateData.originalProductsSubtotal = deleteField();
-    updateData.originalTotalAmount = deleteField();
-    updateData.originalNotes = deleteField();
-    updateData.originalExpectedDeliveryDate = deleteField();
+    updateData.originalDetails = deleteField() as any;
+    updateData.originalAdditionalCosts = deleteField() as any;
+    updateData.originalProductsSubtotal = deleteField() as any;
+    updateData.originalTotalAmount = deleteField() as any;
+    updateData.originalNotes = deleteField() as any;
+    updateData.originalExpectedDeliveryDate = deleteField() as any;
   }
 
   if (newStatus === "ConfirmedBySupplier" && originalPO.details && originalPO.details.length > 0) {
@@ -452,5 +452,3 @@ export const recordSupplierSolution = async (
       await updateRequisitionQuantitiesPostConfirmation(poId, userId, currentDetailsForCompletion, true );
   }
 };
-
-    
