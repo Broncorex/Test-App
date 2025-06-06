@@ -36,6 +36,7 @@ import { createReceipt, updatePOStatusAfterReceipt, type CreateReceiptServiceDat
 import { db } from "@/lib/firebase";
 import { updateRequisitionQuantitiesPostConfirmation, handleRequisitionUpdateForPOCancellation } from "@/services/requisitionService";
 import { RecordSupplierSolutionModal } from "@/components/shared/RecordSupplierSolutionModal";
+import { format, isValid } from "date-fns";
 
 
 const poDetailItemSchema = z.object({
@@ -280,7 +281,12 @@ export default function PurchaseOrderDetailPage() {
 
       await runTransaction(db, async (transaction) => {
         const poRef = firestoreDoc(db, "purchaseOrders", purchaseOrderId);
-        const poSnap = await transaction.get(poRef);
+        
+        // Fetch existing detail document references BEFORE transaction writes
+        const detailsCollectionRef = firestoreCollection(db, "purchaseOrders", purchaseOrderId, "details");
+        const currentDetailsSnapshot = await firestoreGetDocs(firestoreQuery(detailsCollectionRef)); 
+
+        const poSnap = await transaction.get(poRef); // Read main PO doc within transaction
 
         if (!poSnap.exists()) {
           throw new Error("Purchase Order not found during transaction.");
@@ -307,17 +313,14 @@ export default function PurchaseOrderDetailPage() {
         };
         transaction.update(poRef, updateDataForMainPO);
 
-        const detailsCollectionRef = firestoreCollection(db, "purchaseOrders", purchaseOrderId, "details");
-        const currentDetailsSnapshot = await firestoreGetDocs(firestoreQuery(detailsCollectionRef)); 
-
         currentDetailsSnapshot.forEach(docSnap => {
-          transaction.delete(docSnap.ref);
+          transaction.delete(docSnap.ref); // Delete old details
         });
 
         for (const originalDetailItem of currentPODataFromSnap.originalDetails) {
-          const { id: oldDocId, ...detailDataToSet } = originalDetailItem;
-          const newDetailRef = firestoreDoc(detailsCollectionRef); 
-          transaction.set(newDetailRef, detailDataToSet);
+          const { id: oldDocId, ...detailDataToSet } = originalDetailItem; // Exclude old ID if present
+          const newDetailRef = firestoreDoc(detailsCollectionRef); // Generate new ID for new detail doc
+          transaction.set(newDetailRef, detailDataToSet); // Add new detail
         }
       });
 
@@ -422,7 +425,6 @@ export default function PurchaseOrderDetailPage() {
 
     try {
         await createReceipt(payload);
-        // updatePOStatusAfterReceipt is now called within createReceipt itself
         toast({ title: "Receipt Recorded", description: "Stock receipt successfully recorded. PO status updated." });
         setIsReceiptDialogOpen(false);
         fetchPOData(); 
@@ -435,7 +437,6 @@ export default function PurchaseOrderDetailPage() {
   
   const handleOpenSupplierSolutionDialog = () => {
     if (!purchaseOrder) return;
-    // The form reset will be handled within the modal's useEffect
     setIsSupplierSolutionDialogOpen(true);
   };
 
@@ -510,7 +511,7 @@ export default function PurchaseOrderDetailPage() {
   const showAcceptOriginalPOButton = canManagePO && poStatus === "PendingInternalReview" && purchaseOrder.originalDetails && purchaseOrder.originalDetails.length > 0;
   
   const showRecordReceipt = canManagePO && (poStatus === "ConfirmedBySupplier" || poStatus === "PartiallyDelivered" || poStatus === "AwaitingFutureDelivery");
-  const showRecordSupplierSolutionButton = canManagePO && poStatus === "PartiallyDelivered"; // Or other relevant statuses
+  const showRecordSupplierSolutionButton = canManagePO && poStatus === "PartiallyDelivered"; 
 
   const showCancelPO = canManagePO && !["FullyReceived", "Completed", "Canceled", "RejectedBySupplier", "PartiallyDelivered", "AwaitingFutureDelivery"].includes(poStatus);
 
@@ -1002,3 +1003,4 @@ export default function PurchaseOrderDetailPage() {
     </>
   );
 }
+
