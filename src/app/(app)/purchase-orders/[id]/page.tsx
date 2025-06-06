@@ -19,7 +19,6 @@ import { Icons } from "@/components/icons";
 import Link from "next/link";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
-import { format, isValid, parseISO } from "date-fns";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { Dialog, DialogContent, DialogDescription as ShadDialogDescription, DialogFooter, DialogHeader, DialogTitle as ShadDialogTitle, DialogClose } from "@/components/ui/dialog";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
@@ -36,6 +35,7 @@ import { getActiveWarehouses } from "@/services/warehouseService";
 import { createReceipt, updatePOStatusAfterReceipt, type CreateReceiptServiceData } from "@/services/receiptService";
 import { db } from "@/lib/firebase";
 import { updateRequisitionQuantitiesPostConfirmation, handleRequisitionUpdateForPOCancellation } from "@/services/requisitionService";
+import { RecordSupplierSolutionModal } from "@/components/shared/RecordSupplierSolutionModal";
 
 
 const poDetailItemSchema = z.object({
@@ -113,12 +113,6 @@ const recordReceiptFormSchema = z.object({
 
 type RecordReceiptFormData = z.infer<typeof recordReceiptFormSchema>;
 
-const supplierSolutionFormSchema = z.object({
-  solutionType: z.enum(SUPPLIER_SOLUTION_TYPES, { required_error: "Supplier solution type is required."}),
-  solutionDetails: z.string().min(10, "Please provide at least 10 characters of detail for the solution."),
-});
-type SupplierSolutionFormData = z.infer<typeof supplierSolutionFormSchema>;
-
 
 export default function PurchaseOrderDetailPage() {
   const params = useParams();
@@ -140,7 +134,7 @@ export default function PurchaseOrderDetailPage() {
   const [isSubmittingReceipt, setIsSubmittingReceipt] = useState(false);
 
   const [isSupplierSolutionDialogOpen, setIsSupplierSolutionDialogOpen] = useState(false);
-  const [isSubmittingSolution, setIsSubmittingSolution] = useState(false);
+  const [isSubmittingSolution, setIsSubmittingSolution] = useState(false); // For the new modal
   const [isAcceptOriginalConfirmOpen, setIsAcceptOriginalConfirmOpen] = useState(false);
 
 
@@ -172,10 +166,6 @@ export default function PurchaseOrderDetailPage() {
     control: receiptForm.control, name: "itemsToProcess"
   });
   
-  const supplierSolutionForm = useForm<SupplierSolutionFormData>({
-    resolver: zodResolver(supplierSolutionFormSchema),
-  });
-
 
   const fetchPOData = useCallback(async () => {
     if (!purchaseOrderId || !appUser) return;
@@ -280,6 +270,14 @@ export default function PurchaseOrderDetailPage() {
     }
     setIsUpdating(true);
     try {
+      const originalDetailsForRequisitionUpdate = purchaseOrder.originalDetails.map(od => ({
+        productId: od.productId,
+        productName: od.productName,
+        orderedQuantity: od.orderedQuantity,
+        unitPrice: od.unitPrice,
+        notes: od.notes
+      }));
+
       await runTransaction(db, async (transaction) => {
         const poRef = firestoreDoc(db, "purchaseOrders", purchaseOrderId);
         const poSnap = await transaction.get(poRef);
@@ -310,8 +308,6 @@ export default function PurchaseOrderDetailPage() {
         transaction.update(poRef, updateDataForMainPO);
 
         const detailsCollectionRef = firestoreCollection(db, "purchaseOrders", purchaseOrderId, "details");
-        // Fetch existing detail document references BEFORE the transaction loop if needed
-        // For this specific 'Accept Original' case, we are deleting all current and re-adding original.
         const currentDetailsSnapshot = await firestoreGetDocs(firestoreQuery(detailsCollectionRef)); 
 
         currentDetailsSnapshot.forEach(docSnap => {
@@ -325,7 +321,7 @@ export default function PurchaseOrderDetailPage() {
         }
       });
 
-      await updateRequisitionQuantitiesPostConfirmation(purchaseOrderId, currentUser.uid, purchaseOrder.originalDetails);
+      await updateRequisitionQuantitiesPostConfirmation(purchaseOrderId, currentUser.uid, originalDetailsForRequisitionUpdate);
       toast({ title: "Original PO Confirmed", description: "Purchase Order reverted to original terms and confirmed." });
       fetchPOData();
       setIsAcceptOriginalConfirmOpen(false);
@@ -439,30 +435,8 @@ export default function PurchaseOrderDetailPage() {
   
   const handleOpenSupplierSolutionDialog = () => {
     if (!purchaseOrder) return;
-    supplierSolutionForm.reset({
-        solutionType: purchaseOrder.supplierAgreedSolutionType || undefined,
-        solutionDetails: purchaseOrder.supplierAgreedSolutionDetails || "",
-    });
+    // The form reset will be handled within the modal's useEffect
     setIsSupplierSolutionDialogOpen(true);
-  };
-  
-  const onSupplierSolutionSubmit = async (data: SupplierSolutionFormData) => {
-    if (!purchaseOrder || !currentUser) return;
-    setIsSubmittingSolution(true);
-    try {
-        const payload: RecordSupplierSolutionData = {
-            supplierAgreedSolutionType: data.solutionType,
-            supplierAgreedSolutionDetails: data.solutionDetails,
-        };
-        await recordSupplierSolution(purchaseOrderId, payload, currentUser.uid);
-        toast({ title: "Supplier Solution Recorded", description: `Solution '${data.solutionType}' has been recorded for this PO.`});
-        setIsSupplierSolutionDialogOpen(false);
-        fetchPOData(); 
-    } catch (error: any) {
-        console.error("Error recording supplier solution:", error);
-        toast({ title: "Solution Update Failed", description: error.message || "Could not record supplier solution.", variant: "destructive"});
-    }
-    setIsSubmittingSolution(false);
   };
 
 
@@ -470,9 +444,20 @@ export default function PurchaseOrderDetailPage() {
     if (!timestamp) return "N/A";
     let date: Date;
     if (timestamp instanceof Timestamp) date = timestamp.toDate();
-    else if (typeof timestamp === 'string') date = parseISO(timestamp); 
+    else if (typeof timestamp === 'string') date = new Date(timestamp); 
     else return "Invalid Date Object";
-    return isValid(date) ? format(date, "PPP") : "Invalid Date";
+    
+    if (!isValid(date)) { // Check if date is valid after conversion
+        try {
+            // Attempt to parse if it's an ISO string that new Date() might misinterpret
+            const parsed = new Date(Date.parse(String(timestamp)));
+            if (isValid(parsed)) date = parsed;
+            else return "Invalid Date String";
+        } catch (e) {
+            return "Unparseable Date";
+        }
+    }
+    return format(date, "PPP");
   };
 
   const getStatusBadgeVariant = (status?: PurchaseOrderStatus) => {
@@ -525,7 +510,7 @@ export default function PurchaseOrderDetailPage() {
   const showAcceptOriginalPOButton = canManagePO && poStatus === "PendingInternalReview" && purchaseOrder.originalDetails && purchaseOrder.originalDetails.length > 0;
   
   const showRecordReceipt = canManagePO && (poStatus === "ConfirmedBySupplier" || poStatus === "PartiallyDelivered" || poStatus === "AwaitingFutureDelivery");
-  const showRecordSupplierSolutionButton = canManagePO && poStatus === "PartiallyDelivered";
+  const showRecordSupplierSolutionButton = canManagePO && poStatus === "PartiallyDelivered"; // Or other relevant statuses
 
   const showCancelPO = canManagePO && !["FullyReceived", "Completed", "Canceled", "RejectedBySupplier", "PartiallyDelivered", "AwaitingFutureDelivery"].includes(poStatus);
 
@@ -1005,56 +990,15 @@ export default function PurchaseOrderDetailPage() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={isSupplierSolutionDialogOpen} onOpenChange={setIsSupplierSolutionDialogOpen}>
-        <DialogContent className="sm:max-w-lg">
-          <Form {...supplierSolutionForm}>
-            <form onSubmit={supplierSolutionForm.handleSubmit(onSupplierSolutionSubmit)}>
-              <DialogHeader>
-                <ShadDialogTitle className="font-headline">Record Supplier Solution</ShadDialogTitle>
-                <ShadDialogDescription>Document the agreed solution for discrepancies in PO: {purchaseOrder?.id.substring(0,8)}...</ShadDialogDescription>
-              </DialogHeader>
-              <div className="grid gap-4 py-4">
-                <FormField control={supplierSolutionForm.control} name="solutionType"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Solution Type *</FormLabel>
-                      <Select onValueChange={field.onChange} value={field.value}>
-                        <FormControl><SelectTrigger><SelectValue placeholder="Select solution type" /></SelectTrigger></FormControl>
-                        <SelectContent>
-                          {SUPPLIER_SOLUTION_TYPES.map(type => (
-                            <SelectItem key={type} value={type}>{type.replace(/([A-Z])/g, ' $1').trim()}</SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      <FormMessage />
-                    </FormItem>
-                  )} />
-                <FormField control={supplierSolutionForm.control} name="solutionDetails"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Solution Details *</FormLabel>
-                      <FormControl>
-                        <Textarea
-                          placeholder="Describe the agreed solution, e.g., credit amount, discount terms, new ETA for missing items."
-                          {...field}
-                        />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )} />
-              </div>
-              <DialogFooter>
-                <DialogClose asChild><Button type="button" variant="outline">Cancel</Button></DialogClose>
-                <Button type="submit" disabled={isSubmittingSolution}>
-                  {isSubmittingSolution ? <Icons.Logo className="animate-spin"/> : "Save Solution"}
-                </Button>
-              </DialogFooter>
-            </form>
-          </Form>
-        </DialogContent>
-      </Dialog>
+      {purchaseOrder && (
+        <RecordSupplierSolutionModal
+          isOpen={isSupplierSolutionDialogOpen}
+          onOpenChange={setIsSupplierSolutionDialogOpen}
+          purchaseOrder={purchaseOrder}
+          currentUserId={currentUser?.uid}
+          onSolutionRecorded={fetchPOData} 
+        />
+      )}
     </>
   );
 }
-
-    
