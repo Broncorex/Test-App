@@ -1,3 +1,4 @@
+
 import {
   collection,
   addDoc,
@@ -33,7 +34,7 @@ import { getUserById } from "./userService";
 import { getProductById } from "./productService";
 import {
     updateRequisitionQuantitiesPostConfirmation,
-    handleRequisitionUpdateForPOCancellation // Ensure this is imported
+    handleRequisitionUpdateForPOCancellation
 } from "./requisitionService";
 
 const purchaseOrdersCollection = collection(db, "purchaseOrders");
@@ -145,21 +146,6 @@ const getPODetails = async (poId: string): Promise<PurchaseOrderDetail[]> => {
   } as PurchaseOrderDetail));
 };
 
-// Fixed function - using regular getDocs instead of transaction.get with query
-const getPODetailsInTransaction = async (poId: string, transaction: any): Promise<PurchaseOrderDetail[]> => {
-  // We cannot use transaction.get() with queries, so we'll use regular getDocs
-  // This is acceptable since we're reading data that we'll use within the same transaction
-  const detailsCollectionRef = collection(db, `purchaseOrders/${poId}/details`);
-  const q = query(detailsCollectionRef, orderBy("productName"));
-  const snapshot = await getDocs(q);
-  
-  return snapshot.docs.map((docSnap: QueryDocumentSnapshot<DocumentData>) => ({ 
-    id: docSnap.id, 
-    ...docSnap.data() 
-  } as PurchaseOrderDetail));
-};
-
-
 export const getPurchaseOrderById = async (id: string): Promise<PurchaseOrder | null> => {
   if (!id) return null;
   const poRef = doc(db, "purchaseOrders", id);
@@ -182,7 +168,6 @@ export const getPurchaseOrderById = async (id: string): Promise<PurchaseOrder | 
     creationUserName = user?.displayName;
   }
   
-  // Ensure originalDetails is an array, even if it's empty or null from DB
   const originalDetailsFromDB = data.originalDetails || [];
 
   return {
@@ -305,7 +290,8 @@ export const updatePurchaseOrderDetailsAndCosts = async (
     };
 
     if (!currentPOData.originalDetails && (currentPOData.status === "ChangesProposedBySupplier" || currentPOData.status === "SentToSupplier")) {
-      const originalDetailsSnapshot = await getPODetailsInTransaction(poId, transaction);
+      // Fetch existing details using regular getDocs (not within transaction for queries)
+      const originalDetailsSnapshot = await getPODetails(poId);
       mainPOUpdateData.originalDetails = originalDetailsSnapshot;
       mainPOUpdateData.originalAdditionalCosts = currentPOData.additionalCosts;
       mainPOUpdateData.originalProductsSubtotal = currentPOData.productsSubtotal;
@@ -318,10 +304,8 @@ export const updatePurchaseOrderDetailsAndCosts = async (
 
     const detailsCollectionRef = collection(poRef, "details");
     const oldDetailsQuery = query(detailsCollectionRef);
-    // Get the existing details using regular getDocs (not within transaction)
     const oldDetailsSnap = await getDocs(oldDetailsQuery); 
     
-    // Delete existing details using transaction
     for (const docSnap of oldDetailsSnap.docs) {
       transaction.delete(docSnap.ref);
     }
@@ -379,7 +363,7 @@ export const updatePurchaseOrderStatus = async (
   if (newStatus === "ConfirmedBySupplier" && originalPO.details && originalPO.details.length > 0) {
     console.log(`[PO Service] Calling updateRequisitionQuantitiesPostConfirmation from updatePurchaseOrderStatus (status ConfirmedBySupplier) for PO: ${poId}`);
     const currentDetailsForConfirmation = await getPODetails(poId); 
-    await updateRequisitionQuantitiesPostConfirmation(poId, userId, currentDetailsForConfirmation);
+    await updateRequisitionQuantitiesPostConfirmation(originalPO.originRequisitionId, currentDetailsForConfirmation, userId, originalStatus);
   }
   
   const shouldUpdateRequisitionForCancellation =
@@ -416,39 +400,75 @@ export interface RecordSupplierSolutionData {
 export const recordSupplierSolution = async (
   poId: string,
   solutionData: RecordSupplierSolutionData,
-  userId: string 
+  userId: string
 ): Promise<void> => {
-  const poRef = doc(db, "purchaseOrders", poId);
-  const now = Timestamp.now();
+  await runTransaction(db, async (transaction) => {
+    const poRef = doc(db, "purchaseOrders", poId);
+    const poSnap = await transaction.get(poRef);
 
-  const updatePayload: Partial<PurchaseOrder> & { [key: string]: any } = {
-    supplierAgreedSolutionType: solutionData.supplierAgreedSolutionType,
-    supplierAgreedSolutionDetails: solutionData.supplierAgreedSolutionDetails,
-    updatedAt: now,
-  };
+    if (!poSnap.exists()) {
+      throw new Error(`Purchase Order ${poId} not found for solution recording.`);
+    }
+    const currentPOData = poSnap.data() as PurchaseOrder;
+    const now = Timestamp.now();
 
-  let newStatus: PurchaseOrderStatus | undefined = undefined;
-  switch (solutionData.supplierAgreedSolutionType) {
-    case "FutureDelivery":
-      newStatus = "AwaitingFutureDelivery";
-      break;
-    case "CreditPartialCharge":
-    case "DiscountForImperfection":
-    case "Other": 
-      newStatus = "Completed";
-      updatePayload.completionDate = now; 
-      break;
-  }
+    let newStatus: PurchaseOrderStatus | undefined = undefined;
+    const updatePayload: Partial<PurchaseOrder> & { [key: string]: any } = {
+      supplierAgreedSolutionType: solutionData.supplierAgreedSolutionType,
+      supplierAgreedSolutionDetails: solutionData.supplierAgreedSolutionDetails,
+      updatedAt: now,
+    };
 
-  if (newStatus) {
-    updatePayload.status = newStatus;
-  }
-  
-  await updateDoc(poRef, updatePayload);
+    switch (solutionData.supplierAgreedSolutionType) {
+      case "FutureDelivery":
+        newStatus = "AwaitingFutureDelivery";
+        break;
+      case "CreditPartialCharge":
+      case "DiscountForImperfection":
+      case "Other":
+        newStatus = "Completed";
+        updatePayload.completionDate = now;
+        break;
+    }
 
-  if (newStatus === "Completed") {
+    if (newStatus) {
+      updatePayload.status = newStatus;
+    }
+
+    if (solutionData.supplierAgreedSolutionType === "DiscountForImperfection") {
+      const currentAdditionalCosts = currentPOData.additionalCosts || [];
+      // Placeholder for discount amount logic. 
+      // This should ideally come from solutionData or be parsed from solutionDetails.
+      const discountAmount = 10; // Placeholder value, as per prompt instructions.
+      // TODO: Replace placeholder '10' with actual discount amount derivation logic or pass it in solutionData.
+
+      const discountCostEntry: QuotationAdditionalCost = {
+        description: `Discount for Imperfection: ${solutionData.supplierAgreedSolutionDetails.substring(0, 100)}`, // Truncate for safety
+        amount: -Math.abs(discountAmount), 
+        type: "other", 
+      };
+
+      const updatedAdditionalCosts = [...currentAdditionalCosts, discountCostEntry];
+      updatePayload.additionalCosts = updatedAdditionalCosts;
+
+      // Recalculate totalAmount based on new additional costs
+      // Ensure productsSubtotal is treated as a number
+      const productsSubtotalNum = Number(currentPOData.productsSubtotal) || 0;
+      const newTotalAmount = productsSubtotalNum +
+                             updatedAdditionalCosts.reduce((sum, cost) => sum + Number(cost.amount), 0);
+      updatePayload.totalAmount = newTotalAmount;
+    }
+
+    transaction.update(poRef, updatePayload);
+
+    if (newStatus === "Completed") {
       console.log(`[PO Service] Calling updateRequisitionQuantitiesPostConfirmation from recordSupplierSolution (status Completed) for PO: ${poId}`);
-      const currentDetailsForCompletion = await getPODetails(poId);
-      await updateRequisitionQuantitiesPostConfirmation(poId, userId, currentDetailsForCompletion, true );
-  }
+      // Fetch PO details. This read is outside the main transaction for the PO doc update,
+      // but necessary to get the details for the requisition update.
+      const poDetails = await getPODetails(poId); 
+      await updateRequisitionQuantitiesPostConfirmation(currentPOData.originRequisitionId, poDetails, userId, currentPOData.status);
+    }
+  });
 };
+
+    
