@@ -97,7 +97,7 @@ export function RecordSupplierSolutionModal({
         solutionDetails: purchaseOrder.supplierAgreedSolutionDetails || "",
         // discountAmount will be reset/set based on previous values if we store it on PO,
         // or remain undefined for a new entry. For now, it's cleared.
-        discountAmount: undefined, 
+        discountAmount: undefined, // Or retrieve from PO if you decide to store initial proposed discount
       });
     }
      if (watchedSolutionType !== "DiscountForImperfection") {
@@ -197,8 +197,11 @@ export function RecordSupplierSolutionModal({
                         <Input
                           type="number"
                           placeholder="e.g., 50.00"
+                          step="0.01" // Allow decimal input
                           {...field}
-                          onChange={event => field.onChange(+event.target.value)} // Ensure value is number
+                          // value is already handled by react-hook-form
+                          // onChange can be simplified or rely on RHF's default coercion
+                          onChange={event => field.onChange(parseFloat(event.target.value) || undefined)}
                         />
                       </FormControl>
                       <FormMessage />
