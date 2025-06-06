@@ -1,17 +1,15 @@
 
 import {
-  collection, addDoc, Timestamp, writeBatch, doc, getDoc, updateDoc, query, where, getDocs, runTransaction
+  collection, addDoc, Timestamp, writeBatch, doc, getDoc, updateDoc, query, where, getDocs, runTransaction, type DocumentReference
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import type {
-  Receipt, ReceivedItem, PurchaseOrder, PurchaseOrderDetail, StockMovementType, Warehouse, User as AppUser, ReceiptItemStatus, PurchaseOrderStatus
+  Receipt, ReceivedItem, PurchaseOrder, PurchaseOrderDetail, StockMovementType, Warehouse, User as AppUser, ReceiptItemStatus, PurchaseOrderStatus, StockMovement // Added StockMovement here
 } from "@/types";
 import { getUserById } from "./userService";
 import { getWarehouseById } from "./warehouseService";
 import { getProductById } from "./productService";
-import { recordStockMovement, getStockItemRef } from "./stockService"; // Corrected: updateStockItem removed, getStockItemRef is used
-// updatePurchaseOrderStatus is used internally, no need to import if it's in the same file and called directly.
-// If it were in purchaseOrderService, it would be: import { updatePurchaseOrderStatus } from "./purchaseOrderService";
+import { getStockItemRef, updateStockItem } from "./stockService";
 
 
 export interface CreateReceiptServiceItemData {
@@ -72,9 +70,9 @@ export const createReceipt = async (data: CreateReceiptServiceData): Promise<str
     );
 
     const stockUpdateOperations: Array<{
-      stockRef: any; // Firestore DocumentReference
-      updateData: Partial<any>; // More specific type if possible for StockItem
-      createData?: any; // StockItem if creating
+      stockItemRef: DocumentReference; 
+      updateData?: Partial<any>; 
+      createData?: any; 
       exists: boolean;
     }> = [];
 
@@ -88,8 +86,7 @@ export const createReceipt = async (data: CreateReceiptServiceData): Promise<str
       if (!poDetailSnap.exists()) {
         throw new Error(`Purchase Order Detail item ${item.poDetailId} for product ${item.productName} not found.`);
       }
-      // Correctly scoped currentPODetail for this iteration
-      const currentPODetailData = poDetailSnap.data() as PurchaseOrderDetail;
+      const currentPODetailData = poDetailSnap.data() as PurchaseOrderDetail; // Correctly scoped
       const product = products[i]!;
 
       const processStockAndMovement = async (
@@ -102,23 +99,23 @@ export const createReceipt = async (data: CreateReceiptServiceData): Promise<str
 
         const stockItemRef = getStockItemRef(item.productId, data.targetWarehouseId);
         const stockItemSnap = await transaction.get(stockItemRef);
-        const currentData = stockItemSnap.data() || {};
+        const currentStockData = stockItemSnap.data() || {};
         const fieldToUpdate = status === "Ok" ? "quantity" : "damagedQuantity";
-        const quantityBefore = currentData[fieldToUpdate] || 0;
+        const quantityBefore = currentStockData[fieldToUpdate] || 0;
         const quantityAfter = quantityBefore + quantityReceived;
 
-        const updateData: Partial<any> = { // Using 'any' for updateData due to dynamic fieldToUpdate
+        const updateData: Partial<any> = { 
           [fieldToUpdate]: quantityAfter,
           lastStockUpdate: now,
           updatedBy: data.receivingUserId,
         };
         
-        if (status === "Ok") updateData.damagedQuantity = currentData.damagedQuantity || 0;
-        else updateData.quantity = currentData.quantity || 0;
+        if (status === "Ok") updateData.damagedQuantity = currentStockData.damagedQuantity || 0;
+        else updateData.quantity = currentStockData.quantity || 0;
 
         if (!stockItemSnap.exists()) {
            stockUpdateOperations.push({
-            stockRef,
+            stockItemRef, // Corrected: stockItemRef instead of stockRef
             createData: {
               productId: item.productId,
               warehouseId: data.targetWarehouseId,
@@ -130,7 +127,7 @@ export const createReceipt = async (data: CreateReceiptServiceData): Promise<str
             exists: false
           });
         } else {
-           stockUpdateOperations.push({ stockRef, updateData, exists: true });
+           stockUpdateOperations.push({ stockItemRef, updateData, exists: true }); // Corrected: stockItemRef instead of stockRef
         }
 
         stockMovementRecords.push({
@@ -172,7 +169,7 @@ export const createReceipt = async (data: CreateReceiptServiceData): Promise<str
           warehouseName: targetWarehouse.name,
           type: 'PO_MISSING',
           quantityChanged: item.qtyMissingReceivedThisReceipt,
-          quantityBefore: 0, // Missing items don't affect existing stock levels directly
+          quantityBefore: 0, 
           quantityAfter: 0,
           movementDate: data.receiptDate,
           userId: data.receivingUserId,
@@ -192,7 +189,7 @@ export const createReceipt = async (data: CreateReceiptServiceData): Promise<str
         });
       }
 
-      // Update PO Detail cumulative quantities
+      
       const newCumulativeOk = (currentPODetailData.receivedQuantity || 0) + item.qtyOkReceivedThisReceipt;
       const newCumulativeDamaged = (currentPODetailData.receivedDamagedQuantity || 0) + item.qtyDamagedReceivedThisReceipt;
       const newCumulativeMissing = (currentPODetailData.receivedMissingQuantity || 0) + item.qtyMissingReceivedThisReceipt;
@@ -204,7 +201,7 @@ export const createReceipt = async (data: CreateReceiptServiceData): Promise<str
       });
     }
 
-    // All writes are now batched here
+    
     const receiptDataForTransaction: Omit<Receipt, "id" | "receivedItems" | "receivingUserName" | "targetWarehouseName"> = {
       purchaseOrderId: data.purchaseOrderId,
       receiptDate: data.receiptDate,
@@ -218,10 +215,10 @@ export const createReceipt = async (data: CreateReceiptServiceData): Promise<str
     transaction.set(receiptRef, receiptDataForTransaction);
 
     stockUpdateOperations.forEach(op => {
-      if (op.exists) {
-        transaction.update(op.stockRef, op.updateData);
-      } else if (op.createData) {
-        transaction.set(op.stockRef, op.createData);
+      if (op.exists && op.updateData) { // Added op.updateData check
+        transaction.update(op.stockItemRef, op.updateData);
+      } else if (!op.exists && op.createData) { // Added !op.exists check for clarity
+        transaction.set(op.stockItemRef, op.createData);
       }
     });
 
@@ -238,6 +235,9 @@ export const createReceipt = async (data: CreateReceiptServiceData): Promise<str
     transaction.update(poRef, { updatedAt: now });
   });
 
+  // Call status update after the main transaction
+  await updatePOStatusAfterReceipt(data.purchaseOrderId, data.receivingUserId);
+
   return receiptRef.id;
 };
 
@@ -247,21 +247,24 @@ async function getPODetailsForStatusCheck(poId: string): Promise<PurchaseOrderDe
     return snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() } as PurchaseOrderDetail));
 }
 
-// This function is defined locally now or imported if it's truly separate
-// For now, assuming it's a local helper for updatePOStatusAfterReceipt.
-// It would typically live in purchaseOrderService.ts
+
 async function localUpdatePOStatus(
   purchaseOrderId: string,
   newStatus: PurchaseOrderStatus,
-  userId: string
+  userId: string // userId might not be strictly necessary here if it's just updating status
 ): Promise<void> {
   const poRef = doc(db, "purchaseOrders", purchaseOrderId);
   const updatePayload: Partial<PurchaseOrder> = { status: newStatus, updatedAt: Timestamp.now() };
-  if (newStatus === "Completed" || newStatus === "Canceled") {
-    const poSnap = await getDoc(poRef); // Read current PO to check completionDate
-    if (poSnap.exists() && !poSnap.data().completionDate) {
-      updatePayload.completionDate = Timestamp.now();
-    }
+  
+  const poSnap = await getDoc(poRef); 
+  if (!poSnap.exists()) {
+      console.error(`PO ${purchaseOrderId} not found during localUpdatePOStatus.`);
+      throw new Error(`Purchase Order ${purchaseOrderId} not found.`);
+  }
+  const currentPOData = poSnap.data() as PurchaseOrder;
+
+  if ((newStatus === "Completed" || newStatus === "Canceled") && !currentPOData.completionDate) {
+    updatePayload.completionDate = Timestamp.now();
   }
   await updateDoc(poRef, updatePayload);
 }
@@ -275,13 +278,11 @@ export async function updatePOStatusAfterReceipt(purchaseOrderId: string, userId
         return;
     }
 
-    //const purchaseOrder = { id: poSnap.id, ...poSnap.data() } as PurchaseOrder;
-    const purchaseOrderData = poSnap.data() as Omit<PurchaseOrder, "id" | "details">; // Use Omit if details are not on main doc
+    const purchaseOrderData = poSnap.data() as PurchaseOrder; // Cast to full PO type
     const details = await getPODetailsForStatusCheck(purchaseOrderId);
 
     if (details.length === 0) {
         if (purchaseOrderData.status !== "Completed" && purchaseOrderData.status !== "Canceled") {
-            // Call local or imported updatePurchaseOrderStatus
             await localUpdatePOStatus(purchaseOrderId, "Completed", userId);
         }
         return;
@@ -295,8 +296,10 @@ export async function updatePOStatusAfterReceipt(purchaseOrderId: string, userId
         if (totalAccountedFor < detail.orderedQuantity) {
             allItemsFullyAccounted = false;
         }
+        // Check if any items were marked as "missing"
         if ((detail.receivedMissingQuantity || 0) > 0) {
-            allExpectedPhysicalItemsReceivedAndNoMissing = false;
+           // If even one item is missing, it means not all *expected physical* items arrived, even if all *ordered* quantities are accounted for (e.g. 5 ordered, 3 OK, 2 Missing)
+           allExpectedPhysicalItemsReceivedAndNoMissing = false;
         }
     }
 
@@ -304,23 +307,22 @@ export async function updatePOStatusAfterReceipt(purchaseOrderId: string, userId
 
     if (allItemsFullyAccounted) {
         if (allExpectedPhysicalItemsReceivedAndNoMissing) {
+            // All ordered quantities are accounted for (OK, Damaged) AND no items were reported as missing.
             newStatus = "FullyReceived";
         } else {
-            // If all items are accounted for but some were missing, the PO is considered 'Completed'
-            // as no more physical items are expected for those missing quantities.
+            // All ordered quantities are accounted for, but at least one item was marked as missing.
+            // The PO is considered "Completed" because no more physical items are expected *for those missing quantities*.
+            // Any resolution for missing items (credit, re-order) would be handled outside this specific receipt's direct stock impact.
             newStatus = "Completed";
         }
     } else {
+        // Not all ordered quantities are accounted for yet.
         newStatus = "PartiallyDelivered";
     }
 
     if (newStatus !== purchaseOrderData.status) {
         await localUpdatePOStatus(purchaseOrderId, newStatus, userId);
     } else {
-        // Even if status doesn't change (e.g. multiple partial deliveries), update the PO's updatedAt timestamp
         await updateDoc(poRef, { updatedAt: Timestamp.now() });
     }
 }
-
-
-    
